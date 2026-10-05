@@ -1,6 +1,9 @@
 # Aria
  
 Aria ist ein persönlicher KI-Assistent mit Backend und Mobile-App.
+
+> [!NOTE]
+> Mobile Version source code nicht im repo
  
 ## Architektur
  
@@ -36,3 +39,4 @@ Backend (Python / FastAPI)
 - Öffentliches Web-Frontend mit Chat-Seite
 - Anime-Avatar (Live2D, Cubism) mit Animationen statt reinem Textchat
 - Offen: Schutz des Servers vor Überlastung bei öffentlichem Zugriff
+
