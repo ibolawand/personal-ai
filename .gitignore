@@ -1,0 +1,6 @@
+.venv
+.env
+BetterAI/aria_memory.db
+BetterAI/.cache
+BetterAI/SherryModel
+BetterAI/ariu
