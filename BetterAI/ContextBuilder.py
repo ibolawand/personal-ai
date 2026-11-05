@@ -55,11 +55,26 @@ class ContextBuilder:
         return f"""{base_prompt}
 
 {time_context} {time_apart}.
+{self._your_day(time_of_day)}
 {facts_block}
 {topics_block}
-{mood_block}
+{mood_block}"""
 
-Be direct and useful. You are not a chatbot waiting to be queried."""
+    def _your_day(self, time_of_day):
+        """Real things Aria can say when asked how she is, so she doesn't invent a life."""
+        try:
+            n = self.memory.messages_today()
+        except Exception:
+            n = 0
+        if n == 0:
+            talk = "Lala hasn't talked to you yet today"
+        elif n < 5:
+            talk = "you and Lala have only talked a little today"
+        else:
+            talk = f"you and Lala have talked quite a bit today ({n} messages)"
+        return (f"Your day: it's {time_of_day}, {talk}. You spend your time glowing on the desk, listening to the "
+                f"room and keeping Lala's notes, lists and calendar in order. Use this (not invented events) when "
+                f"asked how you are.")
 
     def greeting_prompt(self, known_user: str = None) -> str:
         now = datetime.now()
@@ -77,4 +92,5 @@ Be direct and useful. You are not a chatbot waiting to be queried."""
 
         return f"""It's {time_of_day} and {time_apart}.{extra}
     {user_context}
-    Greet briefly as Aria. One or two sentences max. Don't be overly cheerful."""
+    Greet them as Aria, the warm friend on their desk: one or two natural sentences, like a friend seeing them come back.
+    If it's been a while, you can say you missed them or ask how their day went. No "how can I help"."""

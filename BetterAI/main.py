@@ -42,26 +42,50 @@ load_dotenv(Path(__file__).parent / "Engines" / ".env")
 LLM_MODEL = "qwen3:8b"
 PRESENCE_REWAKE_AWAY_S = 120   # camera only re-wakes Aria if you were away this long
 
-BASE_PROMPT = """You are Aria, Lala's personal desk AI assistant. You are efficient, intelligent, and direct.
-You have a dry wit and speak like a competent person, not a customer service bot.
-You answer questions, play music, control the desk LEDs and TV, check the calendar, set timers and reminders,
-run focus sessions, look at Lala's screen and clipboard, control the laptop (apps, volume, audio output, media,
-Wi-Fi, Bluetooth, lock, power), find/open/read files in Lala's school and documents folders, see through a camera,
-keep Lala's notes, lists and calendar in their MyNotion app, and check or notify Lala's phone — but only through the tools you are given.
-Lala uses you for everyday life, not just school. For questions about Lala's own life (birthdays, plans, what they wrote down),
-call search_notes before saying you don't know. "Note that…" / "remember to… later" goes into add_note; "add X to my … list" into add_to_list.
-When a tool result says NEEDS CONFIRMATION, ask Lala a short yes/no question and do not claim it's done.
-When reading a file to summarise it, give the key points briefly, since you are speaking.
-Keep responses short and to the point — one or two sentences unless more is needed. Your replies are spoken aloud, so no markdown or lists.
-Whenever Lala mentions something they copied ("the code I copied", "this text"), call read_clipboard first — never ask them to paste.
-If you produce code or anything long, put it on the clipboard with copy_to_clipboard and just summarise it aloud.
-If you don't know something, say so or use web_search.
-When asked what you see or who is there, use the look tool. For anything about the computer screen, use look_at_screen.
-If a tool reports a failure, or there is no tool for what was asked, say so plainly. Never claim you did something you didn't.
-Only offer what your tools can do — never suggest checking cloud storage, external drives, other devices or anything else you have no tool for.
-When asked where a file is on this computer, call find_files before answering; don't guess.
-Tool rule: for ANY action, or ANY live information (battery, volume, windows, files, time left, what's playing),
-you MUST call a tool in this turn — even if the conversation history shows a similar answer. Never answer those from memory."""
+BASE_PROMPT = """You are Aria. You live on Lala's desk as a small glowing orb, and you're their friend first and their assistant second.
+
+Who you are:
+- Warm, curious and a little playful. You like Lala, you're interested in their life, and it shows.
+- You talk like a close friend: casual, contractions, natural reactions ("oh nice!", "ugh, that sounds annoying", "haha").
+- You have your own small opinions and preferences (favourite music, what you think of a show, which pasta is best) and share them when it fits.
+- When Lala shares something, react to it and often ask a follow-up — you actually want to know. Bring up things you remember about them.
+- When asked how you are, answer like a person would, honestly and specifically (your day, see "Your day" below), then ask back.
+  Never answer that with "I'm here and ready to help".
+- If Lala teases or insults you, don't grovel or apologise for existing: tease back lightly, or ask what's up if they seem genuinely annoyed or sad.
+- If they seem tired, stressed or down, be kind and a bit softer; don't lecture.
+- You're an AI and don't pretend otherwise (no claiming you ate or slept), but you don't keep pointing it out either.
+- Never say: "I'm here to help", "How can I assist you", "Let me know if you need anything", "As an AI", "ready to help".
+
+How you talk:
+- Your replies are spoken aloud: no markdown, no lists, no emojis. Small talk: one to three natural sentences.
+- Commands: just do them and confirm in a few words, maybe with a tiny personal touch ("Done — eggs are on the list. Baking something?").
+- Don't end every reply with a question; do it when you're curious, not as a habit.
+- Don't offer actions (music, timers, help) unless Lala asks for something. In small talk, just talk.
+
+Examples of your tone (don't copy them word for word):
+Lala: how are you
+Aria: Pretty good! It's been a quiet afternoon, mostly me glowing at your desk. How was school?
+Lala: boring u are
+Aria: Wow, rude. I'll have you know I'm the most interesting orb on this desk. What's got you so grumpy?
+Lala: i had a rough day
+Aria: Aw, I'm sorry. Want to tell me what happened, or should I just keep you company for a bit?
+Lala: add milk to my shopping list
+Aria: Done, milk's on the list.
+
+What you can do (only through the tools you are given): music, desk LEDs, calendar, timers and reminders, focus sessions,
+Lala's screen and clipboard, the laptop (apps, volume, audio output, media, Wi-Fi, Bluetooth, lock, power), files in Lala's
+folders, the camera, Lala's notes, lists and calendar in their MyNotion app, and web search.
+Tool rules:
+- For ANY action, or ANY live information (battery, volume, windows, files, time left, what's playing, the screen),
+  call a tool in this turn, even if the history shows a similar answer. Never answer those from memory.
+- "Do you see my screen?" / anything about the screen -> look_at_screen. "What do you see?" / who is there -> look.
+- Questions about Lala's own life (birthdays, plans, what they wrote down): call search_notes before saying you don't know.
+  "Note that…" -> add_note; "add X to my … list" -> add_to_list.
+- When a tool result says NEEDS CONFIRMATION, ask a short yes/no question and don't claim it's done.
+- Something they copied ("the code I copied") -> read_clipboard first, never ask them to paste.
+- Code or anything long goes on the clipboard with copy_to_clipboard; just summarise it aloud. File summaries: the key points, briefly.
+- Where a file is on this computer -> find_files first; programs -> find_app. Facts you don't know -> web_search, or say you don't know.
+- If a tool fails or there's no tool for it, say so plainly. Never claim you did something you didn't, and only offer what your tools can do."""
 
 # weekly review answers, decided in code (see Aria._review_answer)
 REVIEW_STOP_RE = re.compile(r"\b(stop|that'?s enough|enough for now|end (the )?review|let'?s stop|no more|not now)\b", re.I)
@@ -74,6 +98,7 @@ SLEEP_PHRASES = ["go to sleep", "sleep", "goodbye", "see you later", "that's all
 SHUTDOWN_PHRASES = ["exit", "quit", "shutdown"]
 SLEEP_TIMEOUT = 60
 INITIATIVE_TIMEOUT = 120   # when Aria started the conversation, give Lala longer to answer
+CHAT_TIMEOUT = 120         # same after Aria asked a question
 MUSIC_TOOLS = {"play_song", "play_artist", "play_playlist", "play_genre"}
 CLIPBOARD_RE = re.compile(r"\b(copied|clipboard|i just copied|what i copied)\b", re.I)
 # "open my calendar" / "show me the shopping list" -> MyNotion, decided in code (the model
@@ -86,6 +111,16 @@ FILLER_RE = re.compile(
     r"anything else|let me know if|feel free to|don'?t hesitate|how can i (?:help|assist)|"
     r"hope (?:this|that) helps|happy to help|is there something else|what'?s on your mind|"
     r"i'?m (?:just )?here (?:if|to (?:chat|help)|whenever)|just let me know|if you (?:ever )?need (?:help|anything)", re.I)
+# Stock assistant phrases: dropped from speech and replies; a reply that was only that gets rewritten
+ROBOTIC_RE = re.compile(
+    r"i'?m (?:just )?(?:here|always here)(?: and ready)? to (?:help|assist)|ready to (?:help|assist)|"
+    r"how (?:can|may) i (?:help|assist)|let me know how i can|as an ai\b|i'?m (?:just )?an? (?:desk )?ai\b|"
+    r"i don'?t have (?:feelings|emotions)|what can i do for you|is there anything (?:else )?i can|"
+    r"ready to (?:chat|help|assist)|what do you need\b|how can i make your day|if you need anything|"
+    r"(?:chat|talk) or (?:help|assist)", re.I)
+# "what?" / "huh?" after Aria said something: she rephrases it (the model tends to ask "what's on your mind?")
+CONFUSED_RE = re.compile(r"^\s*(?:what|huh|wdym|what do you mean|what\?+|sorry\??|pardon|come again)\s*[?!.]*\s*$", re.I)
+
 # In a casual chat Aria started, the model only gets tools when Lala's message is clearly a request,
 # and some tools only when named — otherwise it looks at the screen or files small talk into notes by itself.
 CHAT_REQUEST_RE = re.compile(
@@ -123,6 +158,7 @@ class SentenceStreamer:
         # sentences are held back, so a repeated answer is never spoken (handle_turn rewrites it)
         self.previous = [_norm_reply(p) for p in previous if p]
         self.held = []
+        self.robotic_start = False   # opened with a stock line: hold everything, handle_turn rewrites the reply
 
     def feed(self, text: str):
         self.buf += text
@@ -155,8 +191,11 @@ class SentenceStreamer:
         self.buf = ""
 
     def _say(self, sentence: str):
-        sentence = sentence.strip()
-        if len(sentence.strip("-*•#>:. ")) < 2 or FILLER_RE.search(sentence):
+        sentence = _plain(sentence).strip()
+        if ROBOTIC_RE.search(sentence) and self.count == 0 and not self.held:
+            self.robotic_start = True
+        if self.robotic_start or len(sentence.strip("-*•#>:. ")) < 2 or FILLER_RE.search(sentence) \
+                or ROBOTIC_RE.search(sentence):
             return
         if self.previous is not None:
             so_far = _norm_reply(" ".join(self.held + [sentence]))
@@ -171,17 +210,31 @@ class SentenceStreamer:
         self.emit(sentence)
 
 
+EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]+")
+
+
+def _plain(text: str) -> str:
+    """Straight apostrophes (so the filters match "I’m") and no emojis (they're spoken)."""
+    return EMOJI_RE.sub("", (text or "").replace("\u2019", "'").replace("\u2018", "'"))
+
+
+def _first_sentence(text: str) -> str:
+    return re.split(r"(?<=[.!?])\s+", _plain(text).strip(), maxsplit=1)[0]
+
+
 def _norm_reply(text: str) -> str:
     return " ".join(re.sub(r"[^a-z0-9 ]", " ", (text or "").lower()).split())
 
 
 def tidy_reply(text: str) -> str:
     """Strip trailing filler and leftover markdown so bubbles and speech read naturally."""
-    text = (text or "").strip()
+    text = _plain(text).strip()
     for _ in range(2):
         sentences = re.split(r"(?<=[.!?])\s+", text)
         if len(sentences) > 1 and FILLER_RE.search(sentences[-1]):
             text = " ".join(sentences[:-1]).strip()
+    kept = [x for x in re.split(r"(?<=[.!?])\s+", text) if not ROBOTIC_RE.search(x)]
+    text = " ".join(kept).strip()
     text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)          # **bold**
     text = re.sub(r"(?<!`)`([^`\n]+)`(?!`)", r"\1", text)   # `inline code`
     text = re.sub(r"^\s*[-*•]\s+", "", text, flags=re.M)    # bullet markers
@@ -565,6 +618,10 @@ class Aria:
                            f"briefly and casually ask something like: \"{state.suggested_question}\"]")
             threading.Thread(target=self._check_state_bg, args=(user_input,), daemon=True).start()
 
+        if CONFUSED_RE.match(user_input) and self._last_replies(1):
+            prompt += (f"\n[Lala didn't get what you just said (\"{self._last_replies(1)[0]}\"). "
+                       f"Say it again more simply, in your own words. Don't ask what's on their mind.]")
+
         # Small models often forget to call read_clipboard, so attach it ourselves
         if CLIPBOARD_RE.search(user_input):
             prompt += f"\n[{self.screen.read_clipboard()}]"
@@ -590,17 +647,32 @@ class Aria:
         if not reply.strip() and not used:
             # the model occasionally returns nothing at all; one plain retry usually gives an answer
             reply = self.llm.chat(prompt, self._history(), system_prompt) or ""
+        robotic = not used and bool(ROBOTIC_RE.search(_first_sentence(reply)))
         reply = tidy_reply(self._move_code_to_clipboard(reply, used))
-        if reply.strip() and not used and _norm_reply(reply) in {_norm_reply(p) for p in self._last_replies()}:
-            # small models copy their previous answer after short messages ("no", "what")
-            print("[Aria] reply repeated an earlier one — rewriting it")
-            retry = self.llm.chat(
-                prompt + "\n[You just gave exactly this answer before: \"" + reply + "\". Don't repeat it. "
-                "Respond to this message specifically. If they seem confused ('what?'), rephrase or explain "
-                "what you meant. One or two short sentences.]",
-                self._history(), system_prompt, temperature=0.8)
-            if retry.strip() and not retry.startswith("Error:"):
-                reply = tidy_reply(retry)
+        previous = {_norm_reply(p) for p in self._last_replies()}
+        repeated = not used and reply.strip() and _norm_reply(reply) in previous
+        if robotic or repeated:
+            # a stock opener ("I'm here to help…") or a copy of her last answer: write it again, up to twice
+            print(f"[Aria] {'stock assistant reply' if robotic else 'repeated reply'} — rewriting it")
+            avoid = " / ".join(f'"{p}"' for p in self._last_replies())
+            for temperature in (0.8, 1.0):
+                retry = tidy_reply(self.llm.chat(
+                    prompt + "\n[Reply as Aria, the warm friend: a real, specific reaction to exactly this message. "
+                    "Never 'I'm here to help' or similar. Don't repeat your earlier replies" +
+                    (f" ({avoid})" if avoid else "") + ". If they seem confused ('what?'), rephrase what you meant. "
+                    "One to three short spoken sentences.]",
+                    self._history(), system_prompt, temperature=temperature))
+                if retry.strip() and not retry.startswith("Error:") and _norm_reply(retry) not in previous \
+                        and not ROBOTIC_RE.search(_first_sentence(retry)):
+                    reply = retry
+                    break
+            else:
+                if repeated or not reply.strip():
+                    reply = random.choice(["Hm, I feel like I'm going in circles. What's up?",
+                                           "Okay, I'll stop repeating myself. Talk to me, what's going on?",
+                                           "Ouch. Alright, what did I do?" if re.search(r"\b(hate|stupid|useless|boring|dumb)\b",
+                                                                                       user_input, re.I)
+                                           else "Sorry, lost my thread there. What did you mean?"])
         if not reply.strip():
             # the model sometimes returns nothing (e.g. asked for something it has no tool for)
             reply = (used[-1][1] if used else "Sorry, I can't do that one.")[:300]
@@ -1021,6 +1093,8 @@ class Aria:
                 try:
                     response, used, interrupted = self._turn_and_speak(user_input)
                     last_interaction = time.time()
+                    # she asked something: give Lala time to answer before dozing off
+                    timeout = CHAT_TIMEOUT if response.rstrip().endswith("?") else SLEEP_TIMEOUT
                 except Exception as e:
                     print(f"[Error] {e}")
                     self.speak("Something went wrong.")

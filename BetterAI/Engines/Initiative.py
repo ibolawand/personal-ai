@@ -15,8 +15,8 @@ Ignored openers make her wait longer; "not now" snoozes her for a few hours.
 Settings (Engines/.env):
   ARIA_INITIATIVE=0          switch it off completely (also in the orb's right-click menu)
   ARIA_QUIET=22:30-08:30     quiet hours
-  ARIA_CHAT_EVERY_MIN=90     minimum gap between two casual chats
-  ARIA_CHATS_PER_DAY=3       at most this many casual chats a day
+  ARIA_CHAT_EVERY_MIN=45     minimum gap between two casual chats
+  ARIA_CHATS_PER_DAY=6       at most this many casual chats a day
   ARIA_REVIEW_DAY=6          weekly review day (0 = Monday … 6 = Sunday), from ARIA_REVIEW_HOUR=18
 """
 
@@ -32,8 +32,8 @@ import time
 STATE_FILE = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "aria", "initiative.json")
 
 QUIET = os.environ.get("ARIA_QUIET", "22:30-08:30")
-CHAT_EVERY_MIN = float(os.environ.get("ARIA_CHAT_EVERY_MIN", 90))
-CHATS_PER_DAY = int(os.environ.get("ARIA_CHATS_PER_DAY", 3))
+CHAT_EVERY_MIN = float(os.environ.get("ARIA_CHAT_EVERY_MIN", 45))
+CHATS_PER_DAY = int(os.environ.get("ARIA_CHATS_PER_DAY", 6))
 REVIEW_DAY = int(os.environ.get("ARIA_REVIEW_DAY", 6))
 REVIEW_HOUR = int(os.environ.get("ARIA_REVIEW_HOUR", 18))
 

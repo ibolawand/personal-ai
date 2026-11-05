@@ -135,6 +135,14 @@ class AriaMemory:
                     )
                 """)
 
+    def messages_today(self) -> int:
+        """How many messages Lala sent today (local time)."""
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute("SELECT COUNT(*) FROM messages WHERE role = 'user' AND "
+                                   "date(ts, 'localtime') = date('now', 'localtime')").fetchone()
+        return row[0] if row else 0
+
     def load_history(self, limit: int = 10) -> list:
         with self._lock:
             with self._connect() as conn:

@@ -32,6 +32,16 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 
 ## Brain
 
+- **Personality: a warm friend** (`BASE_PROMPT` in `main.py`). Aria is casual and curious, reacts to what you say,
+  asks back, and brings up things she remembers about you. She teases back when you tease her, and is softer when
+  you're down. Commands still get a quick confirmation, sometimes with a small personal touch.
+  Short example conversations in her instructions set the tone, because a small model follows those better than rules.
+  - "How are you?" gets a real answer based on her actual day (how much you've talked today, the time of day), not invented events.
+  - Stock assistant lines ("I'm here to help", "How can I assist you", "As an AI"…) are never spoken. A reply that
+    starts with one is rewritten, and if two rewrites fail she says a short line written in code instead.
+  - "What?" / "huh?" makes her say her last message again, more simply.
+  - After she asks you something, she waits 2 minutes for your answer instead of 1 before dozing off.
+
 - **Model:** Ollama `qwen3:8b` with native tool calling (`llm_engine.py`), thinking off for speed, 8192-token context.
 - **Tool-call memory:** the real tool calls and results of the last 6 turns stay in the conversation, so Aria
   keeps using tools instead of making up answers. Tested: tool use went from 4/8 to 12/12.
@@ -145,8 +155,8 @@ using the microphone (calls). There's at least half an hour between two openers.
 or no answer at all, means she waits twice as long before the next one. Turn it off with the right-click menu or
 "stop starting conversations".
 
-Settings in `Engines/.env`: `ARIA_INITIATIVE=0` (off), `ARIA_QUIET=22:30-08:30`, `ARIA_CHAT_EVERY_MIN=90`,
-`ARIA_CHATS_PER_DAY=3`, `ARIA_REVIEW_DAY=6` (0 = Monday), `ARIA_REVIEW_HOUR=18`. Her bookkeeping lives in `~/.cache/aria/initiative.json`.
+Settings in `Engines/.env`: `ARIA_INITIATIVE=0` (off), `ARIA_QUIET=22:30-08:30`, `ARIA_CHAT_EVERY_MIN=45`,
+`ARIA_CHATS_PER_DAY=6`, `ARIA_REVIEW_DAY=6` (0 = Monday), `ARIA_REVIEW_HOUR=18`. Her bookkeeping lives in `~/.cache/aria/initiative.json`.
 
 ## Focus mode — `Engines/FocusMode.py`
 
