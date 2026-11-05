@@ -316,6 +316,9 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
 - **Home Assistant** (`Controller/homeController.py`):
   - phone: notify, battery level, location, Do Not Disturb
   - TV: on/off and volume
+- **Maths and units** (`Engines/Calc.py`): exact answers instead of the model's mental arithmetic. "What's 17% of
+  2340?", "split 87.40 between 3 with a 15% tip" (33.50 each), "42 km in miles", "20 C in F", "2 cups in ml".
+  Expressions are parsed safely (no `eval`): only numbers, operators and a few maths functions.
 - **Weather** (`Engines/Weather.py`, Open-Meteo, free, no key): "what's the weather?", "do I need a jacket tomorrow?",
   "will it rain the day after tomorrow?", "weather in Berlin". Tell her once "I live in Vienna" (or set `ARIA_LOCATION`).
   Clothing advice (coat, jacket, umbrella) is decided in code from the temperature and rain chance, and the

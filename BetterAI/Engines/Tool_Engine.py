@@ -103,6 +103,20 @@ class ToolEngine:
 
     def _build(self) -> list:
         tools = [
+            _tool("calculate", "Exact maths — use it for ANY arithmetic, percentages, tips or splitting a bill, "
+                  "never calculate in your head ('17% of 2340', '46.8 * 1.18 / 3', 'sqrt(2)').",
+                  __import__("Engines.Calc", fromlist=["calculate"]).calculate,
+                  expression=("string", "the maths, e.g. '18% of 46.80' or '(12 + 7) * 3'")),
+            _tool("split_bill", "Split a bill, optionally with a tip: what each person pays. Use this (not "
+                  "calculate) for any bill/tip/split question.",
+                  __import__("Engines.Calc", fromlist=["split_bill"]).split_bill, optional=("people", "tip_percent"),
+                  total=("number", "the bill amount"), people=("integer", "how many people pay"),
+                  tip_percent=("number", "tip in percent, 0 if none")),
+            _tool("convert_units", "Convert between units: length, weight, volume, speed, data, time, and "
+                  "temperature (C/F/K). E.g. 5 km to miles, 180 cm to feet, 20 C to F.",
+                  __import__("Engines.Calc", fromlist=["convert"]).convert,
+                  value=("number", "the amount"), from_unit=("string", "unit to convert from"),
+                  to_unit=("string", "unit to convert to")),
             _tool("web_search", "Look things up: facts, people, places, how things work, and (when available) "
                   "news, prices and anything recent. Use it instead of guessing.",
                   self.web_search, query=("string", "a short search query, e.g. '2022 world cup final result'")),
