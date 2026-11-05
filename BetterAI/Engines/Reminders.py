@@ -65,7 +65,7 @@ def parse_repeat(text):
     days = [k for k, name in zip(DAY_KEYS, DAY_NAMES) if re.search(rf"\b{name.lower()}s?\b|\b{k}\b", s)]
     if days:
         return ",".join(days)
-    if re.search(r"week ?days|work ?days|monday to friday", s):
+    if re.search(r"week ?days?|work ?days?|monday to friday", s):
         return "weekdays"
     if re.search(r"daily|every ?day|each day|every morning|every evening|every night", s):
         return "daily"

@@ -675,11 +675,12 @@ class Aria:
                     break
             else:
                 if repeated or not reply.strip():
-                    reply = random.choice(["Hm, I feel like I'm going in circles. What's up?",
-                                           "Okay, I'll stop repeating myself. Talk to me, what's going on?",
-                                           "Ouch. Alright, what did I do?" if re.search(r"\b(hate|stupid|useless|boring|dumb)\b",
-                                                                                       user_input, re.I)
-                                           else "Sorry, lost my thread there. What did you mean?"])
+                    if re.search(r"\b(hate|stupid|useless|boring|dumb|annoying)\b", user_input, re.I):
+                        reply = "Ouch. Alright, what did I do?"
+                    else:
+                        reply = random.choice(["Hm, I feel like I'm going in circles. What's up?",
+                                               "Okay, I'll stop repeating myself. Talk to me, what's going on?",
+                                               "Sorry, lost my thread there. What did you mean?"])
         if not reply.strip():
             # the model sometimes returns nothing (e.g. asked for something it has no tool for)
             reply = (used[-1][1] if used else "Sorry, I can't do that one.")[:300]

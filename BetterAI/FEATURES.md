@@ -301,6 +301,14 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
 
 ---
 
+## Tests — `tests/`
+
+- About 100 tests, run in about 7 seconds: `.venv/bin/python -m pytest` (install once with `pip install -r requirements-dev.txt`).
+- They cover reminders and repeats, follow-up timing, the memory note sync, lists and the calendar, the weekly review,
+  the reply filters (stock lines, repeats, "what?"), conversation-starter rules, app matching, file search and web search parsing.
+- No model, camera, microphone or network needed. They only use temporary databases: opening the real
+  `aria_memory.db` or MyNotion's database fails the test, and app or MyNotion launches are recorded instead of run.
+
 ## Safety
 
 - Aria can only run actions that are written in code. The model never gets a shell.
