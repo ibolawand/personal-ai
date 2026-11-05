@@ -119,6 +119,9 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
     "Minotian" and "Lina" as "Lena"; both come out right now
   - when she isn't sure what she heard, she asks "Sorry, did you say: …?". "Yes" acts on it, "no" makes her ask
     you to repeat it, anything else is taken as new input. "Go to sleep" is never questioned.
+- **Pronunciation fixes** (`PRONOUNCE` in `voice_engine.py`, checked with Kokoro's phonemes): "C#" is "C sharp"
+  (the hash used to be dropped), "MyNotion" is "My Notion" (was "mi-NO-tion"), "VS Code" is "V S Code" (was "viz code"),
+  units are said in full ("42 kilometers", "3 degrees Celsius", "1 hour 20 minutes", "12 euros"), "e.g." is "for example".
 - **Tone per sentence:** comforting sentences ("Aw, that sounds rough") come a bit slower and softer with a longer
   pause; playful ones ("Haha, rude!") a bit quicker and brighter. Your mood still sets her overall pace.
 - **Talks while thinking:** replies are streamed. Aria starts speaking the first sentence after about 0.6 s,

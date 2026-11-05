@@ -181,7 +181,24 @@ def _say_date(m: re.Match) -> str:
     return f"{MONTHS[int(m.group(2)) - 1]} {int(m.group(3))}"
 
 
+# Things Kokoro says wrong (checked via its phonemes): "C#" lost its "#", "MyNotion" was "mi-NO-tion",
+# "VS Code" was "viz code", "km" was "K M", "e.g." was "ee-gee".
+PRONOUNCE = [
+    (r"\bC#", "C sharp"), (r"\bF#", "F sharp"), (r"\bMyNotion\b", "My Notion"), (r"\bVS ?Code\b", "V S Code"),
+    (r"\be\.g\.", "for example"), (r"\bi\.e\.", "that is"), (r"\bvs\.?(?=\s)", "versus"),
+    (r"(\d)\s?°C\b", r"\1 degrees Celsius"), (r"(\d)\s?°F\b", r"\1 degrees Fahrenheit"), (r"(\d)\s?°", r"\1 degrees"),
+    (r"(\d)\s?km/h\b", r"\1 kilometers per hour"), (r"(\d)\s?km\b", r"\1 kilometers"),
+    (r"(\d)\s?kg\b", r"\1 kilos"), (r"(\d)\s?cm\b", r"\1 centimeters"), (r"(\d)\s?ml\b", r"\1 milliliters"),
+    (r"(\d)\s?GB\b", r"\1 gigabytes"), (r"(\d)\s?MB\b", r"\1 megabytes"),
+    (r"\b1\s?h\b", "1 hour"), (r"\b1\s?min\b", "1 minute"),
+    (r"(\d)\s?h\b", r"\1 hours"), (r"(\d)\s?min\b", r"\1 minutes"),
+    (r"€\s?(\d+(?:[.,]\d+)?)", r"\1 euros"), (r"(\d+(?:[.,]\d+)?)\s?€", r"\1 euros"),
+]
+
+
 def normalize_for_tts(text: str) -> str:
+    for pattern, spoken in PRONOUNCE:
+        text = re.sub(pattern, spoken, text)
     text = TIME_AMPM_RE.sub(_say_time_ampm, text)
     text = TIME24_RE.sub(_say_time24, text)
     text = DATE_ISO_RE.sub(_say_date, text)

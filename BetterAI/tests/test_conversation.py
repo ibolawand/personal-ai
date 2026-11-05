@@ -334,3 +334,13 @@ def test_weekly_review_ends_with_a_recap(aria, notion, memory):
     reply, _ = aria.handle_turn("done", check_state=False)
     assert reply == ("Ticked off one thing. That's all of them. This week you put in 1 h 20 min of focus in 2 blocks, "
                      "mostly c# (50 min), databases (30 min) — nice. Coming up: tomorrow 15:00 Dentist.")
+
+
+@pytest.mark.parametrize("text,spoken", [
+    ("I study C# and SQL.", "I study C sharp and SQL."), ("It's in MyNotion.", "It's in My Notion."),
+    ("Open VS Code.", "Open V S Code."), ("It's 3°C, 42 km away.", "It's 3 degrees Celsius, 42 kilometers away."),
+    ("e.g. eggs", "for example eggs"), ("That's 12,50 €.", "That's 12,50 euros."), ("1 h 20 min", "1 hour 20 minutes"), ("2 h", "2 hours"),
+])
+def test_pronunciation(text, spoken):
+    from Engines.voice_engine import normalize_for_tts
+    assert normalize_for_tts(text) == spoken
