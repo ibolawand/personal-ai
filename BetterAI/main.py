@@ -28,6 +28,7 @@ from Engines.FocusMode import FocusMode
 from Engines.Activity import Activity
 from Engines.Followups import Followups
 from Engines.Weather import Weather
+from Engines.Undo import Undo
 from Engines.Initiative import Initiative, NOT_NOW_RE
 from Engines.Reminders import Reminders
 from Engines.ScreenEngine import ScreenEngine
@@ -386,6 +387,7 @@ class Aria:
         self.memory_note.llm = self.llm
         self.followups = Followups(self.memory, self.notion)
         self.weather = Weather()
+        self.undo = Undo(self.notion, self.reminders)
         self.activity = Activity(menu=self.laptop.menu)
         self.focus.activity = self.activity
         self.focus.on_nudge = self._announce
@@ -406,6 +408,7 @@ class Aria:
             memory_note=self.memory_note,
             activity=self.activity,
             weather=self.weather,
+            undo=self.undo,
         )
         print(f"[Tools] {len(self.tools.schemas)} tools available")
 
@@ -607,7 +610,11 @@ class Aria:
         self.ui.set_state("thinking")
 
         # A yes/no answer to a pending risky action is handled in code, never by the LLM
-        confirmed = self.confirm.resolve(user_input)
+        if self.confirm.pending and getattr(self, "undo", None):
+            # a confirmed action (delete an event, clear a list…) can be undone too
+            confirmed = self.undo.around(lambda r: str(r), lambda: self.confirm.resolve(user_input))
+        else:
+            confirmed = self.confirm.resolve(user_input)
         if confirmed is not None:
             self._save_turn(user_input, confirmed)
             self._recent.append([{"role": "user", "content": user_input},

@@ -284,6 +284,10 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
 - **Open things in MyNotion:** "open my calendar", "show me my shopping list", "open the birthdays note", "open MyNotion".
   Aria starts MyNotion or brings it to the front on that page. "What's on my shopping list?" reads it aloud instead.
   "Open/show <calendar or an existing note>" is handled in code, so it's instant and reliable; anything else ("open vs code") goes to the model as usual.
+- **Undo** (`Engines/Undo.py`): "undo that" / "that was wrong" takes back her last change to notes, lists, events or
+  reminders, including confirmed ones like a deleted event or a cleared list (it comes back with the same id).
+  Works for 15 minutes after the change. If you edited the same note in MyNotion since then, undo puts back the
+  version from before Aria's change.
 - Note, list and calendar reading tools are protected by the optional `ARIA_OWNER` face lock.
 
 ## MyNotion app (`../MyNotion`)

@@ -44,7 +44,7 @@ def _tool(tool_name, description, handler, optional=(), **params):
 class ToolEngine:
     def __init__(self, spotify=None, arduino=None, vision=None, ha=None,
                  reminders=None, focus=None, screen=None, laptop=None, files=None, notion=None,
-                 owner_check=None, initiative=None, memory_note=None, activity=None, weather=None):
+                 owner_check=None, initiative=None, memory_note=None, activity=None, weather=None, undo=None):
         self.spotify = spotify
         self.arduino = arduino
         self.vision = vision
@@ -60,6 +60,7 @@ class ToolEngine:
         self.memory_note = memory_note
         self.activity = activity
         self.weather = weather
+        self.undo = undo
         self._registry = {t["schema"]["function"]["name"]: t for t in self._build()}
 
     # Tools that touch the laptop, files, clipboard/screen or phone — gated by owner_check
@@ -71,6 +72,10 @@ class ToolEngine:
         "read_note", "search_notes", "list_notes", "get_events", "move_event", "delete_event",
         "clear_list", "daily_briefing", "what_you_know_about_me", "forget_about_me",
     }
+
+    # Changes "undo that" can take back (Engines/Undo.py)
+    UNDOABLE = {"add_note", "save_as_note", "add_to_list", "remove_from_list", "check_off", "add_event",
+                "set_reminder", "set_timer"}
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -85,7 +90,10 @@ class ToolEngine:
         if name in self.PROTECTED and not self.owner_check():
             return "Refused: only Lala can use that, and I don't recognise who's at the desk."
         try:
-            result = tool["handler"](**(args or {}))
+            if self.undo and name in self.UNDOABLE:
+                result = self.undo.around(lambda r: str(r), lambda: tool["handler"](**(args or {})))
+            else:
+                result = tool["handler"](**(args or {}))
             return str(result) if result is not None else "Done."
         except Exception as e:
             print(f"[Tools] {name} failed: {e}")
@@ -364,6 +372,10 @@ class ToolEngine:
                       "'forget everything about me').", mn.forget,
                       what=("string", "what to forget, in a few words, or 'everything'")),
             ]
+
+        if self.undo:
+            tools.append(_tool("undo_last", "Undo Aria's last change to notes, lists, the calendar or reminders "
+                               "('undo that', 'that was wrong, take it back').", self.undo.undo))
 
         if self.weather:
             tools += [
