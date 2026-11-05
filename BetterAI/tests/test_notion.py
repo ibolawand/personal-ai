@@ -83,3 +83,19 @@ def test_parse_time(text, hours):
 def test_card_items_marks_plain_bullets():
     html = "<ul><li><p>plain</p></li></ul>" + '<ul data-type="taskList">' + task_item("done", True) + "</ul>"
     assert card_items(html) == [{"text": "plain", "checked": None}, {"text": "done", "checked": True}]
+
+
+def test_overlapping_events_are_flagged(notion):
+    day = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+    notion.add_event("Meeting", day, "15:00", 1)
+    assert "Heads up: that overlaps with Meeting at 15:00." in notion.add_event("Dentist", day, "15:30", 1)
+    assert "Heads up" not in notion.add_event("Gym", day, "16:30", 1)          # Dentist ends 16:30
+    assert "Heads up" not in notion.add_event("Birthday", day)                 # all day never clashes
+
+
+def test_moving_into_a_clash_is_flagged(notion):
+    day = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+    notion.add_event("Meeting", day, "15:00", 1)
+    notion.add_event("Dentist", day, "10:00", 1)
+    notion.move_event("dentist", new_time="15:15")
+    assert "overlaps with Meeting" in notion.confirm.resolve("yes")

@@ -670,6 +670,7 @@ class NotionEngine:
         rep = _repeat_value(repeat)
         if repeat and rep is None and str(repeat).strip().lower() not in ("none", "no", "once", "never"):
             return f"I can repeat events daily, weekly, monthly or yearly — not '{repeat}'."
+        clash = self._conflicts(day, start, duration)
         with self._conn() as c:
             c.execute("INSERT INTO EVENTS (date, startHour, duration, title, color, allDay, userID, repeat) "
                       "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -681,7 +682,21 @@ class NotionEngine:
         if all_day:
             return f"Added '{title}' {when} as an all-day event."
         note = " MyNotion's week view only shows 08:00–23:00." if start < 8 else ""
-        return f"Added '{title}' {when} at {fmt_hour(start)} for {duration:g} h. I'll remind you {EVENT_REMINDER_MIN} minutes before.{note}"
+        return (f"Added '{title}' {when} at {fmt_hour(start)} for {duration:g} h. "
+                f"I'll remind you {EVENT_REMINDER_MIN} minutes before.{note}{clash}")
+
+    def _conflicts(self, day: dt.date, start, duration, exclude_id=None) -> str:
+        """' Heads up: that overlaps with …' for timed events on that day that overlap [start, start+duration)."""
+        if start is None:
+            return ""
+        end = start + (duration or 1)
+        clash = [e for e in self._events_between(day, day)
+                 if e["id"] != exclude_id and not e["allDay"] and e["startHour"] is not None
+                 and e["startHour"] < end and start < e["startHour"] + (e["duration"] or 1)]
+        if not clash:
+            return ""
+        names = " and ".join(f"{e['title']} at {fmt_hour(e['startHour'])}" for e in clash[:2])
+        return f" Heads up: that overlaps with {names}."
 
     def _find_event(self, title: str, date: str = ""):
         today = dt.date.today()
@@ -711,7 +726,8 @@ class NotionEngine:
                 c.execute("UPDATE EVENTS SET date = ?, startHour = ?, allDay = ?, duration = ? WHERE id = ?",
                           (day.isoformat(), start, 1 if all_day else 0,
                            None if all_day else (e["duration"] or 1), e["id"]))
-            return f"Moved '{e['title']}' to {fmt_day(day)}" + ("" if all_day else f" at {fmt_hour(start)}") + "."
+            return (f"Moved '{e['title']}' to {fmt_day(day)}" + ("" if all_day else f" at {fmt_hour(start)}") + "."
+                    + self._conflicts(day, start, e["duration"] or 1, exclude_id=e["id"]))
         target = fmt_day(day) + ("" if all_day else f" at {fmt_hour(start)}")
         return self.confirm.request(f"move '{old}' to {target}", do) if self.confirm else do()
 
