@@ -84,6 +84,11 @@ class AriaMemory:
                 );
             """)
 
+        with self._connect() as conn:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(reminders)")]
+            if "repeat" not in cols:   # daily | weekdays | weekly | monthly | mon,thu  (NULL = once)
+                conn.execute("ALTER TABLE reminders ADD COLUMN repeat TEXT DEFAULT NULL")
+
     def _connect(self):
         return sqlite3.connect(DB_FILE, check_same_thread=False)
 
@@ -250,18 +255,18 @@ class AriaMemory:
         return row[0] if row else 0
 
     # ── Reminders / timers ────────────────────────────────────
-    _REM_COLS = "id, text, kind, due, created"
+    _REM_COLS = "id, text, kind, due, created, repeat"
 
     @staticmethod
     def _rem_row(r):
-        return {"id": r[0], "text": r[1], "kind": r[2], "due": r[3], "created": r[4]}
+        return {"id": r[0], "text": r[1], "kind": r[2], "due": r[3], "created": r[4], "repeat": r[5]}
 
-    def add_reminder(self, text: str, kind: str, due: float) -> int:
+    def add_reminder(self, text: str, kind: str, due: float, repeat: str = None) -> int:
         with self._lock:
             with self._connect() as conn:
                 cur = conn.execute(
-                    "INSERT INTO reminders (text, kind, due, created) VALUES (?, ?, ?, ?)",
-                    (text, kind, due, time.time()),
+                    "INSERT INTO reminders (text, kind, due, created, repeat) VALUES (?, ?, ?, ?, ?)",
+                    (text, kind, due, time.time(), repeat),
                 )
                 return cur.lastrowid
 

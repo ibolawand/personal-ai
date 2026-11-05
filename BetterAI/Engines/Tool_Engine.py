@@ -44,7 +44,7 @@ def _tool(tool_name, description, handler, optional=(), **params):
 class ToolEngine:
     def __init__(self, spotify=None, arduino=None, vision=None, ha=None,
                  reminders=None, focus=None, screen=None, laptop=None, files=None, notion=None,
-                 owner_check=None):
+                 owner_check=None, initiative=None, memory_note=None):
         self.spotify = spotify
         self.arduino = arduino
         self.vision = vision
@@ -56,6 +56,8 @@ class ToolEngine:
         self.files = files
         self.notion = notion
         self.owner_check = owner_check or (lambda: True)
+        self.initiative = initiative
+        self.memory_note = memory_note
         self._registry = {t["schema"]["function"]["name"]: t for t in self._build()}
 
     # Tools that touch the laptop, files, clipboard/screen or phone — gated by owner_check
@@ -64,7 +66,7 @@ class ToolEngine:
         "tidy_downloads", "undo_tidy_downloads", "look_at_screen", "read_clipboard", "copy_to_clipboard",
         "check_phone_location", "check_phone_battery", "notify_phone",
         "read_note", "search_notes", "list_notes", "get_events", "move_event", "delete_event",
-        "clear_list", "daily_briefing",
+        "clear_list", "daily_briefing", "what_you_know_about_me", "forget_about_me",
     }
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -90,8 +92,9 @@ class ToolEngine:
 
     def _build(self) -> list:
         tools = [
-            _tool("web_search", "Search the web for facts you don't know.",
-                  self.web_search, query=("string", "search query")),
+            _tool("web_search", "Look things up: facts, people, places, how things work, and (when available) "
+                  "news, prices and anything recent. Use it instead of guessing.",
+                  self.web_search, query=("string", "a short search query, e.g. '2022 world cup final result'")),
         ]
 
         if self.reminders:
@@ -102,12 +105,15 @@ class ToolEngine:
                       minutes=("number", "length in minutes; use decimals for seconds, e.g. 0.5"),
                       label=("string", "short name, e.g. 'tea'")),
                 _tool("set_reminder",
-                      "Remind the user about something later. Give EITHER in_minutes OR at_time. "
+                      "Remind the user about something later. Give EITHER in_minutes OR at_time (plus day for another day). "
                       "Use this for 'remind me in/at ...' — not notify_phone.",
-                      rm.set_reminder, optional=("in_minutes", "at_time"),
+                      rm.set_reminder, optional=("in_minutes", "at_time", "day", "repeat"),
                       text=("string", "what to remind about, phrased as an action, e.g. 'call mom'"),
                       in_minutes=("number", "minutes from now"),
-                      at_time=("string", "24h clock time HH:MM, e.g. '14:30'")),
+                      at_time=("string", "24h clock time HH:MM, e.g. '14:30'"),
+                      day=("string", "only for another day: 'tomorrow', 'monday', '12.11.' (with at_time, or 09:00)"),
+                      repeat=("string", "only for repeating reminders: 'daily', 'weekdays', 'weekly', 'monthly', "
+                                        "or weekdays like 'monday and thursday'")),
                 _tool("list_reminders", "List pending timers and reminders.", rm.list_reminders),
                 _tool("cancel_reminder", "Cancel a timer or reminder.", rm.cancel_reminder,
                       which=("string", "'last', 'all', or words from its text, e.g. 'tea'")),
@@ -328,27 +334,41 @@ class ToolEngine:
                       level=("integer", "0-100")),
             ]
 
+        if self.memory_note:
+            mn = self.memory_note
+            tools += [
+                _tool("what_you_know_about_me", "What Aria has saved about Lala (facts from past conversations). "
+                      "For 'what do you know about me?' / 'what do you remember about me?'.", mn.what_you_know),
+                _tool("remember_about_me", "Save a lasting fact about Lala when they ask you to remember it "
+                      "('remember that I'm vegetarian'). Not for reminders at a time (set_reminder) or notes (add_note).",
+                      mn.remember, fact=("string", "the fact, short, e.g. 'Is vegetarian'")),
+                _tool("forget_about_me", "Forget something saved about Lala ('forget that I study C#', "
+                      "'forget everything about me').", mn.forget,
+                      what=("string", "what to forget, in a few words, or 'everything'")),
+            ]
+
+        if self.initiative:
+            tools.append(_tool(
+                "conversation_starters",
+                "Turn on/off Aria starting conversations by herself (check-ins after events, the weekly review, "
+                "casual chats). E.g. 'stop starting conversations' -> false, 'you can talk to me on your own again' -> true.",
+                self._conversation_starters, enabled=("boolean", "true to allow, false to stop")))
+
         return tools
+
+    def _conversation_starters(self, enabled=True):
+        on = str(enabled).lower() not in ("false", "0", "no", "off")
+        self.initiative.set_enabled(on)
+        return ("Okay, I'll start a conversation now and then again." if on
+                else "Okay, I won't start conversations on my own anymore.")
 
     # ── Handlers ──────────────────────────────────────────────────────────────
 
     def web_search(self, query: str):
-        try:
-            response = requests.get(
-                "https://api.duckduckgo.com/",
-                params={"q": query, "format": "json", "no_html": 1},
-                timeout=5,
-            )
-            data = response.json()
-            answer = data.get("AbstractText") or data.get("Answer")
-            if answer:
-                return answer
-            topics = data.get("RelatedTopics", [])
-            if topics and "Text" in topics[0]:
-                return topics[0]["Text"]
-            return "I couldn't find a clear answer for that."
-        except Exception as e:
-            return f"Search failed: {e}"
+        if not hasattr(self, "_web"):
+            from Engines.WebSearch import WebSearch
+            self._web = WebSearch()
+        return self._web.search(query)
 
     def _notify_phone(self, message: str):
         return "Sent to your phone." if self.ha.notify_phone(message) else "Couldn't reach your phone."

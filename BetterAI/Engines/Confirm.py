@@ -17,9 +17,18 @@ EXPIRE_SECONDS = 90
 class Confirmer:
     def __init__(self):
         self.pending = None  # (description, fn, timestamp)
+        self.on_change = None  # set by Aria: called with the question, or None once it's answered/dropped
+
+    def _notify(self, description):
+        if self.on_change:
+            try:
+                self.on_change(description)
+            except Exception as e:
+                print(f"[Confirm] card failed: {e}")
 
     def request(self, description: str, fn) -> str:
         self.pending = (description, fn, time.time())
+        self._notify(description)
         return (f"NEEDS CONFIRMATION: {description}. Ask Lala to confirm with yes or no. "
                 f"It has NOT been done yet — do not say it's done.")
 
@@ -29,6 +38,7 @@ class Confirmer:
         if not self.pending:
             return None
         description, fn, ts = self.pending
+        self._notify(None)
         if time.time() - ts > EXPIRE_SECONDS:
             self.pending = None
             return None

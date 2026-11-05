@@ -27,12 +27,13 @@ class LLMEngine:
             if tok:
                 yield tok
 
-    def chat(self, user_input, history, system_prompt: str, stream=False):
+    def chat(self, user_input, history, system_prompt: str, stream=False, temperature=None):
         messages = self._messages(user_input, history, system_prompt)
+        options = dict(self.options, **({"temperature": temperature} if temperature is not None else {}))
         try:
             if stream:
-                return ollama.chat(model=self.model, messages=messages, stream=True, think=self.think, options=self.options)
-            response = ollama.chat(model=self.model, messages=messages, think=self.think, options=self.options)
+                return ollama.chat(model=self.model, messages=messages, stream=True, think=self.think, options=options)
+            response = ollama.chat(model=self.model, messages=messages, think=self.think, options=options)
             return response["message"]["content"].strip()
         except Exception as e:
             return f"Error: {e}"
@@ -97,22 +98,33 @@ class LLMEngine:
                 calls.extend(m.tool_calls)
         return SimpleNamespace(content="".join(content), tool_calls=calls or None)
 
-    def extract_facts(self, conversation: list) -> tuple[list, list]:
+    def extract_facts(self, conversation: list, known=(), think=True) -> tuple[list, list]:
         """After a conversation, pull out (facts, topics) worth remembering about the user."""
         if not conversation:
             return [], []
         convo_text = "\n".join(f"{m['role']}: {m['content']}" for m in conversation)
-        prompt = f"""Extract personal facts about the user from this conversation that are worth remembering long-term.
-Things like: their name, job, hobbies, preferences, how they're feeling about life, habits.
-Ignore small talk, requests to play music, and device commands.
+        known_text = "\n".join(f"- {f}" for f in known) or "(nothing yet)"
+        prompt = f"""From this conversation, extract NEW lasting facts about the user that will still be true and useful in a month:
+name, people in their life, hobbies, likes and dislikes, school or work, plans, routines, important dates.
+
+Do NOT save:
+- requests or commands they gave (play a song, set a timer, add to a list, check the calendar)
+- how they feel right now (tired, bored, sleepy) — only lasting things
+- what's in their calendar, notes, files or on the screen (Aria can look those up)
+- anything the assistant said or did, guesses, or anything unclear or possibly misheard
+- facts already known (below), even if worded differently
+
+Already known:
+{known_text}
 
 Conversation:
 {convo_text}
 
-Reply ONLY with JSON: {{"facts": ["short fact", ...], "topics": ["one or two word topic", ...]}}
-Use empty lists if there's nothing worth remembering."""
+Write each fact short, without "User", e.g. "Plays guitar", "Friend Sara likes climbing", "Prefers calm music to fall asleep".
+Reply ONLY with JSON: {{"facts": ["...", ...], "topics": ["one or two word topic", ...]}}
+Most conversations have no new facts: then use an empty list."""
         try:
-            response = ollama.chat(model=self.model, think=False, format="json",
+            response = ollama.chat(model=self.model, think=think, format="json",
                                    messages=[{"role": "user", "content": prompt}])
             data = json.loads(response["message"]["content"])
             facts = [f.strip() for f in data.get("facts", []) if isinstance(f, str) and f.strip()]

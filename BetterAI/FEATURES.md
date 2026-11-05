@@ -19,14 +19,14 @@ Keep this file updated whenever a feature is added or changed.
 - **Start on login** (8 seconds after you log in)
 - **Ctrl+Alt+Space from any app:** opens the text box, or hides it if it's open. If Aria isn't running, it starts her.
 
-`./aria.sh --quit` stops Aria. `./install_desktop.sh --remove` undoes the setup. Logs go to `~/.cache/aria/aria.log`.
+`./aria.sh --quit` stops Aria. `./aria.sh --chat`, `--review` or `--event` makes her start that kind of conversation right now, to try it out. `./install_desktop.sh --remove` undoes the setup. Logs go to `~/.cache/aria/aria.log`.
 To launch in voice mode, put `ARIA_ARGS=--voice` in `Engines/.env`. For another hotkey, run `ARIA_HOTKEY='<Super>j' ./install_desktop.sh`.
 
 Only one Aria runs at a time (`ui/instance.py`): launching her again just opens the text box of the running one.
 That way two copies never fight over the camera and mic.
 
 Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWNER`, `FILE_ROOTS`,
-`CAMERA_INDEX`, `VISION_MODEL`, `LLM_NUM_CTX`.
+`CAMERA_INDEX`, `VISION_MODEL`, `LLM_NUM_CTX`, and the conversation settings below (`ARIA_INITIATIVE`, `ARIA_QUIET`, …).
 
 ---
 
@@ -35,7 +35,15 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 - **Model:** Ollama `qwen3:8b` with native tool calling (`llm_engine.py`), thinking off for speed, 8192-token context.
 - **Tool-call memory:** the real tool calls and results of the last 6 turns stay in the conversation, so Aria
   keeps using tools instead of making up answers. Tested: tool use went from 4/8 to 12/12.
-- **Long-term memory:** facts and topics are pulled out of conversations and saved in SQLite (`database.py`).
+- **Long-term memory:** after a conversation, lasting facts about you are saved in SQLite (`database.py`).
+  The model "thinks" first, which runs in the background, so it skips commands, passing moods ("I'm tired"),
+  calendar contents and facts it already knows.
+- **You can see and fix what Aria remembers** (`Engines/MemoryNote.py`):
+  - The MyNotion note **"What Aria knows about me"** lists every fact, one per line. Delete or change a line and she
+    forgets it or uses your version; add a line and she knows it. Synced every minute in both directions.
+    If both sides changed at once, your edits win and her new facts are added on top.
+  - "What do you know about me?" (also shows them as a card), "forget that I'm bored", "remember that I'm vegetarian",
+    "forget everything about me" (asks first).
 - **Context:** current date and time (HH:MM), who is at the desk, and saved facts are added to every prompt (`ContextBuilder.py`).
 - **Mood check-ins** (`Engines/UserStateEngine.py`): if you sound stressed or tired, Aria briefly checks in, at most once
   every 5 minutes. The check runs in the background after each reply, so it never slows down answers. Its result is used
@@ -64,8 +72,16 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 - Speech bubbles for you and Aria. Hover over the orb to see the last few messages and a status caption.
 - Text input: click the orb, type, press Enter. Esc hides it.
 - Drag the orb to move it; its position is remembered.
-- Right-click menu: type a message, go to sleep, mute voice, clear bubbles, quit.
+- Right-click menu: type a message, go to sleep, mute voice, let Aria start conversations (on/off), clear bubbles, quit.
 - Countdown ring around the orb while a timer or focus session runs.
+- **Cards** above the orb, so you can see and click instead of only listening:
+  - **Lists** ("what's on my shopping list?", "add eggs…", "I bought the eggs"): the list with checkboxes.
+    Ticking one updates MyNotion right away. The card also says how many are left; "Open" shows the list in MyNotion.
+  - **Calendar** ("what do I have this week?", and the morning briefing): a mini agenda grouped by day,
+    repeating events marked ↻. Click an event or "Open calendar" to open MyNotion's calendar.
+  - **Yes/no questions** (clear a list, move or delete an event, close an app…): **Yes** / **No** buttons.
+    Typing or saying yes/no still works; the card disappears once it's answered.
+  - A card fades out after 45 seconds (yes/no after 90), but stays while the mouse is over it. ✕ closes it.
 
 ---
 
@@ -94,9 +110,39 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 ## Timers & reminders — `Engines/Reminders.py`
 
 - "Set a timer for 10 minutes", "remind me to call mum at 18:30", "remind me in 20 minutes to stretch"
+- Other days too: "remind me on Monday at 10 to book the train", "remind me tomorrow to water the plants" (09:00 if no time is given)
+- **Repeating:** "remind me every day at 8 to take my vitamins", "every weekday at 9:30", "every Monday and Thursday at 7pm",
+  "every month on the 1st to pay rent". When one goes off, the next is scheduled straight away. Cancelling stops the series.
+  A monthly reminder on the 31st goes off on the last day of shorter months.
 - "What reminders do I have?", "cancel the pasta timer", "snooze that for 5 minutes"
 - Saved in SQLite, so they survive a restart. When one is due: the orb flashes, the LEDs animate, Aria speaks it,
   and your phone gets a notification if you're not at the desk.
+
+## Aria starts conversations — `Engines/Initiative.py`
+
+While she's asleep, Aria sometimes speaks up first:
+- **After an event:** shortly after a calendar event ends, "How did the dentist go?". If you tell her something
+  worth keeping ("come back in 3 weeks"), it goes into a "Dentist notes" note. Repeating events (gym, classes) are skipped.
+- **Weekly review**, Sunday from 18:00: she goes through your open to-dos one at a time. Answer "done" (ticks it off),
+  "keep", "drop it" (removes it), "remind me Monday at 10" or "later" (a reminder), or "stop". These answers are
+  handled in code, so a tick-off really happens. At the end she mentions what's coming up.
+- **Morning:** after the daily briefing she asks what you want to get done today. What you name goes on your to-do list.
+- **Casual chats:** now and then a normal conversation, not about tasks: something she knows about you, your day,
+  the day of the week, or a fun question. She picks a different topic each time.
+  During these chats she only uses tools when you clearly ask ("can you…", "remind me…", "look at my screen"),
+  so she won't look at your screen or save small talk into notes on her own.
+
+**When she won't:** if nobody is at the desk (camera, or no keyboard/mouse use for 5 minutes when there's no camera),
+in the first 10 minutes after you sit down, within 20 minutes of you talking to her, during quiet hours, in a focus
+session, while muted, when the screen is locked, when something is fullscreen (films, games), or when another app is
+using the microphone (calls). There's at least half an hour between two openers.
+
+**Backing off:** "not now", "later" or "I'm busy" snoozes her for 3 hours. A short "ok" or "fine" to a casual chat,
+or no answer at all, means she waits twice as long before the next one. Turn it off with the right-click menu or
+"stop starting conversations".
+
+Settings in `Engines/.env`: `ARIA_INITIATIVE=0` (off), `ARIA_QUIET=22:30-08:30`, `ARIA_CHAT_EVERY_MIN=90`,
+`ARIA_CHATS_PER_DAY=3`, `ARIA_REVIEW_DAY=6` (0 = Monday), `ARIA_REVIEW_HOUR=18`. Her bookkeeping lives in `~/.cache/aria/initiative.json`.
 
 ## Focus mode — `Engines/FocusMode.py`
 
@@ -196,7 +242,12 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
 - **Home Assistant** (`Controller/homeController.py`):
   - phone: notify, battery level, location, Do Not Disturb
   - TV: on/off and volume
-- **Web search** for live information.
+- **Web search** (`Engines/WebSearch.py`), using only official APIs:
+  - **Wikipedia** (no key needed): facts, people, places, how things work. Aria answers in a sentence or two and says where it's from.
+  - **DuckDuckGo instant answers** (no key needed).
+  - **Brave Search** for news, prices and anything recent: put a free key from https://brave.com/search/api/ in
+    `Engines/.env` as `BRAVE_API_KEY=...`. Aria then also reads the top result's page. Without the key, she says
+    when the sources don't cover something recent instead of guessing.
 
 ---
 

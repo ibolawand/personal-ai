@@ -77,6 +77,20 @@ def list_items(content: str) -> list:
     return [li_text(m) for m in re.findall(r"<li[^>]*>.*?</li>", content or "", flags=re.S | re.I)]
 
 
+def card_items(content: str) -> list:
+    """[{"text", "checked"}] for the overlay card; checked is None for plain bullets (no checkbox)."""
+    out = []
+    for li in re.findall(r"<li[^>]*>.*?</li>", content or "", flags=re.S | re.I):
+        tag = li[:li.find(">") + 1].lower()
+        checked = None
+        if 'data-type="taskitem"' in tag:
+            checked = 'data-checked="true"' in tag
+        text = li_text(li)
+        if text:
+            out.append({"text": text, "checked": checked})
+    return out
+
+
 def split_items(items) -> list:
     """'eggs, oat milk and bread' / ['eggs', 'milk'] -> ['eggs', 'oat milk', 'bread']"""
     if isinstance(items, (list, tuple)):
@@ -232,6 +246,7 @@ class NotionEngine:
         self.confirm = confirm
         self.user_id = int(user_id or os.environ.get("NOTION_USER_ID") or 0) or self._find_user()
         self.last_reply = lambda: ""        # set by Aria: her previous answer, for "save that as a note"
+        self.on_card = None                 # set by Aria: shows a list/agenda card next to the orb
         self._ensure_repeat_column()
 
     @contextmanager
@@ -308,6 +323,8 @@ class NotionEngine:
         n = self._find_note(title)
         if not n:
             return f"I couldn't find a note called '{title}'. " + self._titles_hint()
+        if self._is_list(n):
+            self.show_list_card(n)
         body = html_to_text(n["content"]) or "(empty)"
         if len(body) > MAX_READ_CHARS:
             body = body[:MAX_READ_CHARS] + "\n…[truncated]"
@@ -346,6 +363,60 @@ class NotionEngine:
     def _titles_hint(self):
         titles = [n["title"] for n in self._notes()[:8]]
         return ("Your notes: " + ", ".join(titles) + ".") if titles else ""
+
+    # ── cards for the overlay ──
+
+    def _card(self, card):
+        if self.on_card:
+            try:
+                self.on_card(card)
+            except Exception as e:
+                print(f"[MyNotion] card failed: {e}")
+
+    def _note_by_id(self, note_id: int):
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+        return dict(row) if row else None
+
+    def show_list_card(self, note):
+        if note:
+            self._card({"type": "list", "note_id": note["id"], "title": note["title"],
+                        "items": card_items(note["content"])})
+
+    def set_item_checked(self, note_id: int, text: str, checked: bool) -> bool:
+        """Tick/untick one item from the overlay card (exact item text, no fuzzy matching)."""
+        n = self._note_by_id(note_id)
+        if not n:
+            return False
+        for li in re.findall(r'<li[^>]*data-type="taskItem"[^>]*>.*?</li>', n["content"] or "", flags=re.S | re.I):
+            if li_text(li) == text:
+                self._set_content(note_id, n["content"].replace(li, task_item(text, checked), 1))
+                return True
+        return False
+
+    def show_agenda_card(self, start: dt.date, end: dt.date, title: str):
+        today = dt.date.today()
+        daily, rest = self._split_daily(self._events_between(start, end))
+        days = []
+        if daily and start != end:
+            days.append({"label": "Every day", "events": [self._card_event(e) for e in daily]})
+            events = rest
+        else:
+            events = daily + rest
+        for e in sorted(events, key=lambda e: (e["date"], -int(bool(e["allDay"])), e["startHour"] or 0)):
+            label = fmt_day(dt.date.fromisoformat(e["date"]), today).capitalize()
+            if not days or days[-1]["label"] != label:
+                days.append({"label": label, "events": []})
+            days[-1]["events"].append(self._card_event(e))
+        self._card({"type": "agenda", "title": title, "days": days})
+
+    @staticmethod
+    def _card_event(e):
+        if e["allDay"] or e["startHour"] is None:
+            when = "all day"
+        else:
+            when = fmt_hour(e["startHour"])
+        return {"time": when, "title": e["title"], "repeat": bool(e.get("repeat"))}
 
     # ── lists ──
 
@@ -390,6 +461,7 @@ class NotionEngine:
             wrapper = f"<ul>{addition}</ul>"
         content = content[:idx] + addition + content[idx:] if idx >= 0 else content + wrapper
         self._set_content(n["id"], content)
+        self.show_list_card({**n, "content": content})
         return f"Added {', '.join(new)} to your {n['title']}."
 
     def remove_from_list(self, list_name: str, items):
@@ -407,6 +479,7 @@ class NotionEngine:
         if not removed:
             return f"None of that is on your {n['title']}."
         self._set_content(n["id"], content)
+        self.show_list_card({**n, "content": content})
         return f"Removed {', '.join(removed)} from your {n['title']}."
 
     def clear_list(self, list_name: str):
@@ -459,17 +532,22 @@ class NotionEngine:
             return f"I couldn't find {', '.join(wanted)} on your checklists."
         for n in {id(n): n for n, _ in changed}.values():
             self._set_content(n["id"], n["content"])
+        self.show_list_card(changed[-1][0])
         names = ", ".join(t for _, t in changed)
         return f"Ticked off {names}." if done else f"Unticked {names}."
 
     def _open_todos(self):
         """Unticked items on to-do/task lists (not the shopping list etc.)."""
+        return [text for _, text in self.open_todo_items()]
+
+    def open_todo_items(self):
+        """[(list title, item text)] for unticked items on to-do/task lists."""
         out = []
         for n in self._notes():
             if not re.search(r"to-?do|task", n["title"], re.I):
                 continue
             for li in re.findall(r'<li[^>]*data-checked="false"[^>]*>.*?</li>', n["content"] or "", flags=re.S | re.I):
-                out.append(li_text(li))
+                out.append((n["title"], li_text(li)))
         return out
 
     # ── calendar ──
@@ -542,6 +620,7 @@ class NotionEngine:
             start = end = day
             label = fmt_day(day, today)
         events = self._events_between(start, end)
+        self.show_agenda_card(start, end, re.sub(r"^in the ", "", label).capitalize())
         if not events:
             return f"Nothing in your calendar {label}."
         single = start == end

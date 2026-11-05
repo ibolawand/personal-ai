@@ -6,6 +6,8 @@ Aria overlay — a frameless, transparent, always-on-top orb with speech bubbles
 
 Orb:   left-click → type a message · drag → move · right-click → menu
        hover → shows recent messages · Esc → hide the text box
+Cards: lists, the calendar and yes/no questions appear as a small card above the orb —
+       tick items, click an event to open the calendar, or answer with the buttons.
 
 Qt owns the main thread; Aria runs in a worker thread and talks to the UI
 through OverlayBridge (signals for state/messages, plain floats for audio levels).
@@ -25,11 +27,13 @@ from PySide6.QtCore import (QObject, QPoint, QPointF, QRect, QRectF, QSettings, 
                             Signal)
 from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPainterPath,
                            QPen, QRadialGradient, QRegion)
-from PySide6.QtWidgets import QApplication, QLineEdit, QMenu, QWidget
+from PySide6.QtWidgets import (QApplication, QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu,
+                               QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
 # ── Look ──────────────────────────────────────────────────────────────────────
 
-WIN_W, WIN_H = 420, 440
+WIN_W, WIN_H = 420, 600
+OLD_WIN_H = 440                # saved positions from before cards existed used this height
 ORB_R = 28                     # base orb radius
 ORB_BOX = 160                  # square around the orb that holds its glow + particles
 MARGIN = 14
@@ -67,6 +71,32 @@ QLineEdit {
     selection-background-color: rgba(185, 120, 255, 160);
 }
 """
+CARD_W = 300
+CARD_MAX_H = 260
+CARD_STAY = {"list": 45, "agenda": 45, "confirm": 90}   # seconds without hovering before a card fades
+CARD_STYLE = """
+QFrame#card { background: rgba(18, 14, 28, 238); border: 1px solid rgba(185, 120, 255, 130); border-radius: 14px; }
+QLabel { color: #f0ecfa; background: transparent; }
+QLabel#title { font-weight: bold; }
+QLabel#day { color: #b99cf0; font-size: 8pt; font-weight: bold; padding-top: 4px; }
+QLabel#muted { color: #9a90b0; }
+QCheckBox { color: #f0ecfa; spacing: 8px; background: transparent; padding: 2px 0; }
+QCheckBox:checked { color: #8f86a6; }
+QCheckBox::indicator { width: 15px; height: 15px; border-radius: 4px; border: 1px solid #8a6cc8; background: #221a33; }
+QCheckBox::indicator:checked { background: #b978ff; border-color: #b978ff; image: none; }
+QPushButton { color: #f0ecfa; background: #2a2140; border: 1px solid #4a3a6c; border-radius: 9px; padding: 4px 12px; }
+QPushButton:hover { background: #3a2d58; }
+QPushButton#yes { background: #6d3fc0; border-color: #8a5be0; }
+QPushButton#yes:hover { background: #7f4fd6; }
+QPushButton#link { background: transparent; border: none; color: #c9a8ff; padding: 2px 4px; }
+QPushButton#link:hover { color: #ffffff; }
+QPushButton#event { background: transparent; border: none; border-radius: 6px; text-align: left; padding: 3px 4px; }
+QPushButton#event:hover { background: #2a2140; }
+QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; border: none; }
+QScrollBar:vertical { width: 6px; background: transparent; }
+QScrollBar::handle:vertical { background: #4a3a6c; border-radius: 3px; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+"""
 MENU_STYLE = """
 QMenu { background: #17121f; color: #eee8f8; border: 1px solid #3a2d52; border-radius: 8px; padding: 4px; }
 QMenu::item { padding: 6px 18px; border-radius: 5px; }
@@ -90,6 +120,7 @@ class OverlayBridge(QObject):
     messageAdded = Signal(str, str)
     _clipRequest = Signal(str, str)
     remoteCommand = Signal(str)   # from ui/instance.py: toggle / show / quit
+    cardRequested = Signal(object)  # a card dict, or {"type": "clear", "kind": ...}
 
     def __init__(self):
         super().__init__()
@@ -148,6 +179,15 @@ class OverlayBridge(QObject):
     def message(self, role, text):
         self.messageAdded.emit(role, text)
 
+    # Cards: {"type": "list", "note_id", "title", "items": [{"text", "checked"}]}
+    #        {"type": "agenda", "title", "days": [{"label", "events": [{"time", "title", "repeat"}]}]}
+    #        {"type": "confirm", "text"}
+    def show_card(self, card):
+        self.cardRequested.emit(card)
+
+    def clear_card(self, kind=None):
+        self.cardRequested.emit({"type": "clear", "kind": kind})
+
     def mic_level(self, volume):
         self.mic = volume
 
@@ -159,6 +199,140 @@ class OverlayBridge(QObject):
 
     def stop_talking(self):
         self.out = 0.0
+
+
+# ── Cards ─────────────────────────────────────────────────────────────────────
+
+class Card(QFrame):
+    """A small interactive panel above the orb. on_action(kind, payload) goes back to the overlay:
+    ("toggle", (note_id, text, checked)) · ("open", what) · ("answer", "yes"|"no") · ("close", None)"""
+
+    def __init__(self, parent, card, on_action):
+        super().__init__(parent)
+        self.setObjectName("card")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(CARD_STYLE)
+        self.setFixedWidth(CARD_W)
+        self.kind = card["type"]
+        self.on_action = on_action
+        self.font_ = QFont("Noto Sans", 10)
+        self.setFont(self.font_)
+
+        box = QVBoxLayout(self)
+        box.setContentsMargins(14, 10, 10, 12)
+        box.setSpacing(4)
+
+        head = QHBoxLayout()
+        title = QLabel({"confirm": "Confirm"}.get(self.kind, card.get("title", "")))
+        title.setObjectName("title")
+        head.addWidget(title, 1)
+        if self.kind == "list":
+            head.addWidget(self._link("Open", lambda: on_action("open", card["title"])))
+        elif self.kind == "agenda":
+            head.addWidget(self._link("Open calendar", lambda: on_action("open", "calendar")))
+        head.addWidget(self._link("✕", lambda: on_action("close", None)))
+        box.addLayout(head)
+
+        body = QWidget()
+        rows = QVBoxLayout(body)
+        rows.setContentsMargins(0, 0, 0, 0)
+        rows.setSpacing(1)
+        getattr(self, f"_build_{self.kind}")(rows, card)
+        rows.addStretch(1)
+
+        body.adjustSize()
+        room = CARD_MAX_H - 50
+        if body.sizeHint().height() > room:
+            scroll = QScrollArea()
+            scroll.setWidget(body)
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            scroll.setFixedHeight(room)
+            box.addWidget(scroll)
+        else:
+            box.addWidget(body)
+        self.adjustSize()
+
+    @staticmethod
+    def _link(text, fn):
+        b = QPushButton(text)
+        b.setObjectName("link")
+        b.setCursor(Qt.PointingHandCursor)
+        b.clicked.connect(fn)
+        return b
+
+    @staticmethod
+    def _muted(text):
+        l = QLabel(text)
+        l.setObjectName("muted")
+        return l
+
+    def _build_list(self, rows, card):
+        items = card.get("items") or []
+        if not items:
+            rows.addWidget(self._muted("Empty."))
+        for it in items:
+            if it.get("checked") is None:
+                l = QLabel("•  " + it["text"])
+                l.setWordWrap(True)
+                rows.addWidget(l)
+                continue
+            cb = QCheckBox(it["text"])
+            cb.setChecked(bool(it["checked"]))
+            cb.setCursor(Qt.PointingHandCursor)
+            self._strike(cb)
+
+            def toggled(state, cb=cb, text=it["text"]):
+                self._strike(cb)
+                self.on_action("toggle", (card["note_id"], text, cb.isChecked()))
+            cb.toggled.connect(toggled)
+            rows.addWidget(cb)
+        left = sum(1 for it in items if it.get("checked") is False)
+        if any(it.get("checked") is not None for it in items):
+            self.left_label = self._muted(f"{left} left" if left else "All done ✓")
+            rows.addWidget(self.left_label)
+
+    def _strike(self, cb):
+        f = cb.font()
+        f.setStrikeOut(cb.isChecked())
+        cb.setFont(f)
+        label = getattr(self, "left_label", None)
+        if label is not None:
+            left = sum(1 for w in self.findChildren(QCheckBox) if not w.isChecked())
+            label.setText(f"{left} left" if left else "All done ✓")
+
+    def _build_agenda(self, rows, card):
+        days = card.get("days") or []
+        if not days:
+            rows.addWidget(self._muted("Nothing planned."))
+        for d in days:
+            day = QLabel(d["label"].upper())
+            day.setObjectName("day")
+            rows.addWidget(day)
+            for e in d["events"]:
+                text = f"{e['time']:>7}   {e['title']}" + ("  ↻" if e.get("repeat") else "")
+                b = QPushButton(text)
+                b.setObjectName("event")
+                b.setCursor(Qt.PointingHandCursor)
+                b.setToolTip("Open the calendar in MyNotion")
+                b.clicked.connect(lambda: self.on_action("open", "calendar"))
+                rows.addWidget(b)
+
+    def _build_confirm(self, rows, card):
+        q = QLabel(card["text"][:1].upper() + card["text"][1:] + "?")
+        q.setWordWrap(True)
+        rows.addWidget(q)
+        buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 8, 0, 0)
+        buttons.addStretch(1)
+        for label, answer in (("No", "no"), ("Yes", "yes")):
+            b = QPushButton(label)
+            b.setCursor(Qt.PointingHandCursor)
+            if answer == "yes":
+                b.setObjectName("yes")
+            b.clicked.connect(lambda _=False, a=answer: self.on_action("answer", a))
+            buttons.addWidget(b)
+        rows.addLayout(buttons)
 
 
 # ── Overlay window ────────────────────────────────────────────────────────────
@@ -190,6 +364,8 @@ class Overlay(QWidget):
         self._prev_flash = 0.0
 
         self.bubbles = []          # [{"role", "text", "expire"}]
+        self.card = None           # the Card widget currently shown (one at a time)
+        self.card_expire = 0.0
         self.hover = False
         self._drag_from = None
         self._dragged = False
@@ -206,6 +382,7 @@ class Overlay(QWidget):
         bridge.stateChanged.connect(self._on_state)
         bridge.messageAdded.connect(self._on_message)
         bridge.remoteCommand.connect(self._on_remote)
+        bridge.cardRequested.connect(self._on_card)
 
         self._restore_position()
 
@@ -231,7 +408,14 @@ class Overlay(QWidget):
         return math.hypot(pos.x() - c.x(), pos.y() - c.y()) <= ORB_R + 14
 
     def _restore_position(self):
-        pos = QSettings("Aria", "overlay").value("pos")
+        # stored as the window's bottom-right corner (where the orb is), so a taller window keeps the orb in place
+        settings = QSettings("Aria", "overlay")
+        corner = settings.value("corner")
+        pos = None
+        if isinstance(corner, QPoint):
+            pos = corner - QPoint(WIN_W, WIN_H)
+        elif isinstance(settings.value("pos"), QPoint):
+            pos = settings.value("pos") + QPoint(0, OLD_WIN_H - WIN_H)
         screen = QApplication.primaryScreen().availableGeometry()
         if isinstance(pos, QPoint) and any(s.availableGeometry().contains(pos + QPoint(WIN_W - 60, WIN_H - 60))
                                            for s in QApplication.screens()):
@@ -240,7 +424,7 @@ class Overlay(QWidget):
             self.move(screen.right() - WIN_W - MARGIN, screen.bottom() - WIN_H - MARGIN)
 
     def _save_position(self):
-        QSettings("Aria", "overlay").setValue("pos", self.pos())
+        QSettings("Aria", "overlay").setValue("corner", self.pos() + QPoint(WIN_W, WIN_H))
 
     # ── Bridge events ──
 
@@ -255,6 +439,11 @@ class Overlay(QWidget):
         """Hotkey / second launch. Bring the orb forward and focus the text box."""
         if cmd == "quit":
             quit_app()
+            return
+        if cmd in ("chat", "review", "event"):
+            aria = self.bridge.aria
+            if aria:
+                threading.Thread(target=aria.initiative.force, args=(cmd,), daemon=True).start()
             return
         if not self.isVisible():
             self.show()
@@ -280,6 +469,48 @@ class Overlay(QWidget):
                     b["expire"] = now + stay
         self.bubbles.append({"role": role, "text": text, "expire": now + stay})
         self.bubbles = self.bubbles[-20:]
+
+    # ── Cards ──
+
+    def _on_card(self, card):
+        if card.get("type") == "clear":
+            if self.card and (card.get("kind") in (None, self.card.kind)):
+                self._close_card()
+            return
+        self._close_card()
+        self.card = Card(self, card, self._card_action)
+        self.card.move(self._card_pos())
+        self.card.show()
+        self.card_expire = time.monotonic() + CARD_STAY.get(card["type"], 45)
+        self._mask_key = None
+        if not self.isVisible():
+            self.show()
+
+    def _card_pos(self) -> QPoint:
+        right = WIN_W - (ORB_BOX - 2 * ORB_R) / 2 + 4
+        bottom = WIN_H - ORB_BOX + 6
+        return QPoint(int(right - CARD_W), int(bottom - self.card.height()))
+
+    def _close_card(self):
+        if self.card:
+            self.card.hide()
+            self.card.deleteLater()
+            self.card = None
+            self._mask_key = None
+
+    def _card_action(self, kind, payload):
+        aria = self.bridge.aria
+        self.card_expire = time.monotonic() + CARD_STAY.get(self.card.kind if self.card else "", 45)
+        if kind == "close":
+            self._close_card()
+        elif kind == "answer":
+            self._close_card()
+            if aria:
+                aria.submit_text(payload)
+        elif kind == "open" and aria:
+            threading.Thread(target=aria.open_from_card, args=(payload,), daemon=True).start()
+        elif kind == "toggle" and aria:
+            threading.Thread(target=aria.toggle_from_card, args=payload, daemon=True).start()
 
     # ── Animation ──
 
@@ -315,6 +546,12 @@ class Overlay(QWidget):
                  "listening": 1.0 + 3 * self.level, "sleeping": 0.25}.get(self.state, 1.0)
         self.spin += dt * speed
         self._update_particles(dt)
+
+        if self.card:
+            if self.hover:
+                self.card_expire = max(self.card_expire, now + 8)
+            elif now > self.card_expire:
+                self._close_card()
 
         self._update_mask()
         self.update()
@@ -406,6 +643,8 @@ class Overlay(QWidget):
         """Returns [(rect, bubble, alpha)], stacked upward from above the orb, right-aligned."""
         right = WIN_W - (ORB_BOX - 2 * ORB_R) / 2 + 4
         bottom = WIN_H - ORB_BOX + 6
+        if self.card:
+            bottom = self.card.y() - 6
         laid = []
         for b, a in reversed(self._visible_bubbles()):
             fm = QFontMetrics(self.font_small if b["role"] == "user" else self.font_)
@@ -426,8 +665,10 @@ class Overlay(QWidget):
     def _update_mask(self):
         rects = [r for r, _, _ in self._layout_bubbles()]
         show_caption = self.hover and not self.input.isVisible()
+        card = self.card.geometry() if self.card else None
         key = (tuple((r.x(), r.y(), r.width(), r.height()) for r in rects),
-               self.input.isVisible(), show_caption)
+               self.input.isVisible(), show_caption,
+               (card.x(), card.y(), card.width(), card.height()) if card else None)
         if key == self._mask_key:
             return
         self._mask_key = key
@@ -438,6 +679,8 @@ class Overlay(QWidget):
             region = region.united(QRegion(self._input_rect().adjusted(-2, -2, 2, 2)))
         if show_caption:
             region = region.united(QRegion(self._caption_rect()))
+        if card:
+            region = region.united(QRegion(card.adjusted(-1, -1, 1, 1)))
         self.setMask(region)
 
     # ── Painting ──
@@ -781,8 +1024,16 @@ class Overlay(QWidget):
         mute_act.triggered.connect(lambda: aria.toggle_mute())
         menu.addAction(mute_act)
 
+        init = getattr(aria, "initiative", None)
+        chat_act = QAction("Let Aria start conversations", menu)
+        chat_act.setCheckable(True)
+        chat_act.setEnabled(init is not None)
+        chat_act.setChecked(bool(init and init.enabled))
+        chat_act.toggled.connect(lambda on: aria.set_initiative(on))
+        menu.addAction(chat_act)
+
         clear_act = QAction("Clear bubbles", menu)
-        clear_act.triggered.connect(self.bubbles.clear)
+        clear_act.triggered.connect(lambda: (self.bubbles.clear(), self._close_card()))
         menu.addAction(clear_act)
 
         menu.addSeparator()

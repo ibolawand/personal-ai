@@ -52,6 +52,66 @@ def _parse_clock(text: str) -> datetime.datetime | None:
     return target
 
 
+DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+def parse_repeat(text):
+    """'every day' -> daily, 'weekdays' -> weekdays, 'every week' -> weekly, 'monthly',
+    'every monday and thursday' / 'mondays' -> 'mon,thu'. None = no repeat, False = not understood."""
+    s = str(text or "").strip().lower()
+    if s in ("", "none", "no", "once", "never", "false"):
+        return None
+    days = [k for k, name in zip(DAY_KEYS, DAY_NAMES) if re.search(rf"\b{name.lower()}s?\b|\b{k}\b", s)]
+    if days:
+        return ",".join(days)
+    if re.search(r"week ?days|work ?days|monday to friday", s):
+        return "weekdays"
+    if re.search(r"daily|every ?day|each day|every morning|every evening|every night", s):
+        return "daily"
+    if re.search(r"weekly|every week|each week", s):
+        return "weekly"
+    if re.search(r"monthly|every month|each month", s):
+        return "monthly"
+    return False
+
+
+def describe_repeat(rep) -> str:
+    if not rep:
+        return ""
+    fixed = {"daily": "every day", "weekdays": "every weekday", "weekly": "every week", "monthly": "every month"}
+    if rep.split(":")[0] in fixed:
+        return fixed[rep.split(":")[0]]
+    names = [DAY_NAMES[DAY_KEYS.index(k)] for k in rep.split(",") if k in DAY_KEYS]
+    return "every " + (" and ".join([", ".join(names[:-1]), names[-1]]) if len(names) > 1 else names[0])
+
+
+def _repeat_matches(rep, date: datetime.date, first: datetime.date) -> bool:
+    if rep == "daily":
+        return True
+    if rep == "weekdays":
+        return date.weekday() < 5
+    if rep == "weekly":
+        return date.weekday() == first.weekday()
+    if rep.startswith("monthly"):
+        # "monthly:31" keeps the original day, so the 31st -> 28 Feb -> 31 Mar (not the 28th forever)
+        want = int(rep.split(":")[1]) if ":" in rep else first.day
+        last = (date.replace(day=28) + datetime.timedelta(days=4)).replace(day=1) - datetime.timedelta(days=1)
+        return date.day == min(want, last.day)
+    return DAY_KEYS[date.weekday()] in rep.split(",")
+
+
+def next_occurrence(rep, after: datetime.datetime, first: datetime.date = None) -> datetime.datetime:
+    """Next time on a day matching `rep`, at after's clock time, strictly later than `after`."""
+    first = first or after.date()
+    day = after.date() + datetime.timedelta(days=1)
+    for _ in range(400):
+        if _repeat_matches(rep, day, first):
+            return datetime.datetime.combine(day, after.time())
+        day += datetime.timedelta(days=1)
+    raise ValueError(f"bad repeat {rep!r}")
+
+
 class Reminders:
     def __init__(self, memory, on_due, on_change=None):
         self.memory = memory
@@ -76,6 +136,11 @@ class Reminders:
                 due = self.memory.take_due_reminders(time.time())
                 for r in due:
                     self.last_fired = r
+                    if r.get("repeat"):     # schedule the next one before announcing this one
+                        nxt = next_occurrence(r["repeat"], datetime.datetime.fromtimestamp(r["due"]))
+                        while nxt.timestamp() <= time.time():      # laptop was off for a while: skip missed ones
+                            nxt = next_occurrence(r["repeat"], nxt)
+                        self.memory.add_reminder(r["text"], r["kind"], nxt.timestamp(), r["repeat"])
                     self.on_due(r)
                 if due:
                     self.on_change()
@@ -85,8 +150,8 @@ class Reminders:
 
     # ── Core ──────────────────────────────────────────────────────────────────
 
-    def add(self, text: str, kind: str, due: float) -> int:
-        rid = self.memory.add_reminder(text, kind, due)
+    def add(self, text: str, kind: str, due: float, repeat: str = None) -> int:
+        rid = self.memory.add_reminder(text, kind, due, repeat) if repeat else self.memory.add_reminder(text, kind, due)
         self.on_change()
         return rid
 
@@ -108,10 +173,32 @@ class Reminders:
         self.add(label or "timer", "timer", time.time() + seconds)
         return f"Timer set for {_fmt_delta(seconds)}" + (f" ({label})." if label else ".")
 
-    def set_reminder(self, text: str, in_minutes=None, at_time: str = None):
+    def set_reminder(self, text: str, in_minutes=None, at_time: str = None, day: str = None, repeat: str = None):
         text = (text or "").strip() or "something"
+        rep = parse_repeat(repeat)
+        if rep is False:
+            return f"I can repeat reminders every day, on weekdays, every week, every month or on certain weekdays — not '{repeat}'."
+        if rep is None and day and parse_repeat(day):          # "mondays" given as the day
+            rep = parse_repeat(day)
+            day = None
+        if rep:
+            return self._set_repeating(text, at_time, day, rep)
         if in_minutes not in (None, ""):
             due = time.time() + float(in_minutes) * 60
+        elif day not in (None, "", "today"):
+            # "monday at 10" / "tomorrow" (no time -> 09:00); same date words as the calendar
+            from Engines.NotionEngine import parse_day
+            date = parse_day(day)
+            if not date:
+                return f"I couldn't understand the day '{day}'. Say e.g. 'tomorrow', 'monday' or '12.11.'."
+            clock = _parse_clock(str(at_time)) if at_time else None
+            if at_time and not clock:
+                return f"I couldn't understand the time '{at_time}'. Use HH:MM."
+            hh, mm = (clock.hour, clock.minute) if clock else (9, 0)
+            target = datetime.datetime.combine(date, datetime.time(hh, mm))
+            if target.timestamp() <= time.time():
+                return "That time has already passed."
+            due = target.timestamp()
         elif at_time:
             target = _parse_clock(str(at_time))
             if not target:
@@ -122,6 +209,28 @@ class Reminders:
         self.add(text, "reminder", due)
         return f"I'll remind you to {text} {_fmt_when(due)}."
 
+    def _set_repeating(self, text, at_time, day, rep):
+        clock = _parse_clock(str(at_time)) if at_time else None
+        if at_time and not clock:
+            return f"I couldn't understand the time '{at_time}'. Use HH:MM."
+        hh, mm = (clock.hour, clock.minute) if clock else (9, 0)
+        start = datetime.date.today()
+        weekday_set = "," in rep or rep in DAY_KEYS
+        if day not in (None, "", "today") and not (weekday_set and parse_repeat(day)):
+            # (the model often repeats one of the weekdays as `day`; for "monday and thursday" that
+            #  would skip this week's Monday, so a weekday given for a weekday repeat is ignored)
+            from Engines.NotionEngine import parse_day
+            start = parse_day(day) or start
+        if rep == "monthly":
+            rep = f"monthly:{start.day}"
+        first = datetime.datetime.combine(start, datetime.time(hh, mm))
+        if first.timestamp() <= time.time() or not _repeat_matches(rep, start, start):
+            first = next_occurrence(rep, first, start)
+        self.add(text, "reminder", first.timestamp(), rep)
+        days = (first.date() - datetime.date.today()).days
+        starting = "today" if days == 0 else "tomorrow" if days == 1 else first.strftime("%A %d %B")
+        return f"I'll remind you to {text} {describe_repeat(rep)} at {hh:02d}:{mm:02d}, starting {starting}."
+
     def list_reminders(self):
         items = self.pending(("timer", "reminder", "focus", "event"))
         if not items:
@@ -130,7 +239,8 @@ class Reminders:
         for r in items:
             what = {"timer": f"timer '{r['text']}'", "focus": "focus session ends",
                     "event": f"heads-up for {r['text']}"}.get(r["kind"], r["text"])
-            parts.append(f"{what} {_fmt_when(r['due'])}")
+            rep = f" (repeats {describe_repeat(r.get('repeat'))})" if r.get("repeat") else ""
+            parts.append(f"{what} {_fmt_when(r['due'])}{rep}")
         return "; ".join(parts) + "."
 
     def cancel_reminder(self, which: str = "last"):
@@ -152,6 +262,8 @@ class Reminders:
                 return f"I couldn't find a timer or reminder matching '{which}'."
             target = matches[0]
         self.cancel_id(target["id"])
+        if target.get("repeat"):
+            return f"Cancelled '{target['text']}' ({describe_repeat(target['repeat'])}) — it won't come back."
         return f"Cancelled '{target['text']}'."
 
     def snooze(self, minutes=5):

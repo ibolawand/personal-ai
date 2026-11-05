@@ -3,6 +3,7 @@
 #   aria.sh            start (or open the text box if she's running)
 #   aria.sh --toggle   show/hide the text box (the Ctrl+Alt+Space hotkey), starts Aria if needed
 #   aria.sh --quit     shut Aria down
+#   aria.sh --chat     make Aria start a conversation now (also --review, --event) — to try it out
 # Extra flags for main.py (e.g. --voice) go in Engines/.env as:  ARIA_ARGS=--voice
 DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 PY="$DIR/.venv/bin/python"
@@ -15,6 +16,8 @@ echo "[$(date '+%F %T')] aria.sh ${1:-start}" >> "$LOG"   # shows whether the ho
 case "$1" in
   --toggle|--show) "$PY" -m ui.instance "${1#--}" && exit 0 ;;   # running → done; else start below
   --quit)          "$PY" -m ui.instance quit; exit 0 ;;
+  --chat|--review|--event)
+                   "$PY" -m ui.instance "${1#--}" || echo "Aria isn't running."; exit 0 ;;
 esac
 
 ARGS="$(grep -E '^ARIA_ARGS=' Engines/.env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"')"
