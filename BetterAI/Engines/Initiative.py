@@ -1,8 +1,10 @@
 """
 Aria starting conversations on her own, without being a nuisance.
 
-Three kinds, checked once a minute while she's asleep:
+Kinds, checked once a minute while she's asleep (first match wins):
   event   — an event in MyNotion just ended: "How did the dentist go? Anything to note?"
+  followup— something Lala mentioned earlier is over: "So, how did the math exam go?" (Engines/Followups.py)
+  break   — Lala has been at the laptop for ARIA_BREAK_MIN minutes without a break (Engines/Activity.py)
   review  — Sunday evening: go through the open to-dos one by one (done / keep / drop / later)
   chat    — now and then, a normal conversation: a question or remark tied to what she knows
             about Lala, the time of day, or what they've been up to. Not about tasks.
@@ -36,6 +38,8 @@ CHAT_EVERY_MIN = float(os.environ.get("ARIA_CHAT_EVERY_MIN", 45))
 CHATS_PER_DAY = int(os.environ.get("ARIA_CHATS_PER_DAY", 6))
 REVIEW_DAY = int(os.environ.get("ARIA_REVIEW_DAY", 6))
 REVIEW_HOUR = int(os.environ.get("ARIA_REVIEW_HOUR", 18))
+BREAK_AFTER_MIN = int(os.environ.get("ARIA_BREAK_MIN", 90))
+BREAK_AGAIN_MIN = 60               # if ignored, suggest a break again after this much more
 
 MIN_GAP_AFTER_TALK_S = 20 * 60     # not right after Lala talked to her anyway
 MIN_GAP_ANY_S = 30 * 60            # between any two openers
@@ -185,7 +189,8 @@ class Initiative:
                 self._last_reason = why
             return
         self._last_reason = ""
-        opener = self._event_followup() or self._weekly_review() or self._chat(now)
+        opener = (self._event_followup() or self._followup() or self._break_nudge() or self._weekly_review()
+                  or self._chat(now))
         if opener:
             self.state["last_any"] = now
             self._save()
@@ -221,6 +226,9 @@ class Initiative:
             return "talked recently"
         if a.focus.active:
             return "focus session"
+        activity = getattr(a, "activity", None)
+        if activity and activity.watching():
+            return "watching something"
         if screen_locked():
             return "locked"
         if fullscreen_app():
@@ -234,6 +242,21 @@ class Initiative:
         if kind == "chat":
             opener = {"kind": "chat", "prompt": self._chat_prompt(self.state.get("recent_openers", [])[-6:]),
                       "hint": self._chat_hint()}
+        elif kind == "followup":
+            opener = self._followup()
+            if not opener:
+                self.aria.ui.message("aria", "Nothing to follow up on right now.")
+                return
+        elif kind == "break":
+            self.state.pop("break_nudged_at", None)
+            globals()["BREAK_AFTER_MIN"], saved_break = 0, BREAK_AFTER_MIN
+            try:
+                opener = self._break_nudge()
+            finally:
+                globals()["BREAK_AFTER_MIN"] = saved_break
+            if not opener:
+                self.aria.ui.message("aria", "I haven't seen you at the laptop yet.")
+                return
         elif kind == "review":
             saved = (REVIEW_DAY, REVIEW_HOUR, self.state.pop("review_week", None))
             globals().update(REVIEW_DAY=dt.date.today().weekday(), REVIEW_HOUR=0)
@@ -288,6 +311,45 @@ class Initiative:
                          f"Don't save small talk. If they need to do something later, offer a reminder."),
             }
         return None
+
+    def _followup(self):
+        f = getattr(self.aria, "followups", None)
+        item = f.due() if f else None
+        if not item:
+            return None
+        f.asked(item)
+        return {
+            "kind": "followup",
+            "prompt": (f"[You are starting the conversation; Lala hasn't said anything.] Earlier Lala told you about "
+                       f"{item['about']}, which should be over now. Ask how it went, warmly and naturally, in one "
+                       f"short sentence (something like: \"{item['question']}\")."),
+            "hint": (f"You asked Lala how {item['about']} went. React like a friend who cares: be happy for them, "
+                     f"or sympathetic if it went badly, and ask a follow-up if it fits. No advice unless asked."),
+        }
+
+    def _break_nudge(self):
+        act = getattr(self.aria, "activity", None)
+        if not act:
+            return None
+        minutes = act.stretch_minutes()
+        if minutes < BREAK_AFTER_MIN:
+            self.state.pop("break_nudged_at", None)
+            return None
+        last = self.state.get("break_nudged_at")
+        if last is not None and minutes < last + BREAK_AGAIN_MIN:
+            return None
+        self.state["break_nudged_at"] = minutes
+        app = act.stretch_main_app() or "the laptop"
+        h, m = divmod(minutes, 60)
+        dur = f"{h} hour{'s' if h > 1 else ''}" + (f" {m} minutes" if m >= 10 else "") if h else f"{m} minutes"
+        return {
+            "kind": "break",
+            "prompt": (f"[You are starting the conversation; Lala hasn't said anything.] Lala has been at the laptop "
+                       f"for {dur} without a break, mostly in {app}. In one or two warm, casual sentences, suggest a "
+                       f"short break (stretch, water, rest the eyes). Caring, not nagging; a little humour is fine."),
+            "hint": ("You suggested a short break. If Lala says they can't right now, accept it lightly. "
+                     "If they take one, be happy about it. Don't lecture."),
+        }
 
     def _weekly_review(self):
         """Only the opener comes from the model; the answers (done/drop/keep/stop) are handled in code
@@ -364,6 +426,12 @@ class Initiative:
                     today_bits.append("Tomorrow Lala has: " + ", ".join(e["title"] for e in tomorrow[:3]) + ".")
         except Exception:
             pass
+        doing = None
+        act = getattr(a, "activity", None)
+        if act:
+            app, mins = act.current()
+            if app and mins >= 15:
+                doing = f"Lala has been in {app} for about {mins} minutes right now"
         try:
             facts = list(a.memory.get_memories(30))
         except Exception:
@@ -375,6 +443,8 @@ class Initiative:
         options += [("fact", f) for f in random.sample(fresh, min(2, len(fresh)))]
         if today_bits and self.state.get("last_topic") != "day":
             options.append(("day", None))
+        if doing and self.state.get("last_topic") != "doing":
+            options += [("doing", None), ("doing", None)]     # what they're up to is the most natural opener
         options = [o for o in options if o[0] != self.state.get("last_topic") or o[0] == "fact"]
         kind, fact = random.choice(options)
         self.state["last_topic"] = kind
@@ -385,6 +455,9 @@ class Initiative:
             topic = f"this thing you know about Lala: \"{fact}\" — ask something specific and curious about it"
         elif kind == "day":
             topic = "their day: " + " ".join(today_bits)
+        elif kind == "doing":
+            topic = (f"what they're up to: {doing}. Ask about it with genuine interest (what they're working on, "
+                     f"how it's going), without sounding like you're watching them")
         elif kind == "time":
             topic = (f"it being {now.strftime('%A')} {('morning' if now.hour < 12 else 'afternoon' if now.hour < 18 else 'evening')}"
                      " — e.g. how the week is going, or plans for later")

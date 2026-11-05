@@ -13,7 +13,9 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -47,6 +49,14 @@ TIDY_FOLDERS = {
 }
 TIDY_LOG = Path(__file__).resolve().parent.parent / "tidy_downloads_log.json"
 
+# Text of Lala's documents, so "the pdf that mentions normalization" can be found by what's inside.
+# Kept in Aria's cache folder; rebuilt for changed files every 30 minutes.
+INDEX_FILE = Path(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))) / "aria" / "file_index.db"
+INDEX_EXTS = {".pdf", ".docx", ".pptx", ".odt", ".odp", ".txt", ".md", ".ipynb"}
+INDEX_MAX_BYTES = 500_000_000   # only the text is kept, so big scanned textbooks are fine
+INDEX_MAX_CHARS = 300_000
+INDEX_EVERY_S = 30 * 60
+
 
 def _age(ts: float) -> str:
     days = (time.time() - ts) / 86400
@@ -71,6 +81,103 @@ class FilesEngine:
         self.roots = [Path(os.path.expanduser(r)).resolve() for r in raw]
         self.roots = [r for r in self.roots if r.is_dir()]
         self.last_results = []
+        self._index_lock = threading.Lock()
+        self.index_ready = False
+
+    # ── Content index ─────────────────────────────────────────────────────────
+
+    def start_indexing(self):
+        def loop():
+            while True:
+                try:
+                    n = self.update_index()
+                    if n:
+                        print(f"[Files] indexed {n} document(s)")
+                except Exception as e:
+                    print(f"[Files] indexing failed: {e}")
+                time.sleep(INDEX_EVERY_S)
+        threading.Thread(target=loop, daemon=True).start()
+
+    def _index_db(self):
+        INDEX_FILE.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(INDEX_FILE, timeout=10)
+        conn.execute("CREATE TABLE IF NOT EXISTS docs (path TEXT PRIMARY KEY, mtime REAL, text TEXT)")
+        return conn
+
+    def _documents(self):
+        seen = set()
+        for root in self.roots:
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+                for name in filenames:
+                    p = Path(dirpath) / name
+                    if p.suffix.lower() in INDEX_EXTS and p not in seen:
+                        seen.add(p)
+                        yield p
+
+    def update_index(self) -> int:
+        """(Re)reads new or changed documents; drops deleted ones. Returns how many were read."""
+        with self._index_lock:
+            conn = self._index_db()
+            try:
+                known = dict(conn.execute("SELECT path, mtime FROM docs"))
+                present, changed = set(), 0
+                for p in self._documents():
+                    try:
+                        st = p.stat()
+                    except OSError:
+                        continue
+                    present.add(str(p))
+                    if st.st_size > INDEX_MAX_BYTES or known.get(str(p)) == st.st_mtime:
+                        continue
+                    try:
+                        text = self._extract(p, pdf_pages=300)[:INDEX_MAX_CHARS]
+                    except Exception:
+                        text = ""
+                    conn.execute("INSERT OR REPLACE INTO docs VALUES (?, ?, ?)", (str(p), st.st_mtime, text))
+                    changed += 1
+                gone = [k for k in known if k not in present]
+                conn.executemany("DELETE FROM docs WHERE path = ?", [(k,) for k in gone])
+                conn.commit()
+            finally:
+                conn.close()
+            self.index_ready = True
+            return changed
+
+    def search_contents(self, query: str):
+        """Documents whose text mentions the query words, best first, with a snippet from each."""
+        words = [w for w in _words(query) if len(w) > 2 and w not in {"the", "and", "about", "that", "with",
+                                                                        "pdf", "file", "document", "mentions"}]
+        if not words:
+            return "What should the document be about?"
+        if not self.index_ready:
+            self.update_index()
+        conn = self._index_db()
+        try:
+            rows = conn.execute("SELECT path, mtime, text FROM docs").fetchall()
+        finally:
+            conn.close()
+        hits = []
+        for path, mtime, text in rows:
+            low = (text or "").lower()
+            counts = [low.count(w) for w in words]
+            if not all(counts):            # every word must appear somewhere in the document
+                continue
+            p = Path(path)
+            if not p.exists() or not self._allowed(p):
+                continue
+            score = sum(min(c, 20) for c in counts) + 5 * sum(w in p.stem.lower() for w in words)
+            pos = min(low.find(w) for w in words)
+            snippet = " ".join(text[max(0, pos - 80):pos + 220].split())
+            hits.append((score, p, mtime, snippet))
+        hits.sort(key=lambda h: -h[0])
+        hits = hits[:5]
+        self.last_results = [p for _, p, _, _ in hits]
+        if not hits:
+            return f"No document mentions {' and '.join(words)}."
+        lines = [f"{i}. {p.name} — {self._pretty(p.parent)}, modified {_age(m)}: \"…{snip}…\""
+                 for i, (_, p, m, snip) in enumerate(hits, 1)]
+        return "Documents that mention it:\n" + "\n".join(lines)
 
     # ── Safety ────────────────────────────────────────────────────────────────
 
@@ -165,6 +272,11 @@ class FilesEngine:
     def find_files(self, query: str = "", kind: str = None, days=None):
         hits = self._search(query, kind, days)
         self.last_results = [p for _, p, _ in hits]
+        if not hits and query and not days and (not kind or KINDS.get(kind.lower().rstrip("s"), INDEX_EXTS) & INDEX_EXTS):
+            # no file is *named* like that: look for documents that are *about* it ("the pdf about gear trains")
+            inside = self.search_contents(query)
+            if inside.startswith("Documents that mention"):
+                return "No file names match, but these " + inside[0].lower() + inside[1:]
         if not hits:
             where = ", ".join(self._pretty(r) for r in self.roots)
             return f"No files found for '{query}' in {where}."
@@ -210,11 +322,11 @@ class FilesEngine:
         note = f"\n…[truncated — showing the first {MAX_READ_CHARS} characters]" if cut else ""
         return f"Contents of {p.name}:\n{text}{note}"
 
-    def _extract(self, p: Path) -> str:
+    def _extract(self, p: Path, pdf_pages=40) -> str:
         ext = p.suffix.lower()
         if ext == ".pdf":
-            out = subprocess.run(["pdftotext", "-l", "40", "-layout", str(p), "-"],
-                                 capture_output=True, text=True, timeout=30)
+            out = subprocess.run(["pdftotext", "-l", str(pdf_pages), "-layout", str(p), "-"],
+                                 capture_output=True, text=True, timeout=120)
             return out.stdout
         if ext in (".docx", ".pptx", ".odt", ".odp"):
             with zipfile.ZipFile(p) as z:

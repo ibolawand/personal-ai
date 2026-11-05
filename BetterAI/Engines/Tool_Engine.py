@@ -44,7 +44,7 @@ def _tool(tool_name, description, handler, optional=(), **params):
 class ToolEngine:
     def __init__(self, spotify=None, arduino=None, vision=None, ha=None,
                  reminders=None, focus=None, screen=None, laptop=None, files=None, notion=None,
-                 owner_check=None, initiative=None, memory_note=None):
+                 owner_check=None, initiative=None, memory_note=None, activity=None):
         self.spotify = spotify
         self.arduino = arduino
         self.vision = vision
@@ -58,11 +58,13 @@ class ToolEngine:
         self.owner_check = owner_check or (lambda: True)
         self.initiative = initiative
         self.memory_note = memory_note
+        self.activity = activity
         self._registry = {t["schema"]["function"]["name"]: t for t in self._build()}
 
     # Tools that touch the laptop, files, clipboard/screen or phone — gated by owner_check
     PROTECTED = {
         "close_app", "power", "set_wifi", "lock_screen", "read_file", "open_file", "find_files", "open_folder",
+        "search_file_contents",
         "tidy_downloads", "undo_tidy_downloads", "look_at_screen", "read_clipboard", "copy_to_clipboard",
         "check_phone_location", "check_phone_battery", "notify_phone",
         "read_note", "search_notes", "list_notes", "get_events", "move_event", "delete_event",
@@ -197,6 +199,11 @@ class ToolEngine:
                       query=("string", "words from the file name or folder, e.g. 'c# assignment'"),
                       kind=("string", "pdf, document, slides, spreadsheet, code, image, audio, video or archive"),
                       days=("number", "only files modified in the last N days")),
+                _tool("search_file_contents",
+                      "Find documents (pdf, Word, slides, notes) by what's INSIDE them, e.g. 'the pdf about "
+                      "normalization', 'where did I read about subnetting'. Use find_files for names.",
+                      fl.search_contents,
+                      query=("string", "the topic words, e.g. 'normalization third normal form'")),
                 _tool("open_file", "Open a file in its default app.", fl.open_file,
                       which=("string", "number from the last find_files result, or a file name")),
                 _tool("read_file",
@@ -232,7 +239,7 @@ class ToolEngine:
                 _tool("search_notes",
                       "Search Lala's MyNotion notes. Use for questions about Lala's own life or things they wrote down "
                       "(birthdays, plans, passwords hints, exam topics, ideas) before saying you don't know.",
-                      nt.search_notes, query=("string", "key words, e.g. 'Sara birthday'")),
+                      self._search_notes, query=("string", "key words, e.g. 'Sara birthday'")),
                 _tool("list_notes", "Only for 'which notes do I have': lists note titles. To see what is IN a note or list, use read_note.", nt.list_notes),
                 _tool("add_to_list", "Add items to a list note (shopping list, to-do list, packing list, films to watch…).",
                       nt.add_to_list,
@@ -350,6 +357,11 @@ class ToolEngine:
                       what=("string", "what to forget, in a few words, or 'everything'")),
             ]
 
+        if self.activity:
+            tools.append(_tool("screen_time", "How long Lala has used the laptop today and in which apps, and how long "
+                               "since their last break ('how long have I been coding?', 'what did I do today?').",
+                               self.activity.screen_time))
+
         if self.initiative:
             tools.append(_tool(
                 "conversation_starters",
@@ -358,6 +370,15 @@ class ToolEngine:
                 self._conversation_starters, enabled=("boolean", "true to allow, false to stop")))
 
         return tools
+
+    def _search_notes(self, query: str):
+        """Notes first; if nothing's there, documents that mention it (people say 'document' for both)."""
+        result = self.notion.search_notes(query)
+        if result.startswith("Nothing in your notes") and self.files:
+            inside = self.files.search_contents(query)
+            if inside.startswith("Documents that mention"):
+                return result + " But in your files: " + inside
+        return result
 
     def _conversation_starters(self, enabled=True):
         on = str(enabled).lower() not in ("false", "0", "no", "off")

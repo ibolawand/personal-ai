@@ -135,28 +135,45 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 ## Aria starts conversations — `Engines/Initiative.py`
 
 While she's asleep, Aria sometimes speaks up first:
+- **Follow-ups:** mention something coming up ("I have my math exam tomorrow", "Lina's visiting this weekend") and she
+  asks about it afterwards: "So, how did the math exam go?" It's picked up when she saves facts after a conversation,
+  asked from 17:00 that day (or the next morning for late things), either in her greeting or as a conversation she starts.
+  Unasked ones are dropped after 3 days, and timed calendar events are left to the event check-in below.
+- **Breaks:** after 90 minutes at the laptop without a 5-minute break, a warm "you've been coding for ages, stretch
+  for a minute?". If you keep going, she asks again an hour later at most.
 - **After an event:** shortly after a calendar event ends, "How did the dentist go?". If you tell her something
   worth keeping ("come back in 3 weeks"), it goes into a "Dentist notes" note. Repeating events (gym, classes) are skipped.
 - **Weekly review**, Sunday from 18:00: she goes through your open to-dos one at a time. Answer "done" (ticks it off),
   "keep", "drop it" (removes it), "remind me Monday at 10" or "later" (a reminder), or "stop". These answers are
   handled in code, so a tick-off really happens. At the end she mentions what's coming up.
 - **Morning:** after the daily briefing she asks what you want to get done today. What you name goes on your to-do list.
-- **Casual chats:** now and then a normal conversation, not about tasks: something she knows about you, your day,
-  the day of the week, or a fun question. She picks a different topic each time.
+- **Casual chats:** now and then a normal conversation, not about tasks: what you're up to ("how's the coding
+  going?" after a while in PyCharm), something she knows about you, your day, the day of the week, or a fun question.
+  She picks a different topic each time.
   During these chats she only uses tools when you clearly ask ("can you…", "remind me…", "look at my screen"),
   so she won't look at your screen or save small talk into notes on her own.
 
 **When she won't:** if nobody is at the desk (camera, or no keyboard/mouse use for 5 minutes when there's no camera),
 in the first 10 minutes after you sit down, within 20 minutes of you talking to her, during quiet hours, in a focus
-session, while muted, when the screen is locked, when something is fullscreen (films, games), or when another app is
-using the microphone (calls). There's at least half an hour between two openers.
+session, while muted, when the screen is locked, when something is fullscreen (films, games), while you're watching
+something (YouTube, Netflix, VLC…), or when another app is using the microphone (calls). There's at least half an hour between two openers.
 
 **Backing off:** "not now", "later" or "I'm busy" snoozes her for 3 hours. A short "ok" or "fine" to a casual chat,
 or no answer at all, means she waits twice as long before the next one. Turn it off with the right-click menu or
 "stop starting conversations".
 
 Settings in `Engines/.env`: `ARIA_INITIATIVE=0` (off), `ARIA_QUIET=22:30-08:30`, `ARIA_CHAT_EVERY_MIN=45`,
-`ARIA_CHATS_PER_DAY=6`, `ARIA_REVIEW_DAY=6` (0 = Monday), `ARIA_REVIEW_HOUR=18`. Her bookkeeping lives in `~/.cache/aria/initiative.json`.
+`ARIA_CHATS_PER_DAY=6`, `ARIA_REVIEW_DAY=6` (0 = Monday), `ARIA_REVIEW_HOUR=18`, `ARIA_BREAK_MIN=90`.
+To try one right now: `./aria.sh --chat`, `--followup`, `--break`, `--review` or `--event`. Her bookkeeping lives in `~/.cache/aria/initiative.json`.
+
+## What you're doing — `Engines/Activity.py`
+
+- Every 20 seconds Aria notes which app is in front and whether you're using the keyboard/mouse. That gives her
+  "PyCharm for 50 minutes", your time at the laptop without a break, and whether you're watching something.
+- **Only in memory:** app names and minutes, never written to disk, gone when she quits. Window titles are only
+  checked in the moment, to tell whether you're watching a video.
+- "How long have I been on the laptop today?", "what did I do today?" gives minutes per app since she started, and
+  your current stretch without a break.
 
 ## Focus mode — `Engines/FocusMode.py`
 
@@ -196,6 +213,11 @@ Settings in `Engines/.env`: `ARIA_INITIATIVE=0` (off), `ARIA_QUIET=22:30-08:30`,
 ## Files & school work — `Engines/FilesEngine.py`
 
 - "Find my plsql pdf", "find powerpoints from this week". Results are numbered, newest first.
+- **Search inside documents:** "find the pdf about gear trains", "which document talks about four-bar linkages".
+  Aria keeps a text index of your PDFs, Word/PowerPoint/LibreOffice files, notes and notebooks (`~/.cache/aria/file_index.db`,
+  updated every 30 minutes; PDFs up to 300 pages). If no file *name* matches, or nothing is in your MyNotion notes,
+  she automatically looks inside documents too. Results come with a short quote from where it's mentioned.
+- "Summarise the first one", then "save that as a note called …" keeps the summary in MyNotion.
 - "Open the second one", "summarise the first one". Reads PDF, Word, PowerPoint, ODT, Jupyter notebooks,
   code and text files (up to 6000 characters).
 - "Open my school folder"

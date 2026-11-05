@@ -440,7 +440,7 @@ class Overlay(QWidget):
         if cmd == "quit":
             quit_app()
             return
-        if cmd in ("chat", "review", "event"):
+        if cmd in ("chat", "review", "event", "followup", "break"):
             aria = self.bridge.aria
             if aria:
                 threading.Thread(target=aria.initiative.force, args=(cmd,), daemon=True).start()

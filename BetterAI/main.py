@@ -25,6 +25,8 @@ from Engines.LaptopEngine import LaptopEngine
 from Engines.MemoryNote import MemoryNote
 from Engines.NotionEngine import NotionEngine
 from Engines.FocusMode import FocusMode
+from Engines.Activity import Activity
+from Engines.Followups import Followups
 from Engines.Initiative import Initiative, NOT_NOW_RE
 from Engines.Reminders import Reminders
 from Engines.ScreenEngine import ScreenEngine
@@ -377,6 +379,8 @@ class Aria:
             self.notion.on_card = self.ui.show_card
         self.initiative = Initiative(self)
         self.memory_note = MemoryNote(self.memory, self.notion, self.confirm, on_card=self.ui.show_card)
+        self.followups = Followups(self.memory, self.notion)
+        self.activity = Activity(menu=self.laptop.menu)
 
         self.tools = ToolEngine(
             spotify=self.spotify,
@@ -392,6 +396,7 @@ class Aria:
             owner_check=self._owner_check,
             initiative=self.initiative,
             memory_note=self.memory_note,
+            activity=self.activity,
         )
         print(f"[Tools] {len(self.tools.schemas)} tools available")
 
@@ -401,6 +406,8 @@ class Aria:
         if self.notion:
             threading.Thread(target=self._event_reminder_loop, daemon=True).start()
         self.initiative.start()
+        self.activity.start()
+        self.files.start_indexing()
 
     def _event_reminder_loop(self):
         """Keeps a heads-up reminder 15 min before each MyNotion event (picks up edits made in the app),
@@ -635,7 +642,7 @@ class Aria:
         if self._session_hint:
             system_prompt += "\n\n[This conversation] " + self._session_hint
         schemas = self.tools.schemas
-        if self._initiative_active and self._initiative_active["kind"] == "chat":
+        if self._initiative_active and self._initiative_active["kind"] in ("chat", "followup", "break"):
             if not CHAT_REQUEST_RE.search(user_input):
                 schemas = []
             else:
@@ -878,7 +885,11 @@ class Aria:
 
         def work():
             known = self.memory.get_memories(200)
-            facts, topics = self.llm.extract_facts(convo, known=known)
+            facts, topics, followups = self.llm.extract_facts(convo, known=known)
+            if followups:
+                n = self.followups.add_from_extraction(followups)
+                if n:
+                    print(f"[Memory] Will ask about {n} thing(s) later: {[f.get('about') for f in followups]}")
             norm = lambda f: re.sub(r"^user(?:'s)?\s+(?:is\s+)?|[^a-z0-9 ]", "", f.lower()).strip()
             seen = {norm(f) for f in known}
             facts = [f for f in facts if norm(f) not in seen]      # same fact, different wording of "User …"
@@ -938,6 +949,15 @@ class Aria:
     def _greeting_prompt(self) -> str:
         """Normal short greeting — plus the daily briefing the first time Aria greets Lala each day."""
         prompt = self.context.greeting_prompt(known_user=self._vision_user)
+        due = self.followups.due()
+        if due:
+            # "how did the exam go?" fits a hello perfectly
+            self.followups.asked(due)
+            self._session_hint = (f"You asked Lala how {due['about']} went. React like a friend who cares: happy for "
+                                  f"them, or sympathetic if it went badly. No advice unless asked.")
+            prompt += (f"\nEarlier Lala told you about {due['about']}, which should be over now. After the greeting, "
+                       f"ask how it went, naturally (like: \"{due['question']}\").")
+            return prompt
         today = time.strftime("%Y-%m-%d")
         if not self.notion or not self._owner_check() or _read_marker(BRIEFING_MARKER) == today:
             return prompt
@@ -1073,7 +1093,7 @@ class Aria:
                         self._initiative_active = None
                         self._go_to_sleep("Sure, later.")
                         break
-                    if self._initiative_active["kind"] == "chat" and CHAT_BRUSH_OFF_RE.match(user_input):
+                    if self._initiative_active["kind"] in ("chat", "break") and CHAT_BRUSH_OFF_RE.match(user_input):
                         self._initiative_active["answered"] = False   # counts like ignored: wait longer next time
                         self._go_to_sleep(random.choice(CHAT_LET_GO))
                         break
@@ -1127,7 +1147,7 @@ if __name__ == "__main__":
     if args.no_ui:
         aria = Aria(option=option)
         instance.listen(lambda cmd: aria.shutdown() if cmd == "quit" else
-                        aria.initiative.force(cmd) if cmd in ("chat", "review", "event") else None)
+                        aria.initiative.force(cmd) if cmd in ("chat", "review", "event", "followup", "break") else None)
         aria.run()
     else:
         from ui.overlay import run_with_overlay
