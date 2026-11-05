@@ -98,6 +98,10 @@ class ArduinoLEDController:
         """Not currently called from Aria.py but matches the sketch's RGB: command."""
         return self._write(f"RGB:{r},{g},{b}")
 
+    def set_effect(self, effect: str) -> bool:
+        """Matches the sketch's EFFECT: command (solid, breathe, pulse, flicker)."""
+        return self._write(f"EFFECT:{effect}")
+
     def set_brightness(self, value: int) -> bool:
         """Not currently called from Aria.py but matches the sketch's BRIGHT: command."""
         return self._write(f"BRIGHT:{max(0, min(255, value))}")

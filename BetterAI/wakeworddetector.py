@@ -1,56 +1,46 @@
+import time
 import pyaudio
 import numpy as np
 from openwakeword.model import Model
+from openwakeword.utils import download_models
 
 
 class WakeWordDetector:
-    def __init__(self, wake_word="hey_aria", threshold=0.7):
-        # openwakeword has built-in models, closest to "hey aria" is "hey_jarvis"
-        # or use a custom one — we'll use alexa as placeholder until custom trained
+    def __init__(self, threshold=0.7):
+        download_models()  # once at init, not at import time
+        # "hey_jarvis" is the closest built-in model until a custom "hey aria" is trained
         self.model = Model(wakeword_models=["hey_jarvis"], inference_framework="onnx")
         self.threshold = threshold
         self.p = pyaudio.PyAudio()
-        self.chunk_size = 1280
+        self.chunk_size = 1280      # 80 ms at 16 kHz
         self.sample_rate = 16000
 
-    def listen_for_wake_word(self, cooldown=3.0):
-        """Blocks until wake word detected, explicitly discarding noise during cooldown."""
-        import time
+    def listen_for_wake_word(self, stop_event=None, cooldown=3.0) -> bool:
+        """Blocks until the wake word is heard (True) or stop_event is set (False)."""
         print("[Wake] Sleeping... say the wake word to activate.")
-
-        # 1. Open the stream immediately so we can actively capture and drop audio
         self.model.reset()
         stream = self.p.open(
-            format=pyaudio.paInt16,
-            channels=1,
-            rate=self.sample_rate,
-            input=True,
-            frames_per_buffer=self.chunk_size
+            format=pyaudio.paInt16, channels=1, rate=self.sample_rate,
+            input=True, frames_per_buffer=self.chunk_size,
         )
-
-        # 2. Actively drain the mic buffer for the duration of the cooldown period
-        print(f"[Wake] Flushing ambient noise for {cooldown} seconds...")
-        start_cooldown = time.time()
         try:
-            while time.time() - start_cooldown < cooldown:
-                # Read chunks and throw them away to keep the stream fresh
+            # Drain the mic so Aria's own voice / leftover noise isn't scored
+            end = time.time() + cooldown
+            while time.time() < end:
+                if stop_event and stop_event.is_set():
+                    return False
                 stream.read(self.chunk_size, exception_on_overflow=False)
-        except Exception as e:
-            print(f"[Wake] Cooldown flush encountered a minor error (ignored): {e}")
 
-        # 3. Now enter the real listening loop with a totally clean slate
-        print("[Wake] Ready and listening for wake word.")
-        try:
-            while True:
+            print("[Wake] Ready and listening for wake word.")
+            while not (stop_event and stop_event.is_set()):
                 audio = stream.read(self.chunk_size, exception_on_overflow=False)
-                audio_np = np.frombuffer(audio, dtype=np.int16)
-                predictions = self.model.predict(audio_np)
-
-                for model_name, score in predictions.items():
+                predictions = self.model.predict(np.frombuffer(audio, dtype=np.int16))
+                for score in predictions.values():
                     if score > self.threshold:
                         print(f"[Wake] Wake word detected! ({score:.2f})")
-                        self.model.reset()  # clear post-detection state
-                        return
+                        self.model.reset()
+                        return True
+            return False
         finally:
             stream.stop_stream()
             stream.close()

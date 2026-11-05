@@ -1,19 +1,31 @@
-ollama
-kokoro>=0.4.0
-soundfile
-pyaudio
-numpy
-rich
+# LLM
+ollama>=0.6
 
+# Speech
 faster-whisper
+openwakeword
+kokoro==0.9.4          # default voice (CPU)
+scipy                  # voice clean-up filters
+chatterbox-tts         # optional: TTS_ENGINE=chatterbox (voice cloning, ~4 GB VRAM)
+gradio_client          # RVC voice conversion server
+pyaudio
 sounddevice
+soundfile
+numpy
+torch
+snac                   # decoder.py
+
+# Vision
+opencv-contrib-python  # needs cv2.face
+pystray                # tray icon in --no-ui mode
+
+# Overlay UI
+PySide6
+Pillow
+
+# Integrations
 spotipy
 pyserial
 requests
-snac
-torch
-openwakeword
-pyautogui
-ollama
-spotipy
-comtypes
+python-dotenv
+

@@ -46,12 +46,14 @@ class HomeAssistantController:
 
     def __init__(self):
         if not HA_TOKEN:
-            print("[HomeAssistant] WARNING: HA_TOKEN not set. Run `setx HA_TOKEN \"...\"` and restart your terminal.")
+            raise RuntimeError("not configured (set HA_TOKEN in Engines/.env to enable)")
         self._headers = {
             "Authorization": f"Bearer {HA_TOKEN}",
             "Content-Type": "application/json",
         }
         self._ok = self._check_connection()
+        if not self._ok:
+            raise RuntimeError(f"server not reachable at {HA_URL}")
 
     def _check_connection(self) -> bool:
         try:

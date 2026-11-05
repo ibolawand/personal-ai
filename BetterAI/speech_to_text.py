@@ -10,14 +10,17 @@ class STTEngine:
         self.silence_threshold = 0.01
         self.silence_duration = 2.0  # seconds of silence before stopping
         self.max_duration = 30.0     # max recording time
+        self.on_level = None         # optional fn(volume: float) for UI meters
 
-    def _record(self):
+    def _record(self, start_timeout=None):
+        """Records until silence. Returns None if nobody starts speaking within start_timeout seconds."""
         print("[STT] Listening...")
         frames = []
         silent_frames = 0
         speaking = False
         frames_per_buffer = 1024
         silence_limit = int(self.silence_duration * self.sample_rate / frames_per_buffer)
+        start_limit = int(start_timeout * self.sample_rate / frames_per_buffer) if start_timeout else None
 
         with sd.InputStream(samplerate=self.sample_rate, channels=1,
                            dtype='float32', blocksize=frames_per_buffer) as stream:
@@ -25,6 +28,8 @@ class STTEngine:
                 data, _ = stream.read(frames_per_buffer)
                 frames.append(data.copy())
                 volume = np.abs(data).mean()
+                if self.on_level:
+                    self.on_level(float(volume))
 
                 if volume > self.silence_threshold:
                     speaking = True
@@ -34,14 +39,19 @@ class STTEngine:
                     if silent_frames >= silence_limit:
                         break
 
+                if not speaking and start_limit and len(frames) >= start_limit:
+                    return None
+
                 # Hard cap
                 if len(frames) > int(self.max_duration * self.sample_rate / frames_per_buffer):
                     break
 
         return np.concatenate(frames, axis=0).flatten()
 
-    def listen(self):
-        audio = self._record()
+    def listen(self, start_timeout=None):
+        audio = self._record(start_timeout)
+        if audio is None:
+            return None
         print("[STT] Transcribing...")
         segments, _ = self.model.transcribe(audio, language="en")
         text = " ".join(s.text for s in segments).strip()

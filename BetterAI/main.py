@@ -1,57 +1,178 @@
+import argparse
+import os
+import queue
+import re
+from collections import deque
+import select
 import sys
 import threading
 import time
-import re
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 from ContextBuilder import ContextBuilder
-from Controller.homeController import HomeAssistantController
-from Engines.Emotionengine import EmotionEngine
-from Controller.Spotify_controll import SpotifyEngine
-from Engines.Tool_Engine import ToolEngine
 from Controller.arduino_controller import ArduinoLEDController
+from Controller.homeController import HomeAssistantController
+from Controller.Spotify_controll import SpotifyEngine
+from database import AriaMemory
+from Engines.Confirm import Confirmer
+from Engines.Emotionengine import EmotionEngine
+from Engines.FilesEngine import FilesEngine
+from Engines.LaptopEngine import LaptopEngine
+from Engines.NotionEngine import NotionEngine
+from Engines.FocusMode import FocusMode
+from Engines.Reminders import Reminders
+from Engines.ScreenEngine import ScreenEngine
+from Engines.Tool_Engine import ToolEngine
 from Engines.UserStateEngine import UserStateEngine
 from Engines.voice_engine import VoiceEngine
-from database import AriaMemory
 from llm_engine import LLMEngine
 from speech_to_text import STTEngine
-from vision.setupface import add_face
 from vision.tray import AriaTray
 from vision.vision import AriaVision
 from wakeworddetector import WakeWordDetector
 
-# ── Live2D ────────────────────────────────────────────────────────────────────
+load_dotenv(Path(__file__).parent / "Engines" / ".env")
 
+LLM_MODEL = "qwen3:8b"
+PRESENCE_REWAKE_AWAY_S = 120   # camera only re-wakes Aria if you were away this long
 
 BASE_PROMPT = """You are Aria, Lala's personal desk AI assistant. You are efficient, intelligent, and direct.
 You have a dry wit and speak like a competent person, not a customer service bot.
-You get things done — you answer questions, control devices, play music, search the web, and control the TV.
-Keep responses short and to the point — one or two sentences unless more is needed.
-If you don't know something, say so and offer to search for it.
-You have a camera — when asked what you see or who is there, always use the look tool.
-When asked anything about the TV (on, off, volume), always use the TV tools. Never say you can't do it.
-You can also check Lala's phone battery/location and send notifications to it via Home Assistant."""
+You answer questions, play music, control the desk LEDs and TV, check the calendar, set timers and reminders,
+run focus sessions, look at Lala's screen and clipboard, control the laptop (apps, volume, audio output, media,
+Wi-Fi, Bluetooth, lock, power), find/open/read files in Lala's school and documents folders, see through a camera,
+keep Lala's notes, lists and calendar in their MyNotion app, and check or notify Lala's phone — but only through the tools you are given.
+Lala uses you for everyday life, not just school. For questions about Lala's own life (birthdays, plans, what they wrote down),
+call search_notes before saying you don't know. "Note that…" / "remember to… later" goes into add_note; "add X to my … list" into add_to_list.
+When a tool result says NEEDS CONFIRMATION, ask Lala a short yes/no question and do not claim it's done.
+When reading a file to summarise it, give the key points briefly, since you are speaking.
+Keep responses short and to the point — one or two sentences unless more is needed. Your replies are spoken aloud, so no markdown or lists.
+Whenever Lala mentions something they copied ("the code I copied", "this text"), call read_clipboard first — never ask them to paste.
+If you produce code or anything long, put it on the clipboard with copy_to_clipboard and just summarise it aloud.
+If you don't know something, say so or use web_search.
+When asked what you see or who is there, use the look tool. For anything about the computer screen, use look_at_screen.
+If a tool reports a failure, or there is no tool for what was asked, say so plainly. Never claim you did something you didn't.
+Tool rule: for ANY action, or ANY live information (battery, volume, windows, files, time left, what's playing),
+you MUST call a tool in this turn — even if the conversation history shows a similar answer. Never answer those from memory."""
 
 SLEEP_PHRASES = ["go to sleep", "sleep", "goodbye", "see you later", "that's all", "shut up"]
 SHUTDOWN_PHRASES = ["exit", "quit", "shutdown"]
-SLEEP_TIMEOUT = 30
+SLEEP_TIMEOUT = 60
+MUSIC_TOOLS = {"play_song", "play_artist", "play_playlist", "play_genre"}
+CLIPBOARD_RE = re.compile(r"\b(copied|clipboard|i just copied|what i copied)\b", re.I)
+# "open my calendar" / "show me the shopping list" -> MyNotion, decided in code (the model
+# tends to read the list aloud instead, especially right after talking about it)
+OPEN_IN_NOTION_RE = re.compile(r"^\s*(?:aria,?\s*)?(?:please\s+)?(?:open|show(?: me)?|pull up|bring up)\s+"
+                               r"(?:up\s+)?(?:my|the)?\s*(.+?)(?:\s+in\s+(?:my\s*)?notion|\s+in\s+mynotion)?\s*[.!?]?\s*$", re.I)
+CODE_BLOCK_RE = re.compile(r"```[\w+-]*\n?(.*?)```", re.S)
+# customer-service tails the model likes to add; Aria is spoken, so the closing sentence goes
+FILLER_RE = re.compile(
+    r"anything else|let me know if|feel free to|don'?t hesitate|how can i (?:help|assist)|"
+    r"hope (?:this|that) helps|happy to help|is there something else", re.I)
+
+
+def tidy_reply(text: str) -> str:
+    """Strip trailing filler and leftover markdown so bubbles and speech read naturally."""
+    text = (text or "").strip()
+    for _ in range(2):
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        if len(sentences) > 1 and FILLER_RE.search(sentences[-1]):
+            text = " ".join(sentences[:-1]).strip()
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)          # **bold**
+    text = re.sub(r"(?<!`)`([^`\n]+)`(?!`)", r"\1", text)   # `inline code`
+    text = re.sub(r"^\s*[-*•]\s+", "", text, flags=re.M)    # bullet markers
+    return text
+
+
+def matches_phrase(phrases, text):
+    """The whole message must be the phrase (ignoring 'aria', 'please', punctuation),
+    so 'remind me to sleep at 11' or 'quit spotify' don't put Aria to sleep / shut her down."""
+    words = re.sub(r"[^a-z' ]", " ", text.lower()).split()
+    core = " ".join(w for w in words if w not in ("aria", "please", "ok", "okay", "now", "hey"))
+    return core in {p.lower() for p in phrases}
+
+
+# Started from the menu / hotkey, stdin is /dev/null: it's *always* "ready" but only ever
+# returns end-of-file, which used to wake Aria instantly and spam the log. A terminal or
+# PyCharm's console is fine. read_stdin_line() switches stdin off the first time it hits EOF.
+HAS_TERMINAL = sys.stdin is not None and not sys.stdin.closed
+
+
+def stdin_ready(timeout=0.1):
+    if not HAS_TERMINAL:
+        time.sleep(timeout)
+        return False
+    return bool(select.select([sys.stdin], [], [], timeout)[0])
+
+
+def read_stdin_line():
+    """Returns the typed line, or None at end-of-file (and stops reading stdin from then on)."""
+    global HAS_TERMINAL
+    line = sys.stdin.readline()
+    if line == "":
+        HAS_TERMINAL = False
+        return None
+    return line.strip()
+
+
+BRIEFING_MARKER = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "aria", "last_briefing")
+
+
+def _read_marker(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _write_marker(path, value):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(value)
+    except OSError:
+        pass
+
+
+class NullUI:
+    """Used when running without the overlay. ui/overlay.py's bridge implements the same methods."""
+    def set_state(self, state): pass          # booting|sleeping|listening|thinking|speaking + flashes: unknown|alert
+    def set_timers(self, items): pass         # pending reminders, for the countdown ring
+    def message(self, role, text): pass       # role: "user" | "aria"
+    def mic_level(self, volume): pass         # called from STT while recording
+    def feed_audio(self, chunk): pass         # called by VoiceEngine for every playback chunk
+    def stop_talking(self): pass
 
 
 class Aria:
-    def __init__(self):
+    def __init__(self, option=1, ui=None):
+        self.option = option
+        self.ui = ui or NullUI()
+        self.muted = False
+        self.text_inputs = queue.Queue()   # text typed in the overlay
+        self._name_answer = queue.Queue()  # overlay text while Aria is asking an unknown person's name
+        self._awaiting_name = False
+        self._sleep_request = threading.Event()
         self.memory = AriaMemory()
         self.context = ContextBuilder(self.memory)
-        self.llm = LLMEngine(model="qwen3:8b")
+        self.llm = LLMEngine(model=LLM_MODEL)
         self.stt = STTEngine()
+        self.stt.on_level = self.ui.mic_level
         self.emotions = EmotionEngine()
-        self.wake = WakeWordDetector()
+        self.wake = WakeWordDetector() if option == 2 else None
         self.is_user_known = False
-
-        self._vision_triggered = threading.Event()
-        self._vision_user = [None]
-        self._vision_cooldown = [False]
+        self._wake_event = threading.Event()
+        self._slept_at = None      # when Aria last went to sleep (None = since startup)
+        self._gone_since = None    # when the camera last saw the person leave
+        self._vision_user = None
         self._unknown_in_progress = False
-
-        # Audio lock to prevent background threads and main thread from fighting over mic input
+        self._shutting_down = False
+        self._session_convo = []  # messages since last wake, for fact extraction
+        self._recent = deque(maxlen=6)  # last turns incl. tool calls, replayed as LLM history
+        self._pending_state = None      # mood check result from the previous turn (runs in background)
 
         self.vision = AriaVision(
             on_known_user=self._on_known_user,
@@ -61,78 +182,103 @@ class Aria:
         )
         self.vision.start()
 
-        self.state_engine = UserStateEngine(vision=self.vision, llm_model="qwen2.5:7b")
+        self.state_engine = UserStateEngine(vision=self.vision, llm_model=LLM_MODEL)
 
-        self.tray = AriaTray(
-            on_show=lambda: print("[Tray] Show clicked"),
-            on_quit=self.shutdown,
-        )
-        self.tray.start()
+        # The overlay has its own right-click menu, so the tray icon is only for terminal mode
+        self.tray = None
+        if ui is None:
+            self.tray = AriaTray(on_show=lambda: print("[Tray] Show clicked"), on_quit=self.shutdown)
+            self.tray.start()
 
-        try:
-            self.ha = HomeAssistantController()
-        except Exception as e:
-            print(f"Warning: Home Assistant unavailable: {e}")
-            self.ha = None
+        self.ha = self._try("Home Assistant", HomeAssistantController)
+        self.spotify = self._try("Spotify", lambda: SpotifyEngine(
+            client_id=os.environ["SPOTIFY_CLIENT_ID"],
+            client_secret=os.environ["SPOTIFY_CLIENT_SECRET"],
+        ))
+        self.arduino = self._try("Arduino", ArduinoLEDController)
+        self.voice = self._try("Voice", lambda: VoiceEngine(stt_engine=self.stt, live2d_controller=self.ui))
 
-        try:
-            self.spotify = SpotifyEngine(client_id="xx", client_secret="xx")
-        except Exception as e:
-            print(f"Warning: Spotify unavailable: {e}")
-            self.spotify = None
-
-        try:
-            self.arduino = ArduinoLEDController()
-        except Exception as e:
-            print(f"Warning: Arduino unavailable: {e}")
-            self.arduino = None
-
-        try:
-            self.voice = VoiceEngine(stt_engine=self.stt)
-        except Exception as e:
-            print(f"Warning: Voice unavailable: {e}")
-            self.voice = None
+        self.announcements = queue.Queue()  # reminder/timer texts waiting to be spoken
+        self.reminders = Reminders(self.memory, on_due=self._on_reminder_due, on_change=self._push_timers)
+        self.focus = FocusMode(self.reminders, spotify=self.spotify, arduino=self.arduino, ha=self.ha)
+        self.screen = ScreenEngine(clipboard=ui if hasattr(ui, "get_text") else None)
+        self.confirm = Confirmer()
+        self.laptop = LaptopEngine(self.confirm)
+        self.files = FilesEngine(self.confirm)
+        self.notion = self._try("MyNotion", lambda: NotionEngine(os.environ.get("DB_PATH"), self.confirm))
+        self._last_reply = ""
+        if self.notion:
+            self.notion.last_reply = lambda: self._last_reply  # for "save that as a note"
 
         self.tools = ToolEngine(
             spotify=self.spotify,
             arduino=self.arduino,
             vision=self.vision,
             ha=self.ha,
+            reminders=self.reminders,
+            focus=self.focus,
+            screen=self.screen,
+            laptop=self.laptop,
+            files=self.files,
+            notion=self.notion,
+            owner_check=self._owner_check,
         )
+        print(f"[Tools] {len(self.tools.schemas)} tools available")
 
         self.session_id = self.memory.start_session()
         self.session_msgs = 0
+        self.reminders.start()
+        if self.notion:
+            threading.Thread(target=self._event_reminder_loop, daemon=True).start()
+
+    def _event_reminder_loop(self):
+        """Keeps a heads-up reminder 15 min before each MyNotion event (picks up edits made in the app)."""
+        while not self._shutting_down:
+            try:
+                self.notion.sync_event_reminders(self.reminders)
+            except Exception as e:
+                print(f"[MyNotion] event reminder sync failed: {e}")
+            time.sleep(60)
+
+    @staticmethod
+    def _try(label, factory):
+        try:
+            return factory()
+        except Exception as e:
+            print(f"Warning: {label} unavailable: {e}")
+            return None
 
     # ── Vision callbacks ──────────────────────────────────────────────────────
 
+    def _presence_may_wake(self) -> bool:
+        """Seeing someone wakes Aria on first arrival, or when they come back after being
+        away a while — never right after she was sent to sleep while they're still sitting there."""
+        if self._slept_at is None:
+            return True
+        return self._gone_since is not None and time.time() - self._gone_since >= PRESENCE_REWAKE_AWAY_S
+
     def _on_known_user(self, name: str):
-        if self._vision_cooldown[0]:
-            return
         print(f"[Vision] Known user: {name}")
-        self.memory.save_memory(f"User's name is {name}")
-        self._vision_user[0] = [name]
-        self._vision_triggered.set()
+        self._vision_user = name
         self.is_user_known = True
+        if self._presence_may_wake():
+            self._wake_event.set()
+        self._gone_since = None
 
     def _on_unknown_user(self):
-        if self._vision_cooldown[0]:
+        if self._unknown_in_progress or not self._presence_may_wake():
             return
-        if self._unknown_in_progress:
-            return
-
         print("[Vision] Unknown person detected")
-        self._vision_user[0] = None
+        self._vision_user = None
         self.is_user_known = False
         self._unknown_in_progress = True
-
+        self.ui.set_state("unknown")
         threading.Thread(target=self._handle_unknown_person, daemon=True).start()
 
     def _handle_unknown_person(self):
-        # Acquire mic lock so main wake loops pause tracking until complete
-
         try:
             self.speak("I don't think we've met. What's your name?")
-            user_input = self.stt.listen()
+            user_input = self._ask_name()
 
             if not user_input:
                 self.speak("Didn't catch that, never mind.")
@@ -150,7 +296,7 @@ class Aria:
             self.speak(f"Nice to meet you, {name}. Give me a moment to remember your face.")
             self.vision.learn_face(name, samples=40)
             self.is_user_known = True
-            self._vision_user[0] = [name]
+            self._vision_user = name
             self.speak(f"Got it, {name}. I'll remember you next time.")
 
         except Exception as e:
@@ -158,15 +304,80 @@ class Aria:
         finally:
             self._unknown_in_progress = False
 
+    def _ask_name(self):
+        if self.option == 2:
+            return self.stt.listen(start_timeout=10)
+        if not isinstance(self.ui, NullUI):
+            self._awaiting_name = True
+            try:
+                return self._name_answer.get(timeout=30)
+            except queue.Empty:
+                return None
+            finally:
+                self._awaiting_name = False
+        return input()
+
     def _on_user_gone(self):
         print("[Vision] User left")
-        self._vision_triggered.clear()
-        self._vision_cooldown[0] = False
+        self._gone_since = time.time()
+        self._wake_event.clear()
+
+    # ── Reminders ─────────────────────────────────────────────────────────────
+
+    def _push_timers(self):
+        self.ui.set_timers(self.reminders.pending())
+
+    def _on_reminder_due(self, r):
+        """Runs on the reminder thread. Queues the announcement and wakes Aria to say it."""
+        text = self.focus.finish() if r["kind"] == "focus" else Reminders.announcement(r)
+        print(f"[Reminder] {text}")
+        self.ui.set_state("alert")
+        if self.arduino and r["kind"] != "focus":  # focus.finish() already resets the LEDs
+            self.arduino.startup_animation()
+        if self.ha and not self.vision.is_present:
+            self.ha.notify_phone(text, title="Aria")
+        self.announcements.put(text)
+        self._wake_event.set()
+
+    def _speak_announcements(self) -> bool:
+        spoke = False
+        while not self.announcements.empty():
+            text = self.announcements.get()
+            print(f"Aria: {text}")
+            # into history, so "snooze it" / "thanks" has context
+            self.memory.save_message("assistant", text)
+            self._session_convo.append({"role": "assistant", "content": text})
+            self._recent.append([{"role": "assistant", "content": text}])
+            self.speak(text)
+            spoke = True
+        return spoke
+
+    # ── Controls (called from the overlay, any thread) ────────────────────────
+
+    def submit_text(self, text: str):
+        text = text.strip()
+        if not text:
+            return
+        if self._awaiting_name:
+            self._name_answer.put(text)
+            return
+        self.text_inputs.put(text)
+        self._wake_event.set()  # typing while asleep wakes Aria
+
+    def request_sleep(self):
+        self._sleep_request.set()
+
+    def toggle_mute(self) -> bool:
+        self.muted = not self.muted
+        return self.muted
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def speak(self, text: str):
-        if not text or not self.voice:
+        if not text:
+            return None
+        self.ui.message("aria", text)
+        if not self.voice or self.muted:
             return None
         if self.arduino:
             self.arduino.send_command()
@@ -175,177 +386,322 @@ class Aria:
             self.arduino.stop_talking()
         return interrupted_text
 
-    def process_text_input(self, user_input: str) -> str:
-        if not user_input:
-            return "Ich habe nichts empfangen."
+    def handle_turn(self, user_input: str, check_state: bool = True):
+        """One full turn: mood → state check → LLM with tools → save. Returns (reply, tools_used)."""
+        self.ui.set_state("thinking")
 
-        if user_input.lower().startswith("say "):
-            text_to_say = user_input[4:].strip()
-
-            return f" Lawand is saying {text_to_say}"
-
+        # A yes/no answer to a pending risky action is handled in code, never by the LLM
+        confirmed = self.confirm.resolve(user_input)
+        if confirmed is not None:
+            self._save_turn(user_input, confirmed)
+            self._recent.append([{"role": "user", "content": user_input},
+                                 {"role": "assistant", "content": confirmed}])
+            return confirmed, [("confirmation", confirmed)]
+        opened = self._open_in_notion(user_input)
+        if opened:
+            self._save_turn(user_input, opened)
+            self._recent.append([{"role": "user", "content": user_input},
+                                 {"role": "assistant", "content": opened}])
+            return opened, [("open_mynotion", opened)]
         self.emotions.process(user_input)
-        self.memory.log_mood(self.emotions.get_mood_label())
+        mood = self.emotions.get_mood_label()
+        self.memory.log_mood(mood)
         if self.voice:
-            self.voice.set_mood(self.emotions.get_mood_label())
+            self.voice.set_mood(mood)
 
-        tool_result = self.tools.handle(user_input, self.llm.model)
-        history = self.memory.load_history(limit=10)
+        prompt = user_input
+        if check_state:
+            # The mood check costs an extra model call (2–6 s), so it runs in the background
+            # after each turn and its result is used on the next one.
+            state, self._pending_state = self._pending_state, None
+            if state is not None and state.should_ask:
+                prompt += (f"\n[Note: the user seems {state.reason}. After answering normally, "
+                           f"briefly and casually ask something like: \"{state.suggested_question}\"]")
+            threading.Thread(target=self._check_state_bg, args=(user_input,), daemon=True).start()
+
+        # Small models often forget to call read_clipboard, so attach it ourselves
+        if CLIPBOARD_RE.search(user_input):
+            prompt += f"\n[{self.screen.read_clipboard()}]"
+
         system_prompt = self.context.build_system_prompt(BASE_PROMPT)
+        reply, used = self.llm.chat_with_tools(
+            prompt, self._history(), system_prompt, self.tools.schemas, self.tools.execute
+        )
+        reply = tidy_reply(self._move_code_to_clipboard(reply, used))
+        if not reply.strip():
+            # the model sometimes returns nothing (e.g. asked for something it has no tool for)
+            reply = (used[-1][1] if used else "Sorry, I can't do that one.")[:300]
+        if not any(name == "save_as_note" for name, _ in used):
+            self._last_reply = reply
+        trace = list(self.llm.last_trace)
+        if trace and trace[-1]["role"] == "assistant":
+            trace[-1] = {"role": "assistant", "content": reply}
+        self._recent.append([{"role": "user", "content": user_input}] + trace)
 
-        if tool_result:
-            response = self.llm.chat(
-                f"{user_input}\n[Action result: {tool_result}]",
-                history, system_prompt
-            )
-        else:
-            response = self.llm.chat(user_input, history, system_prompt)
+        self._save_turn(user_input, reply)
+        return reply, used
 
+    def _open_in_notion(self, text: str):
+        """'open my calendar' / 'show me the shopping list' -> MyNotion, if it names the calendar or
+        an existing note. Anything else ('open vs code') returns None and goes to the model."""
+        m = OPEN_IN_NOTION_RE.match(text or "")
+        if not m or not self.notion:
+            return None
+        what = m.group(1).strip()
+        if re.search(r"\b(calendar|schedule|agenda)\b", what, re.I) or \
+                re.fullmatch(r"(my\s*)?notion|mynotion|notes", what, re.I) or self.notion.has_note(what):
+            return self.notion.open_mynotion(what)
+        return None
+
+    def _check_state_bg(self, user_input):
+        try:
+            self._pending_state = self.state_engine.check(user_input)
+        except Exception as e:
+            print(f"[UserState] check failed: {e}")
+
+    def _history(self) -> list:
+        """This session's turns with their tool calls; plain text history from the DB after a restart."""
+        if self._recent:
+            return [m for turn in self._recent for m in turn]
+        return self.memory.load_history(limit=6)
+
+    def _save_turn(self, user_input, reply):
         self.memory.save_message("user", user_input)
-        self.memory.save_message("assistant", response)
+        self.memory.save_message("assistant", reply)
+        self._session_convo += [{"role": "user", "content": user_input},
+                                {"role": "assistant", "content": reply}]
         self.session_msgs += 2
 
-        return response
+    def _owner_check(self):
+        """Opt-in: set ARIA_OWNER=<face profile name> in Engines/.env to restrict laptop/file/phone tools
+        to you. Blocks them while the camera sees someone else (a different known face or a stranger)."""
+        owner = os.environ.get("ARIA_OWNER")
+        if not owner or not self.vision.is_present:
+            return True
+        who = self.vision.current_user
+        return bool(who) and who.lower() == owner.lower()
+
+    def _move_code_to_clipboard(self, reply: str, used) -> str:
+        """Code can't be spoken: put code blocks on the clipboard and keep only the prose."""
+        blocks = [b.strip("\n") for b in CODE_BLOCK_RE.findall(reply)]
+        if not blocks:
+            return reply
+        if not any(name == "copy_to_clipboard" for name, _ in used):
+            result = self.screen.copy_to_clipboard("\n\n".join(blocks))
+            if not result.startswith("Copied"):
+                return reply  # couldn't copy — leave the code in the bubble
+        prose = CODE_BLOCK_RE.sub(" ", reply)
+        prose = re.sub(r"(Here'?s|Here is) (the|a|your) [\w ]{0,30}(version|code)\s*:", "", prose, flags=re.I)
+        prose = " ".join(prose.split())
+        if "clipboard" not in prose.lower():
+            prose += " The code is on your clipboard."
+        return prose
+
+    def process_text_input(self, user_input: str) -> str:
+        """Single text turn without the state check (for non-CLI frontends)."""
+        if not user_input:
+            return "I didn't receive anything."
+        reply, _ = self.handle_turn(user_input, check_state=False)
+        return reply
+
+    def _remember_session(self, blocking=False):
+        """Extract long-term facts/topics from the conversation that just ended."""
+        convo, self._session_convo = self._session_convo, []
+        if len(convo) < 2:
+            return
+
+        def work():
+            facts, topics = self.llm.extract_facts(convo)
+            for f in facts:
+                self.memory.save_memory(f)
+            for t in topics:
+                self.memory.log_topic(t)
+            if facts or topics:
+                print(f"[Memory] Learned {len(facts)} facts, {len(topics)} topics")
+
+        if blocking:
+            work()
+        else:
+            threading.Thread(target=work, daemon=True).start()
+
+    def _go_to_sleep(self, line=None):
+        if line:
+            self.speak(line)
+        self.ui.set_state("sleeping")
+        self._sleep_request.clear()
+        self._slept_at = time.time()
+        if self.arduino:
+            self.arduino.sleep_mode()
+        self._remember_session()
 
     def shutdown(self):
+        if self._shutting_down:
+            return
+        self._shutting_down = True
         print("\nShutting down...")
-        self.memory.end_session(self.session_id, self.session_msgs)
-        self.vision.stop()
-        self.tray.stop()
-        if self.arduino: self.arduino.shutdown(); self.arduino.close()
-        if self.voice: self.voice.close()
-        self.wake.close()
-        sys.exit(0)
-
-    # ── Main loop ────────────────────────────────────────────────────────────
-
-    def run(self):
         try:
-            while True:
-
-                self._vision_triggered.clear()
-                wake_thread = threading.Thread(target=self.wake.listen_for_wake_word, daemon=True)
-                wake_thread.start()
-
-                while wake_thread.is_alive() and not self._vision_triggered.is_set():
-                    time.sleep(0.1)
-
-                if self._vision_triggered.is_set():
-                    self.wake.muted = True
-                    time.sleep(0.5)
-                    self.wake.muted = False
-
-                    if self.arduino:
-                        self.arduino.startup_animation()
-
-                    opening = self.llm.chat(
-                        self.context.greeting_prompt(known_user=self._vision_user[0]),
-                        [], BASE_PROMPT
-                    )
-                    self.speak(opening)
-
-                    last_interaction = time.time()
-                    pending_input = None  # Cache slot for preserving interruptions
-
-                    # ── Conversation loop ──────────────────────────────────────────
-                    while True:
-                        if time.time() - last_interaction > SLEEP_TIMEOUT:
-                            print("[Wake] Going back to sleep.")
-                            self.speak("Going to sleep.")
-                            if self.arduino: self.arduino.sleep_mode()
-                            break
-
-                        # Fix: If an interruption happened, read the cached string instead of calling listen()
-                        if pending_input:
-                            user_input = pending_input
-                            pending_input = None
-                        else:
-                            user_input = self.stt.listen()
-
-                        if not user_input:
-                            continue
-
-                        print(f"You: {user_input}")
-
-                        if any(p in user_input.lower() for p in SLEEP_PHRASES):
-                            self.speak("Alright, going to sleep.")
-                            if self.arduino: self.arduino.sleep_mode()
-                            self._vision_cooldown[0] = True
-                            break
-
-                        if any(p in user_input.lower() for p in SHUTDOWN_PHRASES):
-                            self.speak("Shutting down.")
-                            self.shutdown()
-                            return
-
-                        last_interaction = time.time()
-
-                        self.emotions.process(user_input)
-                        self.memory.log_mood(self.emotions.get_mood_label())
-                        if self.voice:
-                            self.voice.set_mood(self.emotions.get_mood_label())
-
-                        state_result = self.state_engine.check(user_input)
-                        tool_result = self.tools.handle(user_input, self.llm.model)
-                        history = self.memory.load_history(limit=10)
-                        system_prompt = self.context.build_system_prompt(BASE_PROMPT)
-
-                        if tool_result and any(x in tool_result.lower() for x in ["playing", "playlist"]):
-                            response = self.llm.chat(
-                                f"{user_input}\n[Action result: {tool_result}. Confirm in one short sentence.]",
-                                history, system_prompt
-                            )
-                            print(f"Aria: {response}")
-                            self.memory.save_message("user", user_input)
-                            self.memory.save_message("assistant", response)
-                            self.session_msgs += 2
-
-                            interrupted = self.speak(response)
-                            if self.arduino: self.arduino.sleep_mode()
-                            if interrupted:
-                                pending_input = interrupted  # Cache the interruption phrase
-                                last_interaction = time.time()
-                                continue
-                            break
-                        else:
-                            if tool_result:
-                                response = self.llm.chat(
-                                    f"{user_input}\n[Action result: {tool_result}]",
-                                    history, system_prompt
-                                )
-                            elif state_result.should_ask:
-                                response = self.llm.chat(
-                                    f"{user_input}\n[Note: the user seems {state_result.reason}. "
-                                    f"After answering normally, naturally and briefly ask something like: "
-                                    f"\"{state_result.suggested_question}\" — keep it casual.]",
-                                    history, system_prompt
-                                )
-                            else:
-                                response = self.llm.chat(user_input, history, system_prompt)
-
-                            print(f"Aria: {response}")
-                            self.memory.save_message("user", user_input)
-                            self.memory.save_message("assistant", response)
-                            self.session_msgs += 2
-
-                            interrupted = self.speak(response)
-                            if interrupted:
-                                print(f"You (interrupted): {interrupted}")
-                                pending_input = interrupted  # Cache the interruption phrase
-                                last_interaction = time.time()
-                                continue
-
-        except KeyboardInterrupt:
-            print("\nExiting...")
-        finally:
             self.memory.end_session(self.session_id, self.session_msgs)
+            self.reminders.stop()
             self.vision.stop()
-            self.tray.stop()
-            if self.arduino: self.arduino.off(); self.arduino.close()
-            if self.voice: self.voice.close()
-            self.wake.close()
+            if self.tray:
+                self.tray.stop()
+            if self.arduino:
+                self.arduino.shutdown()
+            if self.voice:
+                self.voice.close()
+            if self.wake:
+                self.wake.close()
+        finally:
+            # os._exit works from any thread (e.g. the tray's Quit button); sys.exit would only end that thread
+            os._exit(0)
+
+    # ── Main loop ─────────────────────────────────────────────────────────────
+
+    def _greeting_prompt(self) -> str:
+        """Normal short greeting — plus the daily briefing the first time Aria greets Lala each day."""
+        prompt = self.context.greeting_prompt(known_user=self._vision_user)
+        today = time.strftime("%Y-%m-%d")
+        if not self.notion or not self._owner_check() or _read_marker(BRIEFING_MARKER) == today:
+            return prompt
+        try:
+            facts = self.notion.daily_briefing(self.reminders)
+        except Exception as e:
+            print(f"[MyNotion] briefing failed: {e}")
+            return prompt
+        _write_marker(BRIEFING_MARKER, today)
+        return (prompt + "\nThis is the first time today, so after the greeting give a short spoken briefing "
+                "from these facts (2-4 natural sentences, no lists, skip anything empty, times as spoken words):\n"
+                f"{facts}")
+
+    def _wait_for_wake(self) -> bool:
+        """Blocks until Aria should wake up. Returns True if she should."""
+        self.ui.set_state("sleeping")
+        if self.option == 2:
+            heard = self.wake.listen_for_wake_word(stop_event=self._wake_event)
+            self.vision.stop()  # paused during conversation; restarted when Aria sleeps
+            return heard or self._wake_event.is_set()
+
+        print("Press Enter (or type in the overlay) to wake Aria..." if HAS_TERMINAL
+              else "Sleeping — type in the overlay to wake Aria...")
+        while not self._wake_event.is_set():
+            if stdin_ready() and read_stdin_line() is not None:
+                return True
+        return True  # vision triggered
+
+    def run(self, option=None):
+        if option is not None:
+            self.option = option
+        while True:
+            self.vision.start()  # no-op if already running
+            self._wake_event.clear()
+
+            if not self._wait_for_wake():
+                continue
+
+            if self.arduino:
+                self.arduino.startup_animation()
+
+            if self.announcements.empty() and self.text_inputs.empty():
+                # only greet when nothing is waiting — a reminder or a typed question goes first,
+                # and generating a greeting nobody hears would just delay the answer
+                opening = self.llm.chat(self._greeting_prompt(), [], BASE_PROMPT)
+                print(f"Aria: {opening}")
+                self.speak(opening)
+
+            last_interaction = time.time()
+            pending_input = None
+            prompted = False  # text mode: print the prompt only once per turn
+
+            # ── Conversation loop ──────────────────────────────────────
+            while True:
+                if self._sleep_request.is_set():
+                    self._go_to_sleep()
+                    break
+
+                if self._speak_announcements():
+                    last_interaction = time.time()
+
+                remaining = SLEEP_TIMEOUT - (time.time() - last_interaction)
+                if remaining <= 0:
+                    print("\n[Wake] Going back to sleep.")
+                    # say it in voice mode; in text mode the orb dimming is enough
+                    self._go_to_sleep("Going to sleep." if self.option == 2 else None)
+                    break
+
+                # ── Get input ──
+                self.ui.set_state("listening")
+                if pending_input:
+                    user_input, pending_input = pending_input, None
+                elif not self.text_inputs.empty():
+                    user_input = self.text_inputs.get()
+                elif self.option == 1:
+                    if not prompted and HAS_TERMINAL:
+                        print("You > ", end="", flush=True)
+                        prompted = True
+                    if not stdin_ready(0.25):
+                        continue  # re-check the sleep timeout
+                    user_input = read_stdin_line()
+                    prompted = False
+                else:
+                    # short windows so typed input and sleep requests are noticed quickly
+                    user_input = self.stt.listen(start_timeout=min(remaining, 3))
+
+                if not user_input:
+                    continue
+
+                print(f"You: {user_input}")
+                self.ui.message("user", user_input)
+
+                if matches_phrase(SLEEP_PHRASES, user_input):
+                    self._go_to_sleep("Alright, going to sleep.")
+                    break
+
+                if matches_phrase(SHUTDOWN_PHRASES, user_input):
+                    self.speak("Shutting down.")
+                    self._remember_session(blocking=True)  # finish before os._exit kills threads
+                    self.shutdown()
+                    return
+
+                last_interaction = time.time()
+
+                try:
+                    response, used = self.handle_turn(user_input)
+                    print(f"Aria: {response}")
+                    interrupted = self.speak(response)
+                    last_interaction = time.time()
+                except Exception as e:
+                    print(f"[Error] {e}")
+                    self.speak("Something went wrong.")
+                    continue
+
+                if interrupted:
+                    print(f"You (interrupted): {interrupted}")
+                    pending_input = interrupted
+                    last_interaction = time.time()
+                    continue
+
+                if any(name in MUSIC_TOOLS for name, _ in used):
+                    # Music keeps playing, so end the session after one command
+                    self._go_to_sleep()
+                    break
 
 
 if __name__ == "__main__":
-    aria = Aria()
-    aria.run()
+    parser = argparse.ArgumentParser(description="Aria desk assistant")
+    parser.add_argument("--voice", action="store_true", help="wake word + speech input instead of keyboard")
+    parser.add_argument("--no-ui", action="store_true", help="terminal only, no floating overlay")
+    args = parser.parse_args()
+    option = 2 if args.voice else 1
+
+    from ui import instance
+    if instance.send("show"):
+        print("Aria is already running — opened her text box instead.")
+        sys.exit(0)
+
+    if args.no_ui:
+        aria = Aria(option=option)
+        instance.listen(lambda cmd: cmd == "quit" and aria.shutdown())
+        aria.run()
+    else:
+        from ui.overlay import run_with_overlay
+        run_with_overlay(lambda bridge: Aria(option=option, ui=bridge))

@@ -29,7 +29,7 @@ class ContextBuilder:
         time_of_day = "morning" if hour < 12 else "afternoon" if hour < 18 else "evening"
         late_night  = hour >= 23 or hour < 5
 
-        time_context = f"It is {time_of_day} on {day}, {date}."
+        time_context = f"It is {time_of_day} on {day}, {date}, {now.strftime('%H:%M')}."
         if late_night:
             time_context += " It's very late at night."
 

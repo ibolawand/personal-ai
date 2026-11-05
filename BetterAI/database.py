@@ -13,6 +13,7 @@ Everything in one DB:
 import sqlite3
 import datetime
 import threading
+import time
 
 import os
 
@@ -63,6 +64,14 @@ class AriaMemory:
                     emotion TEXT,
                     note    TEXT,
                     ts      TEXT DEFAULT (datetime('now'))
+                );
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                    text     TEXT,
+                    kind     TEXT DEFAULT 'reminder',   -- reminder | timer | focus
+                    due      REAL,                      -- unix timestamp
+                    created  REAL,
+                    done     INTEGER DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS face_profiles (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -239,6 +248,47 @@ class AriaMemory:
             with self._connect() as conn:
                 row = conn.execute("SELECT COUNT(*) FROM messages").fetchone()
         return row[0] if row else 0
+
+    # ── Reminders / timers ────────────────────────────────────
+    _REM_COLS = "id, text, kind, due, created"
+
+    @staticmethod
+    def _rem_row(r):
+        return {"id": r[0], "text": r[1], "kind": r[2], "due": r[3], "created": r[4]}
+
+    def add_reminder(self, text: str, kind: str, due: float) -> int:
+        with self._lock:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "INSERT INTO reminders (text, kind, due, created) VALUES (?, ?, ?, ?)",
+                    (text, kind, due, time.time()),
+                )
+                return cur.lastrowid
+
+    def pending_reminders(self) -> list:
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    f"SELECT {self._REM_COLS} FROM reminders WHERE done = 0 ORDER BY due"
+                ).fetchall()
+        return [self._rem_row(r) for r in rows]
+
+    def take_due_reminders(self, now: float) -> list:
+        """Returns reminders that are due and marks them done, atomically."""
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    f"SELECT {self._REM_COLS} FROM reminders WHERE done = 0 AND due <= ? ORDER BY due",
+                    (now,),
+                ).fetchall()
+                if rows:
+                    conn.executemany("UPDATE reminders SET done = 1 WHERE id = ?", [(r[0],) for r in rows])
+        return [self._rem_row(r) for r in rows]
+
+    def cancel_reminder(self, reminder_id: int):
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("UPDATE reminders SET done = 2 WHERE id = ?", (reminder_id,))
 
     # ══════════════════════════════════════════════════════════
     #  FACE PROFILES — fully integrated into DB

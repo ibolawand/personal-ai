@@ -55,7 +55,7 @@ class SpotifyEngine:
         if not device_id:
             return "No Spotify devices found. Open Spotify first."
 
-        results = self.sp.search(q=query, limit=10, type="track", market=self.market)
+        results = self.sp.search(q=f"'track:{query}'", limit=10, type="track", market=self.market)
         tracks = results["tracks"]["items"]
         if not tracks:
             return f"Couldn't find anything for '{query}'"

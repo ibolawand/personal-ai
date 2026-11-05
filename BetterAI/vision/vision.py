@@ -18,14 +18,55 @@ from collections import Counter
 
 import ollama
 
+from Engines.ScreenEngine import VISION_MODEL
+
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FACES_DIR    = os.path.join(PROJECT_ROOT, "aria_faces")
 MODEL_PATH   = os.path.join(FACES_DIR, "model.yml")
 CONFIDENCE_THRESHOLD = 75   # lower = stricter match
-CAMERA_INDEX = 1
+# Set CAMERA_INDEX in Engines/.env to force a camera; otherwise the first one that
+# actually delivers frames is used. (On Linux a webcam usually shows up as two
+# nodes: /dev/video0 = picture, /dev/video1 = metadata, which can't be read.)
+CAMERA_INDEX = os.environ.get("CAMERA_INDEX")
+# DirectShow on Windows, V4L2 on Linux (CAP_ANY also tries the Orbbec backend,
+# which is what prints "Camera index out of range")
+if os.name == "nt":
+    CAMERA_BACKEND = cv2.CAP_DSHOW
+elif hasattr(cv2, "CAP_V4L2") and os.path.isdir("/sys/class/video4linux"):
+    CAMERA_BACKEND = cv2.CAP_V4L2
+else:
+    CAMERA_BACKEND = cv2.CAP_ANY
+
+
+def _candidate_indexes():
+    if CAMERA_INDEX not in (None, ""):
+        return [int(CAMERA_INDEX)]
+    sysfs = "/sys/class/video4linux"
+    if os.path.isdir(sysfs):
+        found = sorted(int(d[5:]) for d in os.listdir(sysfs) if d.startswith("video") and d[5:].isdigit())
+        if found:
+            return found
+    return [0, 1, 2]
+
+
+def open_camera():
+    """Return (cap, index) for the first camera that gives a real frame, or (None, None)."""
+    for idx in _candidate_indexes():
+        cap = cv2.VideoCapture(idx, CAMERA_BACKEND)
+        if cap.isOpened():
+            for _ in range(5):              # first frames can be empty while it warms up
+                ok, _frame = cap.read()
+                if ok:
+                    return cap, idx
+                time.sleep(0.1)
+        cap.release()
+    return None, None
 
 # How many consecutive frames must agree before we fire a callback
 RECOGNITION_CONFIRM_FRAMES = 8
+# Seconds without any face before we decide the person left. The face detector loses
+# you whenever you look down at the keyboard, so this must be generous.
+GONE_AFTER_SECONDS = 20
 
 
 class AriaVision:
@@ -36,7 +77,11 @@ class AriaVision:
         self.memory          = memory
         self._present        = False
         self._running        = False
+        self._thread         = None
         self._current_user   = None
+        self._frame          = None          # latest frame from the loop, shared with snapshot()
+        self._frame_lock     = threading.Lock()
+        self._camera_index   = None
 
         os.makedirs(FACES_DIR, exist_ok=True)
 
@@ -101,7 +146,19 @@ class AriaVision:
 
         os.makedirs(sample_dir, exist_ok=True)
 
-        cap   = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
+        # Only one process/thread can hold the webcam, so pause the background loop
+        was_running = self._running
+        if was_running:
+            self.stop()
+            if self._thread:
+                self._thread.join(timeout=3)
+
+        cap, _ = open_camera()
+        if cap is None:
+            print("[Vision] ⚠  No working camera found — can't learn a face")
+            if was_running:
+                self.start()
+            return
         count = 0
 
         while count < samples:
@@ -143,6 +200,8 @@ class AriaVision:
         self._label_map[label_id] = name
         self._load_model()
         print(f"\n[Vision] ✅ Face '{name}' saved with {count} samples")
+        if was_running:
+            self.start()
 
     def forget_face(self, name: str):
         profile = self.memory.delete_face_profile(name)
@@ -162,23 +221,33 @@ class AriaVision:
     # ── Detection Loop ────────────────────────────────────────────────────────
 
     def start(self):
+        if self._running:
+            return
+        # Let a previous loop finish releasing the camera before reopening it
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2)
         self._running = True
-        threading.Thread(target=self._loop, daemon=True).start()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
         print("👁  Vision started")
 
     def stop(self):
         self._running = False
 
     def _loop(self):
-        cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
-        if not cap.isOpened():
-            print("⚠  No camera found — vision disabled")
+        cap, idx = open_camera()
+        if cap is None:
+            print("⚠  No working camera found — vision disabled "
+                  "(set CAMERA_INDEX in Engines/.env if you have one)")
+            self._running = False
             return
+        self._camera_index = idx
+        print(f"👁  Using camera {idx}")
+        failed_reads = 0
 
-        consecutive_empty   = 0
         consecutive_full    = 0
         CONFIRM_PRESENT     = 4
-        CONFIRM_GONE        = 15
+        last_face_at        = time.time()
 
         # Rolling buffer of recent recognition results for stability
         recent_results = []
@@ -186,8 +255,22 @@ class AriaVision:
         while self._running:
             ret, frame = cap.read()
             if not ret:
+                failed_reads += 1
+                if failed_reads >= 10:          # camera unplugged / grabbed by another app
+                    print("[Vision] ⚠  Camera stopped giving frames — reconnecting")
+                    cap.release()
+                    time.sleep(2)
+                    cap, idx = open_camera()
+                    if cap is None:
+                        print("⚠  Camera lost — vision disabled")
+                        self._running = False
+                        return
+                    failed_reads = 0
                 time.sleep(0.5)
                 continue
+            failed_reads = 0
+            with self._frame_lock:
+                self._frame = frame
 
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             dets = self._detector.detectMultiScale(
@@ -195,7 +278,7 @@ class AriaVision:
             )
 
             if len(dets) > 0:
-                consecutive_empty  = 0
+                last_face_at       = time.time()
                 consecutive_full  += 1
 
                 if consecutive_full >= CONFIRM_PRESENT:
@@ -215,7 +298,11 @@ class AriaVision:
 
                         # Need 75% agreement to be confident
                         if top_count >= RECOGNITION_CONFIRM_FRAMES * 0.75:
-                            if top_name != self._current_user:
+                            # A known person doesn't turn into a stranger mid-session just
+                            # because one recognition was shaky — only after they've left.
+                            if self._current_user and top_name is None:
+                                pass
+                            elif top_name != self._current_user:
                                 self._current_user = top_name
                                 self._present      = True
 
@@ -236,10 +323,9 @@ class AriaVision:
 
             else:
                 consecutive_full   = 0
-                consecutive_empty += 1
                 recent_results.clear()  # reset buffer when face disappears
 
-                if consecutive_empty >= CONFIRM_GONE and self._present:
+                if time.time() - last_face_at >= GONE_AFTER_SECONDS and self._present:
                     self._present      = False
                     self._current_user = None
                     if self.on_user_gone:
@@ -248,13 +334,29 @@ class AriaVision:
             time.sleep(0.2)
 
         cap.release()
+        with self._frame_lock:
+            self._frame = None
+
+    def snapshot(self):
+        """Latest camera frame (BGR) or None. Reuses the running loop's camera instead of
+        opening it a second time — Linux webcams can't be opened twice."""
+        if self._running:
+            for _ in range(10):
+                with self._frame_lock:
+                    if self._frame is not None:
+                        return self._frame.copy()
+                time.sleep(0.2)
+            return None
+        cap, _ = open_camera()
+        if cap is None:
+            return None
+        ok, frame = cap.read()
+        cap.release()
+        return frame if ok else None
 
     def describe_current_frame(self) -> str:
-        cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
-        ret, frame = cap.read()
-        cap.release()
-
-        if not ret:
+        frame = self.snapshot()
+        if frame is None:
             return "I can't access the camera right now."
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -271,7 +373,7 @@ class AriaVision:
 
         try:
             response = ollama.chat(
-                model="llava",
+                model=VISION_MODEL,
                 messages=[{
                     "role": "user",
                     "content": "Describe what you see briefly. If there's a person, describe their appearance.",
