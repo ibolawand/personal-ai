@@ -530,8 +530,17 @@ class Aria:
             self.arduino.startup_animation()
         if self.ha and not self.vision.is_present:
             self.ha.notify_phone(text, title="Aria")
+        if r["kind"] in ("reminder", "timer", "event"):
+            title = {"timer": "Timer", "event": "Coming up"}.get(r["kind"], "Reminder")
+            body = re.sub(r"^(?:Reminder|Time's up|Heads up):\s*", "", text)
+            self.ui.show_card({"type": "reminder", "title": title, "text": body[:1].upper() + body[1:]})
         self.announcements.put(text)
         self._wake_event.set()
+
+    def snooze_from_card(self, minutes):
+        """Snooze button on a reminder card."""
+        result = self.reminders.snooze(minutes)
+        self.ui.message("aria", result)
 
     def _announce(self, text: str):
         """Say something on her own (focus nudges): queued like a reminder, wakes her if asleep."""

@@ -73,7 +73,7 @@ QLineEdit {
 """
 CARD_W = 300
 CARD_MAX_H = 260
-CARD_STAY = {"list": 45, "agenda": 45, "confirm": 90}   # seconds without hovering before a card fades
+CARD_STAY = {"list": 45, "agenda": 45, "confirm": 90, "reminder": 180}   # seconds without hovering before a card fades
 CARD_STYLE = """
 QFrame#card { background: rgba(18, 14, 28, 238); border: 1px solid rgba(185, 120, 255, 130); border-radius: 14px; }
 QLabel { color: #f0ecfa; background: transparent; }
@@ -223,7 +223,8 @@ class Card(QFrame):
         box.setSpacing(4)
 
         head = QHBoxLayout()
-        title = QLabel({"confirm": "Confirm"}.get(self.kind, card.get("title", "")))
+        title = QLabel({"confirm": "Confirm", "reminder": card.get("title", "Reminder")}.get(
+            self.kind, card.get("title", "")))
         title.setObjectName("title")
         head.addWidget(title, 1)
         if self.kind == "list":
@@ -317,6 +318,23 @@ class Card(QFrame):
                 b.setToolTip("Open the calendar in MyNotion")
                 b.clicked.connect(lambda: self.on_action("open", "calendar"))
                 rows.addWidget(b)
+
+    def _build_reminder(self, rows, card):
+        q = QLabel(card["text"])
+        q.setWordWrap(True)
+        rows.addWidget(q)
+        buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 8, 0, 0)
+        for label, payload in (("Snooze 5 min", 5), ("10 min", 10), ("Done", None)):
+            b = QPushButton(label)
+            b.setCursor(Qt.PointingHandCursor)
+            if payload is None:
+                b.setObjectName("yes")
+                b.clicked.connect(lambda: self.on_action("close", None))
+            else:
+                b.clicked.connect(lambda _=False, m=payload: self.on_action("snooze", m))
+            buttons.addWidget(b)
+        rows.addLayout(buttons)
 
     def _build_confirm(self, rows, card):
         q = QLabel(card["text"][:1].upper() + card["text"][1:] + "?")
@@ -509,6 +527,10 @@ class Overlay(QWidget):
                 aria.submit_text(payload)
         elif kind == "open" and aria:
             threading.Thread(target=aria.open_from_card, args=(payload,), daemon=True).start()
+        elif kind == "snooze":
+            self._close_card()
+            if aria:
+                threading.Thread(target=aria.snooze_from_card, args=(payload,), daemon=True).start()
         elif kind == "toggle" and aria:
             threading.Thread(target=aria.toggle_from_card, args=payload, daemon=True).start()
 

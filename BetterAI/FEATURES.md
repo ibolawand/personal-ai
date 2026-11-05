@@ -98,6 +98,7 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
     repeating events marked ↻. Click an event or "Open calendar" to open MyNotion's calendar.
   - **Yes/no questions** (clear a list, move or delete an event, close an app…): **Yes** / **No** buttons.
     Typing or saying yes/no still works; the card disappears once it's answered.
+  - **Reminders and timers** that go off: **Snooze 5 min**, **10 min** or **Done**.
   - A card fades out after 45 seconds (yes/no after 90), but stays while the mouse is over it. ✕ closes it.
 
 ---

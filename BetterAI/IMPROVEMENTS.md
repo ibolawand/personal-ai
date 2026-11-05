@@ -9,3 +9,4 @@ real model where it matters) and committed separately. The full feature overview
 | 2 | **Undo** | "Undo that" takes back Aria's last change to notes, lists, events or reminders, also confirmed deletes. Snapshot before/after each change, so it puts back exactly what changed. | `tests/test_undo.py` |
 | 3 | **Calendar clash warnings** | Adding or moving an event that overlaps another one: "Heads up: that overlaps with Meeting at 15:00." | `tests/test_notion.py` |
 | 4 | **Calculator, bill splitter, unit converter** | Exact maths instead of guesses. The model first split a bill wrong (tip only, 4.37 each), so bill splitting got its own tool with the formula in code (33.50 each). Safe parser, no `eval`. | `tests/test_calc.py` |
+| 5 | **Reminder card** | A reminder or timer going off shows a card with Snooze 5 min / 10 min / Done. | `tests/test_conversation.py` |

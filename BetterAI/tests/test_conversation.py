@@ -267,3 +267,24 @@ def test_whisper_hallucinations_are_recognised():
 def test_sentence_tone(sentence, tone):
     from Engines.voice_engine import sentence_tone
     assert sentence_tone(sentence) == tone
+
+
+def test_due_reminder_shows_a_card_and_snooze_works(aria, memory):
+    import queue, threading
+    from Engines.Reminders import Reminders
+    cards, msgs = [], []
+    aria.ui.show_card = cards.append
+    aria.ui.message = lambda role, text: msgs.append(text)
+    aria.ui.set_state = lambda s: None
+    aria.reminders = Reminders(memory, on_due=lambda r: None)
+    aria.focus = types.SimpleNamespace(finish=lambda: "", end_break=lambda: "")
+    aria.ha = None
+    aria.vision = types.SimpleNamespace(is_present=True)
+    aria.announcements, aria._wake_event = queue.Queue(), threading.Event()
+    r = {"id": 1, "text": "call mum", "kind": "reminder", "due": time.time(), "created": time.time()}
+    aria.reminders.last_fired = r
+    aria._on_reminder_due(r)
+    assert cards == [{"type": "reminder", "title": "Reminder", "text": "Call mum."}]
+    aria.snooze_from_card(10)
+    assert msgs == ["Snoozed 'call mum' for 10 min."] or msgs[0].startswith("Snoozed 'call mum'")
+    assert len(aria.reminders.pending()) == 1
