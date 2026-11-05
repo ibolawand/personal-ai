@@ -90,6 +90,10 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
   - **clicking the orb:** ripple and spark burst
 - Speech bubbles for you and Aria. Hover over the orb to see the last few messages and a status caption.
 - Text input: click the orb, type, press Enter. Esc hides it.
+- **Quick capture (Ctrl+Alt+N):** a green box. Type "buy batteries", "dentist friday 3pm" or "remind me to call mum at 6"
+  and it's filed on a list, in the calendar or as a reminder, confirmed in a bubble, without a conversation or speech.
+  Lines starting with "idea:" / "note:" and links go to the Inbox note, and so does anything the model can't place.
+  (Run `./install_desktop.sh` again once to get the shortcut; `ARIA_CAPTURE_HOTKEY` changes it.)
 - Drag the orb to move it; its position is remembered.
 - Right-click menu: type a message, go to sleep, mute voice, let Aria start conversations (on/off), clear bubbles, quit.
 - Countdown ring around the orb while a timer or focus session runs.

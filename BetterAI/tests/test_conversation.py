@@ -288,3 +288,37 @@ def test_due_reminder_shows_a_card_and_snooze_works(aria, memory):
     aria.snooze_from_card(10)
     assert msgs == ["Snoozed 'call mum' for 10 min."] or msgs[0].startswith("Snoozed 'call mum'")
     assert len(aria.reminders.pending()) == 1
+
+
+# ── quick capture ──
+
+def test_capture_falls_back_to_the_inbox(aria):
+    msgs = []
+    aria.ui.message = lambda role, text: msgs.append(text)
+    aria.llm.replies = [("", [])]                       # the model filed nothing
+    aria.quick_capture("idea: a plant-watering robot")
+    assert msgs == ["✓ Saved to your Inbox."]
+    assert "plant-watering robot" in aria.notion.read_note("Inbox")
+
+
+def test_capture_only_offers_filing_tools(aria):
+    seen = {}
+
+    def fake(prompt, history, system, tools, execute, **_):
+        seen["tools"] = [t["function"]["name"] for t in tools]
+        return "Added.", [("add_to_list", "Added batteries to your Shopping list.")]
+    aria.tools = types.SimpleNamespace(schemas=[{"function": {"name": n}} for n in
+                                                ("add_to_list", "add_event", "play_song", "close_app")],
+                                       execute=lambda n, a: "")
+    aria.llm.chat_with_tools = fake
+    aria.ui.message = lambda role, text: None
+    assert aria.quick_capture("buy batteries") == "Added batteries to your Shopping list."
+    assert seen["tools"] == ["add_to_list", "add_event"]
+
+
+def test_capture_ideas_and_links_go_to_the_inbox_directly(aria):
+    aria.ui.message = lambda role, text: None
+    assert aria.quick_capture("idea: aria could water my plants") == "Saved to your Inbox."
+    assert aria.quick_capture("https://example.com/recipe") == "Saved to your Inbox."
+    inbox = aria.notion.read_note("Inbox")
+    assert "water my plants" in inbox and "example.com/recipe" in inbox and aria.llm.prompts == []

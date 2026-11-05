@@ -587,6 +587,34 @@ class Aria:
         if self.notion and not self.notion.set_item_checked(note_id, text, checked):
             self.ui.message("aria", f"Couldn't find '{text}' in that list anymore.")
 
+    CAPTURE_TOOLS = ("add_to_list", "add_event", "set_reminder", "add_note")
+
+    def quick_capture(self, text: str):
+        """Ctrl+Alt+N: file a line (list item, event, reminder or note) without a conversation or speech.
+        Anything the model can't place goes to the Inbox note, so nothing typed is ever lost."""
+        if self.notion and (re.match(r"^\s*(idea|note|thought|link|quote)\s*[:\-]", text, re.I)
+                            or re.search(r"https?://", text)):
+            self.notion.add_note(re.sub(r"^\s*note\s*[:\-]\s*", "", text, flags=re.I))
+            self.ui.message("aria", "✓ Saved to your Inbox.")
+            return "Saved to your Inbox."
+        schemas = [t for t in self.tools.schemas if t["function"]["name"] in self.CAPTURE_TOOLS]
+        prompt = (f"Quick capture from Lala: \"{text}\"\nFile it with exactly one tool: an item to buy/pack/do -> "
+                  f"add_to_list; something at a date/time -> add_event; 'remind me…' -> set_reminder; anything else "
+                  f"(an idea, a thought, a link) -> add_note without a title. Then reply with a short confirmation "
+                  f"of at most eight words.")
+        try:
+            reply, used = self.llm.chat_with_tools(prompt, [], BASE_PROMPT, schemas, self.tools.execute)
+        except Exception as e:
+            print(f"[Capture] {e}")
+            reply, used = "", []
+        if not used and self.notion:
+            self.notion.add_note(text)
+            reply = "Saved to your Inbox."
+        result = used[-1][1] if used else reply
+        self.ui.message("aria", "✓ " + (tidy_reply(reply) or result)[:160])
+        print(f"[Capture] {text!r} -> {[n for n, _ in used]}: {result}")
+        return result
+
     def start_initiative(self, opener: dict):
         """Called by Initiative while Aria is asleep: wake up and start a conversation."""
         if self.awake or self._shutting_down:

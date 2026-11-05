@@ -395,6 +395,7 @@ class Overlay(QWidget):
         self.input.setPlaceholderText("Message Aria…")
         self.input.setGeometry(self._input_rect())
         self.input.returnPressed.connect(self._submit)
+        self.capture_mode = False      # quick capture (Ctrl+Alt+N): the text is filed, not chatted about
         self.input.hide()
 
         bridge.stateChanged.connect(self._on_state)
@@ -469,6 +470,7 @@ class Overlay(QWidget):
         if cmd == "toggle" and self.input.isVisible():
             self._toggle_input(False)
             return
+        self._set_capture(cmd == "capture")
         self._toggle_input(True)
         # the hotkey fires while another app has focus; ask the window manager for it
         if self.windowHandle():
@@ -983,11 +985,24 @@ class Overlay(QWidget):
             self.input.clear()
             self.input.hide()
 
+    def _set_capture(self, on: bool):
+        self.capture_mode = on
+        self.input.setPlaceholderText("Quick capture: list item, event, reminder or note…" if on else "Message Aria…")
+        self.input.setStyleSheet(INPUT_STYLE.replace("rgba(185, 120, 255, 140)", "rgba(110, 220, 150, 170)")
+                                 if on else INPUT_STYLE)
+
     def _submit(self):
         text = self.input.text().strip()
         self.input.clear()
         if not text:
             self._toggle_input(False)
+            return
+        if self.capture_mode:
+            self._set_capture(False)
+            self._toggle_input(False)
+            self._on_message("user", "➕ " + text)
+            if self.bridge.aria:
+                threading.Thread(target=self.bridge.aria.quick_capture, args=(text,), daemon=True).start()
             return
         if self.bridge.aria:
             self.bridge.aria.submit_text(text)
@@ -996,6 +1011,7 @@ class Overlay(QWidget):
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
+            self._set_capture(False)
             self._toggle_input(False)
         else:
             super().keyPressEvent(e)

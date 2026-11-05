@@ -2,6 +2,7 @@
 # Start Aria, or send a command to the one that's already running.
 #   aria.sh            start (or open the text box if she's running)
 #   aria.sh --toggle   show/hide the text box (the Ctrl+Alt+Space hotkey), starts Aria if needed
+#   aria.sh --capture  quick capture box (the Ctrl+Alt+N hotkey): type it, Aria files it, no conversation
 #   aria.sh --quit     shut Aria down
 #   aria.sh --chat     make Aria start a conversation now (also --review, --event, --followup, --break) — to try it out
 # Extra flags for main.py (e.g. --voice) go in Engines/.env as:  ARIA_ARGS=--voice
@@ -14,7 +15,7 @@ LOG="$LOG_DIR/aria.log"
 echo "[$(date '+%F %T')] aria.sh ${1:-start}" >> "$LOG"   # shows whether the hotkey/menu fired at all
 
 case "$1" in
-  --toggle|--show) "$PY" -m ui.instance "${1#--}" && exit 0 ;;   # running → done; else start below
+  --toggle|--show|--capture) "$PY" -m ui.instance "${1#--}" && exit 0 ;;   # running → done; else start below
   --quit)          "$PY" -m ui.instance quit; exit 0 ;;
   --chat|--review|--event|--followup|--break)
                    "$PY" -m ui.instance "${1#--}" || echo "Aria isn't running."; exit 0 ;;

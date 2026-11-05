@@ -1,20 +1,37 @@
 #!/usr/bin/env bash
-# One-time setup: Mint menu entry, start on login, and the Ctrl+Alt+Space hotkey.
+# One-time setup: Mint menu entry, start on login, the Ctrl+Alt+Space hotkey and Ctrl+Alt+N quick capture.
 # Run again after moving the project folder.  Undo with: ./install_desktop.sh --remove
 DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 APPS="$HOME/.local/share/applications"
 AUTO="$HOME/.config/autostart"
 KB_SCHEMA="org.cinnamon.desktop.keybindings"
-KB_ID="aria"
-KB_PATH="/org/cinnamon/desktop/keybindings/custom-keybindings/$KB_ID/"
+KB_ROOT="/org/cinnamon/desktop/keybindings/custom-keybindings"
 HOTKEY="${ARIA_HOTKEY:-<Primary><Alt>space}"
+CAPTURE_HOTKEY="${ARIA_CAPTURE_HOTKEY:-<Primary><Alt>n}"
+
+remove_binding() {   # id
+  list="$(gsettings get $KB_SCHEMA custom-list | sed "s/'$1'//; s/, ,/,/; s/\[, /[/; s/, \]/]/")"
+  gsettings set $KB_SCHEMA custom-list "$list"
+  dconf reset -f "$KB_ROOT/$1/"
+}
+
+add_binding() {      # id name command hotkey
+  current="$(gsettings get $KB_SCHEMA custom-list)"
+  if ! grep -q "'$1'" <<<"$current"; then
+    if [ "$current" = "@as []" ] || [ "$current" = "[]" ]; then new="['$1']"
+    else new="${current%]}, '$1']"; fi
+    gsettings set $KB_SCHEMA custom-list "$new"
+  fi
+  gsettings set $KB_SCHEMA.custom-keybinding:$KB_ROOT/$1/ name "$2"
+  gsettings set $KB_SCHEMA.custom-keybinding:$KB_ROOT/$1/ command "$3"
+  gsettings set $KB_SCHEMA.custom-keybinding:$KB_ROOT/$1/ binding "['$4']"
+}
 
 if [ "$1" = "--remove" ]; then
   rm -f "$APPS/aria.desktop" "$AUTO/aria.desktop"
-  list="$(gsettings get $KB_SCHEMA custom-list | sed "s/'$KB_ID'//; s/, ,/,/; s/\[, /[/; s/, \]/]/")"
-  gsettings set $KB_SCHEMA custom-list "$list"
-  dconf reset -f "$KB_PATH"
-  echo "Removed menu entry, autostart and hotkey."
+  remove_binding aria
+  remove_binding aria-capture
+  echo "Removed menu entry, autostart and hotkeys."
   exit 0
 fi
 
@@ -35,19 +52,13 @@ DESK
 entry > "$APPS/aria.desktop"
 { entry; echo "X-GNOME-Autostart-Delay=8"; } > "$AUTO/aria.desktop"
 
-# Cinnamon custom shortcut → aria.sh --toggle
-current="$(gsettings get $KB_SCHEMA custom-list)"
-if ! grep -q "'$KB_ID'" <<<"$current"; then
-  if [ "$current" = "@as []" ] || [ "$current" = "[]" ]; then new="['$KB_ID']"
-  else new="${current%]}, '$KB_ID']"; fi
-  gsettings set $KB_SCHEMA custom-list "$new"
-fi
-gsettings set $KB_SCHEMA.custom-keybinding:$KB_PATH name "Aria"
-gsettings set $KB_SCHEMA.custom-keybinding:$KB_PATH command "$DIR/aria.sh --toggle"
-gsettings set $KB_SCHEMA.custom-keybinding:$KB_PATH binding "['$HOTKEY']"
+# Cinnamon custom shortcuts
+add_binding aria "Aria" "$DIR/aria.sh --toggle" "$HOTKEY"
+add_binding aria-capture "Aria quick capture" "$DIR/aria.sh --capture" "$CAPTURE_HOTKEY"
 
 echo "Installed:"
 echo "  menu entry  $APPS/aria.desktop"
 echo "  autostart   $AUTO/aria.desktop  (starts 8 s after login)"
 echo "  hotkey      $HOTKEY → $DIR/aria.sh --toggle"
+echo "  capture     $CAPTURE_HOTKEY → $DIR/aria.sh --capture"
 echo "Log file: ~/.cache/aria/aria.log"
