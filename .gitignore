@@ -4,3 +4,7 @@ BetterAI/aria_memory.db
 BetterAI/.cache
 BetterAI/SherryModel
 BetterAI/ariu
+__pycache__/
+*.pyc
+BetterAI/aria_faces/
+BetterAI/tidy_downloads_log.json
