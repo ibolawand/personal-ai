@@ -121,3 +121,34 @@ def test_page_text_keeps_sentences_not_menus():
            "<script>var x=1;</script>")
     text = "".join(p.parts)
     assert "real sentence" in text and "Home About" not in text and "var x" not in text
+
+
+# ── Spotify ──
+
+def _track(name, artist, popularity):
+    return {"name": name, "artists": [{"name": artist}], "popularity": popularity, "uri": f"spotify:{name}"}
+
+
+def test_spotify_picks_the_matching_song_not_the_most_popular():
+    # regression: "NF No Excuses" played "DROP!" by Forrest Frank (more popular)
+    from Controller.Spotify_controll import SpotifyEngine
+    tracks = [_track("No Excuses", "NF", 59), _track("DROP!", "Forrest Frank", 64), _track("NO EXCUSES", "NEFFEX", 46)]
+    best, sure = SpotifyEngine._best_track_match(tracks, "NF No Excuses")
+    assert (best["name"], best["artists"][0]["name"], sure) == ("No Excuses", "NF", 1.0)
+
+
+def test_spotify_avoids_remixes_unless_asked():
+    from Controller.Spotify_controll import SpotifyEngine
+    tracks = [_track("Hope - Remix", "NF", 70), _track("Hope", "NF", 60)]
+    assert SpotifyEngine._best_track_match(tracks, "hope nf")[0]["name"] == "Hope"
+    assert SpotifyEngine._best_track_match(tracks, "hope remix nf")[0]["name"] == "Hope - Remix"
+
+
+def test_spotify_errors_become_sentences():
+    import spotipy
+    from Controller.Spotify_controll import friendly_errors
+
+    @friendly_errors
+    def boom():
+        raise spotipy.SpotifyException(403, -1, "Player command failed: Premium required", reason="PREMIUM_REQUIRED")
+    assert "Premium" in boom()

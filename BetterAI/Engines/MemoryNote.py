@@ -57,6 +57,7 @@ class MemoryNote:
         self.notion = notion
         self.confirm = confirm
         self.on_card = on_card
+        self.llm = None                    # set by Aria, for clean_up()
         self._lock = threading.Lock()
         self.state = self._load()
 
@@ -154,6 +155,30 @@ class MemoryNote:
         self.memory.save_memory(fact)
         self.sync()
         return f"Got it, I'll remember that: {fact}."
+
+    def clean_up(self, llm=None):
+        """Tool: 'clean up your memory'. Suggests what to forget; Lala confirms with yes/no."""
+        llm = llm or self.llm
+        facts = self.memory.get_memories(MAX_FACTS)
+        if not facts or not llm:
+            return "There's nothing to clean up."
+        junk = [facts[i] for i in llm.find_junk_facts(facts)]
+        if not junk:
+            return "I went through everything I remember about you, and it all looks like real facts."
+        if self.on_card and self.notion:
+            note = self._note()
+            self.on_card({"type": "list", "note_id": note["id"] if note else 0, "title": "I'd forget these",
+                          "items": [{"text": f, "checked": None} for f in junk]})
+
+        def do():
+            for f in junk:
+                self.memory.forget(f)
+            self.sync()
+            return f"Done, I forgot those {len(junk)}. What's left is in your note 'What Aria knows about me'."
+        listing = "; ".join(f"'{f}'" for f in junk[:6]) + (f" and {len(junk) - 6} more" if len(junk) > 6 else "")
+        if self.confirm:
+            return self.confirm.request(f"forget {len(junk)} saved things that don't look like real facts: {listing}", do)
+        return do()
 
     def forget(self, what: str):
         what = (what or "").strip()

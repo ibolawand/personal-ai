@@ -59,6 +59,26 @@ VOICE_GAIN = float(os.environ.get("VOICE_GAIN", "1.0"))   # overall loudness, se
 TARGET_RMS = 0.07          # every sentence normalised to this (≈ -23 dBFS): no loud/quiet jumps
 PEAK_LIMIT = 0.6           # soft ceiling, so plosives and laughs never spike
 SENTENCE_PAUSE_S = 0.35    # breathing room between sentences (was 0.15)
+
+# Tone per sentence of Aria's reply (Kokoro has no emotion control, so: pace, loudness and pauses).
+# Comforting sentences come slower and softer; playful ones a little quicker and brighter.
+SOFT_RE = re.compile(r"\b(sorry|aw+|oh no|that sounds (?:rough|hard|tough|awful|annoying|frustrating|unfair)|"
+                     r"i'?m here for you|take (?:it easy|care|a break|your time)|it'?s (?:okay|ok|alright)|"
+                     r"you'?ll be (?:fine|okay)|get some rest|breathe|i'?m proud|that must)\b", re.I)
+PLAYFUL_RE = re.compile(r"\b(haha+|hehe|lol|wow|yay|nice|awesome|rude|amazing|let'?s go|woo+|ooh)\b", re.I)
+TONES = {
+    "soft":    {"speed": 0.92, "gain": 0.85, "pause": 0.15},
+    "playful": {"speed": 1.06, "gain": 1.05, "pause": -0.1},
+    "neutral": {"speed": 1.0,  "gain": 1.0,  "pause": 0.0},
+}
+
+
+def sentence_tone(sentence: str) -> str:
+    if SOFT_RE.search(sentence):
+        return "soft"
+    if PLAYFUL_RE.search(sentence) or sentence.rstrip().endswith("!"):
+        return "playful"
+    return "neutral"
 COMMA_PAUSE_S = 0.12
 
 
@@ -248,10 +268,12 @@ class VoiceEngine:
             sentence = normalize_for_tts(sentence or "").strip()
             if not sentence:
                 continue
-            audio_np, sr = self._synthesize(sentence)
+            tone = TONES[sentence_tone(sentence)]
+            audio_np, sr = self._synthesize(sentence, speed=self._speed * tone["speed"])
             if audio_np is not None and not self._interrupted:
-                audio_np = polish_audio(audio_np, sr)
+                audio_np = np.clip(polish_audio(audio_np, sr) * tone["gain"], -1.0, 1.0)
                 pause = SENTENCE_PAUSE_S if sentence[-1:] in ".!?" else COMMA_PAUSE_S
+                pause = max(0.12, pause + tone["pause"])
                 silence = np.zeros(int(sr * pause), dtype=np.float32)
                 self.audio_queue.put((np.concatenate([audio_np, silence]), sr))
 
@@ -267,13 +289,13 @@ class VoiceEngine:
         return self._interrupted_text
 
     # ------------------------------------------------------------- synthesize
-    def _synthesize(self, text: str) -> tuple[np.ndarray | None, int]:
+    def _synthesize(self, text: str, speed: float = None) -> tuple[np.ndarray | None, int]:
         try:
             if self._interrupted:
                 return None, self._tts_sr
 
             if self._kokoro is not None:
-                chunks = [r.audio.numpy() for r in self._kokoro(text, voice=KOKORO_VOICE, speed=self._speed)
+                chunks = [r.audio.numpy() for r in self._kokoro(text, voice=KOKORO_VOICE, speed=speed or self._speed)
                           if r.audio is not None]
                 if not chunks:
                     return None, KOKORO_SR

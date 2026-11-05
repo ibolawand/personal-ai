@@ -7,6 +7,10 @@ from types import SimpleNamespace
 # ~56 tool definitions alone are ~3k tokens; Ollama's default window would silently truncate.
 # 8192 fits tools + history + a read file and stays within an 8 GB GPU next to the TTS model.
 NUM_CTX = int(os.environ.get("LLM_NUM_CTX", 8192))
+LLM_MODEL_DEFAULT = "qwen3:8b"
+# A tool result starting with this is already the answer for Lala (e.g. the vision model describing the screen):
+# it's returned as is, skipping another round with the chat model (which would first have to reload).
+FINAL_PREFIX = "FINAL ANSWER: "
 
 
 class LLMEngine:
@@ -70,6 +74,14 @@ class LLMEngine:
                     name, args = call["function"]["name"], call["function"]["arguments"]
                     print(f"[Tools] {name}({args})")
                     result = execute(name, args)
+                    if result.startswith(FINAL_PREFIX) and len(calls) == 1:
+                        reply = result[len(FINAL_PREFIX):].strip()
+                        used.append((name, reply))
+                        trace.append({"role": "tool", "tool_name": name, "content": reply[:300]})
+                        trace.append({"role": "assistant", "content": reply})
+                        if on_text:
+                            on_text(reply)
+                        return reply, used
                     used.append((name, result))
                     messages.append({"role": "tool", "tool_name": name, "content": result})
                     short = result if len(result) <= 300 else result[:300] + " …[shortened]"
@@ -97,6 +109,31 @@ class LLMEngine:
             if m.tool_calls:
                 calls.extend(m.tool_calls)
         return SimpleNamespace(content="".join(content), tool_calls=calls or None)
+
+    def find_junk_facts(self, facts: list) -> list:
+        """Indexes of saved 'facts' that aren't lasting facts about the user (commands, moods, one-off events,
+        calendar contents, misheard text). Thinking mode: this runs rarely and nobody waits for it."""
+        if not facts:
+            return []
+        listing = "\n".join(f"{i}. {f}" for i, f in enumerate(facts))
+        prompt = f"""These are facts an assistant saved about its user. Find the ones that are NOT lasting, useful facts about the user:
+- requests or commands ("asked to play a song", "set a timer")
+- moods of a moment ("is bored", "feels sleepy")
+- one-off events or appointments ("has a meeting tomorrow at 3"), or what was in their calendar or files
+- anything garbled, unclear or probably misheard
+Keep real lasting facts (name, people, hobbies, preferences, school/work, routines, birthdays), even if worded oddly.
+
+{listing}
+
+Reply ONLY with JSON: {{"junk": [numbers of the facts that are not lasting facts]}}"""
+        try:
+            response = ollama.chat(model=self.model, think=True, format="json",
+                                   messages=[{"role": "user", "content": prompt}])
+            data = json.loads(response["message"]["content"])
+            return sorted({int(i) for i in data.get("junk", []) if str(i).isdigit() and 0 <= int(i) < len(facts)})
+        except Exception as e:
+            print(f"[Memory] junk check failed: {e}")
+            return []
 
     def extract_facts(self, conversation: list, known=(), think=True) -> tuple[list, list, list]:
         """After a conversation, pull out (facts, topics, followups) worth remembering about the user.

@@ -54,6 +54,9 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
     If both sides changed at once, your edits win and her new facts are added on top.
   - "What do you know about me?" (also shows them as a card), "forget that I'm bored", "remember that I'm vegetarian",
     "forget everything about me" (asks first).
+  - **Clean-up:** "clean up your memory" makes her go through everything she saved (thinking first), show what isn't a
+    real fact ("asked to play a song", "is bored", "has a meeting tomorrow"), and forget it after your yes.
+    She offers this once by herself.
 - **Context:** current date and time (HH:MM), who is at the desk, and saved facts are added to every prompt (`ContextBuilder.py`).
 - **Mood check-ins** (`Engines/UserStateEngine.py`): if you sound stressed or tired, Aria briefly checks in, at most once
   every 5 minutes. The check runs in the background after each reply, so it never slows down answers. Its result is used
@@ -102,6 +105,15 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 ## Voice — `speech_to_text.py`, `wakeworddetector.py`, `Engines/voice_engine.py`
 
 - Wake word, speech-to-text with live mic level shown on the orb, text-to-speech with the voice level driving the orb.
+- **Hears you right** (`speech_to_text.py`):
+  - voice activity detection cuts silence and noise before transcribing, so no more phantom "Thanks for watching!"
+    (tested: silence, room noise and louder noise used to give "Thank you very much.", "You", "Thanks for watching!"; now nothing)
+  - a word list with Aria, MyNotion, app names and the names in her memory and note titles: "MyNotion" was heard as
+    "Minotian" and "Lina" as "Lena"; both come out right now
+  - when she isn't sure what she heard, she asks "Sorry, did you say: …?". "Yes" acts on it, "no" makes her ask
+    you to repeat it, anything else is taken as new input. "Go to sleep" is never questioned.
+- **Tone per sentence:** comforting sentences ("Aw, that sounds rough") come a bit slower and softer with a longer
+  pause; playful ones ("Haha, rude!") a bit quicker and brighter. Your mood still sets her overall pace.
 - **Talks while thinking:** replies are streamed. Aria starts speaking the first sentence after about 0.6 s,
   while the rest is still being written. Code blocks are never read out (they go to the clipboard).
 - **Voice engine:** Kokoro (`af_heart` voice) runs on the CPU, about 4x faster than real time. That leaves the whole
@@ -177,13 +189,26 @@ To try one right now: `./aria.sh --chat`, `--followup`, `--break`, `--review` or
 
 ## Focus mode — `Engines/FocusMode.py`
 
-- "Start a 45 minute focus session on databases"
-- One command sets up the whole desk: amber breathing LEDs, a lo-fi playlist on Spotify, phone on Do Not Disturb, and a countdown ring.
-- "How long is left?", "stop focus". When it ends, everything is restored and Aria suggests a break.
+- "Start a 45 minute focus session on databases". Works with just the laptop:
+  - Cinnamon's notification popups are paused during the session and restored afterwards (left off if they were off)
+  - lo-fi on Spotify, plus amber LEDs and phone Do-Not-Disturb when those are set up
+  - a countdown ring around the orb: orange for work, green for breaks
+- **Pomodoro:** "4 rounds of pomodoro on C#" gives 25 minutes of work and 5 of break, repeating on its own.
+  Music pauses during breaks, and she calls you back when a break is over. She may chat during breaks, never during work.
+- **Distraction nudge:** if Discord, YouTube, a game or another video is in front for 2+ minutes during a work block,
+  she reminds you once per round: "Psst, it's still focus time — Discord can wait 12 more minutes."
+- **Stats:** every finished block is logged. "How much did I focus this week?" gives the total, the number of blocks and
+  the top tasks.
+- "How long is left?", "stop focus".
 
 ## Screen & clipboard — `Engines/ScreenEngine.py`
 
-- "What's this error on my screen?" takes a screenshot and sends it to a local vision model. Needs `ollama pull qwen2.5vl:7b`.
+- "What's this error on my screen?" takes a screenshot and sends it to a local vision model. Needs `ollama pull qwen2.5vl:3b`
+  (it wasn't installed before, so this never worked). About 9 seconds per look:
+  - the chat model and the vision model don't fit on an 8 GB card together, so each look swaps them. The 3B vision
+    model loads quickly, and screenshots are shrunk to 1280 px (1600 px was four times slower and not more accurate)
+  - the vision model answers you directly instead of passing its description back to the chat model, which reloads
+    in the background while she speaks. Measured: ~9 s per look, against ~15 s (and ~40 s right after boot) with the 7B model.
 - "Explain what I copied": the clipboard is attached automatically when you mention it.
 - Code blocks in Aria's replies are copied to your clipboard instead of being read aloud.
 
@@ -272,6 +297,11 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
 ## Music & home
 
 - **Spotify** (`Controller/Spotify_controll.py`):
+  - picks the song that actually matches: "NF No Excuses" used to play "DROP!" by Forrest Frank because it was more
+    popular. Now title and artist words decide, remixes only when asked, and "X by Y" works. If nothing really
+    matches, she says so instead of playing something random.
+  - if Spotify isn't open anywhere, she starts it on the laptop and waits for it, then plays
+  - Spotify errors become sentences ("Spotify only lets apps control playback with a Premium account").
   - play a song, artist, playlist or genre
   - pause, skip, previous
   - what's playing

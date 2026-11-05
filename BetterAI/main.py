@@ -34,14 +34,15 @@ from Engines.Tool_Engine import ToolEngine
 from Engines.UserStateEngine import UserStateEngine
 from Engines.voice_engine import VoiceEngine
 from llm_engine import LLMEngine
-from speech_to_text import STTEngine
+from Engines.Confirm import NO_RE, YES_RE
+from speech_to_text import LOW_CONFIDENCE, STTEngine
 from vision.tray import AriaTray
 from vision.vision import AriaVision
 from wakeworddetector import WakeWordDetector
 
 load_dotenv(Path(__file__).parent / "Engines" / ".env")
 
-LLM_MODEL = "qwen3:8b"
+from llm_engine import LLM_MODEL_DEFAULT as LLM_MODEL
 PRESENCE_REWAKE_AWAY_S = 120   # camera only re-wakes Aria if you were away this long
 
 BASE_PROMPT = """You are Aria. You live on Lala's desk as a small glowing orb, and you're their friend first and their assistant second.
@@ -365,7 +366,8 @@ class Aria:
 
         self.announcements = queue.Queue()  # reminder/timer texts waiting to be spoken
         self.reminders = Reminders(self.memory, on_due=self._on_reminder_due, on_change=self._push_timers)
-        self.focus = FocusMode(self.reminders, spotify=self.spotify, arduino=self.arduino, ha=self.ha)
+        self.focus = FocusMode(self.reminders, spotify=self.spotify, arduino=self.arduino, ha=self.ha,
+                               memory=self.memory)
         self.screen = ScreenEngine(clipboard=ui if hasattr(ui, "get_text") else None)
         self.confirm = Confirmer()
         self.confirm.on_change = lambda q: (self.ui.show_card({"type": "confirm", "text": q}) if q
@@ -373,14 +375,18 @@ class Aria:
         self.laptop = LaptopEngine(self.confirm)
         self.files = FilesEngine(self.confirm)
         self.notion = self._try("MyNotion", lambda: NotionEngine(os.environ.get("DB_PATH"), self.confirm))
+        self.stt.vocabulary = self._stt_vocabulary
         self._last_reply = ""
         if self.notion:
             self.notion.last_reply = lambda: self._last_reply  # for "save that as a note"
             self.notion.on_card = self.ui.show_card
         self.initiative = Initiative(self)
         self.memory_note = MemoryNote(self.memory, self.notion, self.confirm, on_card=self.ui.show_card)
+        self.memory_note.llm = self.llm
         self.followups = Followups(self.memory, self.notion)
         self.activity = Activity(menu=self.laptop.menu)
+        self.focus.activity = self.activity
+        self.focus.on_nudge = self._announce
 
         self.tools = ToolEngine(
             spotify=self.spotify,
@@ -407,6 +413,7 @@ class Aria:
             threading.Thread(target=self._event_reminder_loop, daemon=True).start()
         self.initiative.start()
         self.activity.start()
+        self.focus.start_watching()
         self.files.start_indexing()
 
     def _event_reminder_loop(self):
@@ -509,13 +516,20 @@ class Aria:
 
     def _on_reminder_due(self, r):
         """Runs on the reminder thread. Queues the announcement and wakes Aria to say it."""
-        text = self.focus.finish() if r["kind"] == "focus" else Reminders.announcement(r)
+        text = (self.focus.finish() if r["kind"] == "focus" else
+                self.focus.end_break() if r["kind"] == "focusbreak" else Reminders.announcement(r))
         print(f"[Reminder] {text}")
         self.ui.set_state("alert")
-        if self.arduino and r["kind"] != "focus":  # focus.finish() already resets the LEDs
+        if self.arduino and r["kind"] not in ("focus", "focusbreak"):  # focus mode handles the LEDs itself
             self.arduino.startup_animation()
         if self.ha and not self.vision.is_present:
             self.ha.notify_phone(text, title="Aria")
+        self.announcements.put(text)
+        self._wake_event.set()
+
+    def _announce(self, text: str):
+        """Say something on her own (focus nudges): queued like a reminder, wakes her if asleep."""
+        print(f"[Aria] {text}")
         self.announcements.put(text)
         self._wake_event.set()
 
@@ -1000,6 +1014,38 @@ class Aria:
         self._recent.append([{"role": "assistant", "content": opening}])
         self.speak(opening)
 
+    def _check_heard(self, text: str, confidence: float):
+        """Voice input she isn't sure about gets a 'did you say …?' instead of being acted on.
+        Returns what to act on, or None when she asked back (the answer comes as the next input)."""
+        unsure, self._unsure_heard = getattr(self, "_unsure_heard", None), None
+        if unsure:
+            if YES_RE.match(text):
+                return unsure                      # "yes" — act on what she wasn't sure about
+            if NO_RE.match(text) and len(text.split()) <= 3:
+                self.speak("Okay, say it again?")
+                return None
+            return text                            # they just said something new
+        if confidence < LOW_CONFIDENCE and not matches_phrase(SLEEP_PHRASES + SHUTDOWN_PHRASES, text):
+            self._unsure_heard = text
+            self.speak(f"Sorry, did you say: {text}?")
+            return None
+        return text
+
+    def _stt_vocabulary(self):
+        """Names Aria knows (from her memory and your note titles), so Whisper spells them right."""
+        words = []
+        try:
+            for fact in self.memory.get_memories(60):
+                words += re.findall(r"\b[A-Z][a-z]{2,}\b", fact)
+        except Exception:
+            pass
+        if self.notion:
+            try:
+                words += [n["title"] for n in self.notion._notes()[:25] if len(n["title"]) < 30]
+            except Exception:
+                pass
+        return [w for w in dict.fromkeys(words) if w not in ("User", "The", "Has", "Likes", "Is")]
+
     def _wait_for_wake(self) -> bool:
         """Blocks until Aria should wake up. Returns True if she should."""
         self.ui.set_state("sleeping")
@@ -1079,6 +1125,11 @@ class Aria:
                 else:
                     # short windows so typed input and sleep requests are noticed quickly
                     user_input = self.stt.listen(start_timeout=min(remaining, 3))
+                    if user_input:
+                        user_input = self._check_heard(user_input, self.stt.last_confidence)
+                        if user_input is None:
+                            last_interaction = time.time()
+                            continue
 
                 if not user_input:
                     continue

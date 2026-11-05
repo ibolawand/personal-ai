@@ -223,3 +223,47 @@ def test_chat_topics_vary(initiative, aria):
             break
     used = initiative.state["recent_facts"]
     assert len(set(used)) == 3
+
+
+# ── voice input she isn't sure about ──
+
+def test_unsure_voice_input_is_asked_back(aria):
+    said = []
+    aria.speak = said.append
+    assert aria._check_heard("no pitch", 0.3) is None
+    assert said == ["Sorry, did you say: no pitch?"]
+    assert aria._check_heard("yes", 0.9) == "no pitch"          # confirmed: act on it
+
+
+def test_unsure_then_no_asks_to_repeat(aria):
+    said = []
+    aria.speak = said.append
+    aria._check_heard("open packed racer", 0.2)
+    assert aria._check_heard("no", 0.9) is None and said[-1] == "Okay, say it again?"
+    assert aria._check_heard("open packet tracer", 0.9) == "open packet tracer"
+
+
+def test_confident_input_passes_and_sleep_is_never_questioned(aria):
+    aria.speak = lambda t: None
+    assert aria._check_heard("what's the time", 0.8) == "what's the time"
+    assert aria._check_heard("go to sleep", 0.2) == "go to sleep"
+
+
+def test_whisper_hallucinations_are_recognised():
+    from speech_to_text import HALLUCINATIONS
+    for t in ["Thanks for watching!", "Thank you.", "you", "Please subscribe", "Alright, have a great week."]:
+        assert HALLUCINATIONS.match(t), t
+    for t in ["thank you, that helped", "open youtube", "subscribe me to the newsletter please"]:
+        assert not HALLUCINATIONS.match(t), t
+
+
+# ── voice tone per sentence ──
+
+@pytest.mark.parametrize("sentence,tone", [
+    ("Aw, I'm sorry to hear that.", "soft"), ("That sounds rough.", "soft"), ("Take your time.", "soft"),
+    ("Haha, you caught me!", "playful"), ("Wow, rude.", "playful"), ("Done, milk's on the list!", "playful"),
+    ("The meeting is at three.", "neutral"), ("What's on your mind?", "neutral"),
+])
+def test_sentence_tone(sentence, tone):
+    from Engines.voice_engine import sentence_tone
+    assert sentence_tone(sentence) == tone

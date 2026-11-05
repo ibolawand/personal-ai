@@ -74,6 +74,22 @@ def _never_launch_anything(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def fake_gsettings(monkeypatch):
+    """Focus mode pauses notifications with gsettings; tests use a fake store instead of the real desktop."""
+    import Engines.FocusMode as F
+    store = {"display-notifications": "true"}
+
+    def fake(*args):
+        if args[0] == "get":
+            return store.get(args[2], "")
+        if args[0] == "set":
+            store[args[2]] = args[3]
+        return ""
+    monkeypatch.setattr(F, "_gsettings", fake)
+    return store
+
+
+@pytest.fixture(autouse=True)
 def _never_touch_real_files(monkeypatch, tmp_path):
     """Every test gets its own Aria memory DB, and opening a real database fails the test."""
     monkeypatch.setattr(database, "DB_FILE", str(tmp_path / "aria_memory.db"))

@@ -190,7 +190,7 @@ class Initiative:
             return
         self._last_reason = ""
         opener = (self._event_followup() or self._followup() or self._break_nudge() or self._weekly_review()
-                  or self._chat(now))
+                  or self._memory_cleanup() or self._chat(now))
         if opener:
             self.state["last_any"] = now
             self._save()
@@ -325,6 +325,26 @@ class Initiative:
                        f"short sentence (something like: \"{item['question']}\")."),
             "hint": (f"You asked Lala how {item['about']} went. React like a friend who cares: be happy for them, "
                      f"or sympathetic if it went badly, and ask a follow-up if it fits. No advice unless asked."),
+        }
+
+    def _memory_cleanup(self):
+        """Once: Aria went through what she saved about Lala and offers to forget the junk (yes/no in code)."""
+        mn = getattr(self.aria, "memory_note", None)
+        if not mn or self.state.get("memory_cleanup_done"):
+            return None
+        self.state["memory_cleanup_done"] = True
+        self._save()
+        result = mn.clean_up()
+        if not result.startswith("NEEDS CONFIRMATION"):
+            return None
+        junk = result.split(": ", 2)[-1].split(". Ask")[0]
+        return {
+            "kind": "cleanup",
+            "prompt": (f"[You are starting the conversation; Lala hasn't said anything.] You went through what you've "
+                       f"saved about Lala and some of it isn't real facts: {junk}. In one or two casual sentences, say "
+                       f"you did a bit of housekeeping in your memory and ask if you should forget those (yes or no). "
+                       f"Mention one example."),
+            "hint": "You asked whether to forget some junk you'd saved. Lala's yes/no is handled for you.",
         }
 
     def _break_nudge(self):

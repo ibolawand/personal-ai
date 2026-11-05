@@ -4,7 +4,12 @@ Screen & clipboard awareness.
 - look_at_screen: screenshot → local vision model in Ollama (nothing leaves the machine)
 - read_clipboard / copy_to_clipboard: via Qt, because the overlay already runs a Qt app
 
-Needs a vision model:  ollama pull qwen2.5vl:7b   (or set VISION_MODEL in Engines/.env)
+Needs a vision model:  ollama pull qwen2.5vl:3b   (or set VISION_MODEL in Engines/.env)
+
+Speed: the chat model and the vision model don't fit on an 8 GB card together, so every look swaps them.
+The 3B vision model loads fast, screenshots are shrunk to 1280 px (bigger was 4x slower, smaller no faster),
+and the vision model's answer goes straight to Lala ("FINAL ANSWER") while the chat model reloads in the
+background — about 8 s instead of ~13 s (and ~40 s with the 7B model at 1600 px).
 """
 
 import base64
@@ -16,8 +21,9 @@ import ollama
 from PIL import ImageGrab
 
 # One vision model for everything that looks at images (screen, camera, mood)
-VISION_MODEL = os.environ.get("VISION_MODEL", "qwen2.5vl:7b")
-MAX_SIDE = 1600
+VISION_MODEL = os.environ.get("VISION_MODEL", "qwen2.5vl:3b")
+MAX_SIDE = 1280
+from llm_engine import FINAL_PREFIX  # noqa: E402  (llm_engine returns such results to Lala as is)
 MAX_CLIPBOARD_CHARS = 8000
 
 
@@ -48,15 +54,28 @@ class ScreenEngine:
         img.convert("RGB").save(buf, format="JPEG", quality=85)
         b64 = base64.b64encode(buf.getvalue()).decode()
 
-        prompt = (f"This is a screenshot of the user's computer screen. {question}\n"
-                  "Be specific: quote exact error messages, code, or text when relevant. "
-                  "Answer concisely.")
+        prompt = (f"This is a screenshot of Lala's computer screen. Lala asks: {question}\n"
+                  "Answer Lala directly, in one to three short spoken sentences, like a friend looking over their "
+                  "shoulder. Quote exact error messages or text when that's what they ask about. No markdown.")
         try:
             response = ollama.chat(model=self.model, think=False,
                                    messages=[{"role": "user", "content": prompt, "images": [b64]}])
-            return response["message"]["content"].strip()
+            answer = response["message"]["content"].strip()
         except Exception as e:
             return f"Screen analysis failed: {e}"
+        self.reload_chat_model()
+        return FINAL_PREFIX + answer
+
+    @staticmethod
+    def reload_chat_model():
+        """Load the chat model again in the background, so Aria's next reply doesn't wait for it."""
+        def load():
+            try:
+                from llm_engine import LLM_MODEL_DEFAULT, NUM_CTX
+                ollama.generate(model=LLM_MODEL_DEFAULT, prompt="", options={"num_ctx": NUM_CTX})
+            except Exception as e:
+                print(f"[Screen] chat model preload failed: {e}")
+        threading.Thread(target=load, daemon=True).start()
 
     def read_clipboard(self):
         try:

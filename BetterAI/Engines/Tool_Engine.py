@@ -127,14 +127,19 @@ class ToolEngine:
             fm = self.focus
             tools += [
                 _tool("start_focus",
-                      "Start a focus/deep-work session: dims and warms the LEDs, plays lo-fi, "
-                      "puts the phone on Do Not Disturb, and announces when time is up.",
-                      fm.start, optional=("minutes", "task", "music"),
-                      minutes=("number", "session length, default 25"),
+                      "Start a focus/deep-work session: pauses notifications, plays lo-fi, dims the LEDs, and "
+                      "announces when time is up. For Pomodoro ('4 rounds', 'pomodoro') set rounds; breaks "
+                      "between rounds start and end on their own.",
+                      fm.start, optional=("minutes", "task", "music", "rounds", "break_minutes"),
+                      minutes=("number", "length of one work block, default 25"),
                       task=("string", "what the user is working on"),
-                      music=("boolean", "play lo-fi music, default true")),
+                      music=("boolean", "play lo-fi music, default true"),
+                      rounds=("integer", "number of work blocks, default 1 (Pomodoro usually 4)"),
+                      break_minutes=("number", "break between rounds, default 5")),
                 _tool("stop_focus", "End the current focus session early.", fm.stop),
-                _tool("focus_status", "How much time is left in the focus session.", fm.status),
+                _tool("focus_status", "How much time is left in the focus session or break.", fm.status),
+                _tool("focus_stats", "How much Lala focused ('how much did I focus this week/today?').",
+                      fm.stats, optional=("period",), period=("string", "'today', 'week' or 'month'")),
             ]
 
         if self.screen:
@@ -352,6 +357,8 @@ class ToolEngine:
                 _tool("remember_about_me", "Save a lasting fact about Lala when they ask you to remember it "
                       "('remember that I'm vegetarian'). Not for reminders at a time (set_reminder) or notes (add_note).",
                       mn.remember, fact=("string", "the fact, short, e.g. 'Is vegetarian'")),
+                _tool("clean_up_memory", "Go through everything saved about Lala and suggest forgetting what isn't a "
+                      "real lasting fact ('clean up your memory'). Lala confirms with yes/no.", mn.clean_up),
                 _tool("forget_about_me", "Forget something saved about Lala ('forget that I study C#', "
                       "'forget everything about me').", mn.forget,
                       what=("string", "what to forget, in a few words, or 'everything'")),

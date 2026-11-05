@@ -51,7 +51,7 @@ STATE_COLORS = {
     "error":     (255, 95, 95),
 }
 FLASH_COLORS = {"unknown": (255, 180, 70), "alert": (255, 110, 160)}
-RING_COLORS = {"focus": (255, 165, 60), "timer": (235, 230, 255)}
+RING_COLORS = {"focus": (255, 165, 60), "focusbreak": (110, 220, 150), "timer": (235, 230, 255)}
 STATE_LABELS = {
     "booting": "starting up…", "sleeping": "asleep", "listening": "listening",
     "thinking": "thinking…", "speaking": "speaking", "error": "something broke — see terminal",
@@ -758,7 +758,7 @@ class Overlay(QWidget):
             return ""
         left = int(tm["due"] - time.time())
         clock = f"{left // 3600}:{left % 3600 // 60:02d}:{left % 60:02d}" if left >= 3600 else f"{left // 60}:{left % 60:02d}"
-        label = "focus" if tm["kind"] == "focus" else ("" if tm["text"] == "timer" else tm["text"])
+        label = {"focus": "focus", "focusbreak": "break"}.get(tm["kind"]) or ("" if tm["text"] == "timer" else tm["text"])
         return f" · ⏱ {clock}" + (f" {label}" if label else "")
 
     @staticmethod

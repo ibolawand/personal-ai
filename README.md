@@ -49,7 +49,7 @@ Voraussetzungen: Python 3.12, [Ollama](https://ollama.com), eine Grafikkarte mit
 
 ```bash
 ollama pull qwen3:8b
-ollama pull qwen2.5vl:7b                      # nur für Bildschirm und Kamera
+ollama pull qwen2.5vl:3b                      # nur für Bildschirm und Kamera
 sudo apt install wmctrl x11-utils poppler-utils playerctl lm-sensors
 
 cd BetterAI
@@ -85,7 +85,7 @@ cd BetterAI
 .venv/bin/python -m pytest
 ```
 
-96 Tests in etwa 7 Sekunden. Sie brauchen weder Sprachmodell noch Kamera, Mikrofon oder Internet,
+120 Tests in etwa 12 Sekunden. Sie brauchen weder Sprachmodell noch Kamera, Mikrofon oder Internet,
 arbeiten nur mit temporären Datenbanken und schlagen fehl, falls ein Test die echten Daten öffnen will.
 
 ## Datenschutz

@@ -73,6 +73,12 @@ class AriaMemory:
                     created  REAL,
                     done     INTEGER DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS focus_log (
+                    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                    day      TEXT,                      -- YYYY-MM-DD, local
+                    minutes  INTEGER,
+                    task     TEXT
+                );
                 CREATE TABLE IF NOT EXISTS followups (
                     id        INTEGER PRIMARY KEY AUTOINCREMENT,
                     about     TEXT,
@@ -162,6 +168,19 @@ class AriaMemory:
         with self._lock:
             with self._connect() as conn:
                 conn.execute("UPDATE followups SET status = ? WHERE id = ?", (status, followup_id))
+
+    # ── Focus log ─────────────────────────────────────────────
+    def log_focus(self, minutes: int, task: str = ""):
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("INSERT INTO focus_log (day, minutes, task) VALUES (?, ?, ?)",
+                             (datetime.date.today().isoformat(), int(minutes), task or ""))
+
+    def focus_log_since(self, day: str) -> list:
+        with self._lock:
+            with self._connect() as conn:
+                return conn.execute("SELECT day, minutes, task FROM focus_log WHERE day >= ? ORDER BY day",
+                                    (day,)).fetchall()
 
     def messages_today(self) -> int:
         """How many messages Lala sent today (local time)."""

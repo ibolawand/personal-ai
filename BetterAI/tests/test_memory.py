@@ -124,3 +124,23 @@ def test_followup_skipped_when_it_is_a_calendar_event(memory, notion):
     f = Followups(memory, notion)
     assert f.add_from_extraction([{"about": "dentist appointment", "when": "tomorrow",
                                    "question": "How was the dentist?"}]) == 0
+
+
+def test_clean_up_asks_then_forgets_only_the_junk(mn, memory):
+    for f in ["Plays guitar", "User asked to play a song", "User is bored"]:
+        memory.save_memory(f)
+    facts = memory.get_memories()
+    junk = {"User asked to play a song", "User is bored"}
+    mn.llm = type("L", (), {"find_junk_facts": lambda self, fs: [i for i, f in enumerate(fs) if f in junk]})()
+    out = mn.clean_up()
+    assert out.startswith("NEEDS CONFIRMATION: forget 2 saved things")
+    assert sorted(memory.get_memories()) == sorted(facts)            # nothing gone before "yes"
+    assert mn.confirm.resolve("yes").startswith("Done, I forgot those 2")
+    assert memory.get_memories() == ["Plays guitar"]
+    assert note_facts(mn) == ["Plays guitar"]
+
+
+def test_clean_up_with_nothing_to_remove(mn, memory):
+    memory.save_memory("Plays guitar")
+    mn.llm = type("L", (), {"find_junk_facts": lambda self, fs: []})()
+    assert mn.clean_up().startswith("I went through everything")
