@@ -23,7 +23,7 @@ import traceback
 import random
 
 import numpy as np
-from PySide6.QtCore import (QObject, QPoint, QPointF, QRect, QRectF, QSettings, Qt, QThread, QTimer,
+from PySide6.QtCore import (QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSettings, Qt, QThread, QTimer,
                             Signal)
 from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPainterPath,
                            QPen, QRadialGradient, QRegion)
@@ -396,6 +396,10 @@ class Overlay(QWidget):
         self.input.setGeometry(self._input_rect())
         self.input.returnPressed.connect(self._submit)
         self.capture_mode = False      # quick capture (Ctrl+Alt+N): the text is filed, not chatted about
+        self.history = []              # what was typed, for ↑ / ↓ in the text box
+        self._hist_pos = 0
+        self._draft = ""
+        self.input.installEventFilter(self)
         self.input.hide()
 
         bridge.stateChanged.connect(self._on_state)
@@ -991,9 +995,30 @@ class Overlay(QWidget):
         self.input.setStyleSheet(INPUT_STYLE.replace("rgba(185, 120, 255, 140)", "rgba(110, 220, 150, 170)")
                                  if on else INPUT_STYLE)
 
+    def eventFilter(self, obj, e):
+        """↑ / ↓ in the text box walk through what was typed before, like a terminal."""
+        if obj is self.input and e.type() == QEvent.KeyPress and e.key() in (Qt.Key_Up, Qt.Key_Down):
+            if not self.history:
+                return True
+            if self._hist_pos == len(self.history):
+                self._draft = self.input.text()
+            step = -1 if e.key() == Qt.Key_Up else 1
+            self._hist_pos = max(0, min(len(self.history), self._hist_pos + step))
+            self.input.setText(self.history[self._hist_pos] if self._hist_pos < len(self.history) else self._draft)
+            return True
+        return super().eventFilter(obj, e)
+
+    def _remember_typed(self, text):
+        if not self.history or self.history[-1] != text:
+            self.history = (self.history + [text])[-50:]
+        self._hist_pos = len(self.history)
+        self._draft = ""
+
     def _submit(self):
         text = self.input.text().strip()
         self.input.clear()
+        if text:
+            self._remember_typed(text)
         if not text:
             self._toggle_input(False)
             return
