@@ -355,6 +355,12 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
 - No model, camera, microphone or network needed. They only use temporary databases: opening the real
   `aria_memory.db` or MyNotion's database fails the test, and app or MyNotion launches are recorded instead of run.
 
+## Self-check — `Engines/Health.py`
+
+- "Are your systems okay?" / "why can't you see my screen?" checks the language and vision models, MyNotion,
+  Spotify login, camera, microphone, voice, weather city, web search and the document index, and says how to fix
+  whatever is missing. The same check is written to the log (`[Health] ✓/✗ …`) every time Aria starts.
+
 ## Safety
 
 - Aria can only run actions that are written in code. The model never gets a shell.

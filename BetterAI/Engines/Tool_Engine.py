@@ -45,7 +45,7 @@ class ToolEngine:
     def __init__(self, spotify=None, arduino=None, vision=None, ha=None,
                  reminders=None, focus=None, screen=None, laptop=None, files=None, notion=None,
                  owner_check=None, initiative=None, memory_note=None, activity=None, weather=None, undo=None,
-                 recall=None):
+                 recall=None, health=None):
         self.spotify = spotify
         self.arduino = arduino
         self.vision = vision
@@ -63,6 +63,7 @@ class ToolEngine:
         self.weather = weather
         self.undo = undo
         self.recall = recall
+        self.health = health
         self._registry = {t["schema"]["function"]["name"]: t for t in self._build()}
 
     # Tools that touch the laptop, files, clipboard/screen or phone — gated by owner_check
@@ -389,6 +390,11 @@ class ToolEngine:
                       "'forget everything about me').", mn.forget,
                       what=("string", "what to forget, in a few words, or 'everything'")),
             ]
+
+        if self.health:
+            tools.append(_tool("system_check", "Check that all of Aria's parts work (models, MyNotion, Spotify, camera, "
+                               "microphone, weather, search) — 'are your systems okay?', 'why can't you see my "
+                               "screen?', 'is everything working?'.", self.health.report))
 
         if self.recall:
             tools += [

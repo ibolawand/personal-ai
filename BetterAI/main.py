@@ -30,6 +30,7 @@ from Engines.Followups import Followups
 from Engines.Weather import Weather
 from Engines.Undo import Undo
 from Engines.Recall import Recall
+from Engines.Health import Health
 from Engines.Initiative import Initiative, NOT_NOW_RE
 from Engines.Reminders import Reminders
 from Engines.ScreenEngine import ScreenEngine
@@ -411,6 +412,7 @@ class Aria:
             weather=self.weather,
             undo=self.undo,
             recall=Recall(self.memory),
+            health=Health(self),
         )
         print(f"[Tools] {len(self.tools.schemas)} tools available")
 
@@ -420,6 +422,7 @@ class Aria:
         if self.notion:
             threading.Thread(target=self._event_reminder_loop, daemon=True).start()
         self.initiative.start()
+        threading.Thread(target=Health(self).log_startup, daemon=True).start()
         self.activity.start()
         self.focus.start_watching()
         self.files.start_indexing()
