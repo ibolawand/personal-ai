@@ -322,3 +322,15 @@ def test_capture_ideas_and_links_go_to_the_inbox_directly(aria):
     assert aria.quick_capture("https://example.com/recipe") == "Saved to your Inbox."
     inbox = aria.notion.read_note("Inbox")
     assert "water my plants" in inbox and "example.com/recipe" in inbox and aria.llm.prompts == []
+
+
+def test_weekly_review_ends_with_a_recap(aria, notion, memory):
+    import Engines.FocusMode as F
+    aria.focus = F.FocusMode(types.SimpleNamespace(pending=lambda kinds=None: []), memory=memory)
+    memory.log_focus(50, "c#")
+    memory.log_focus(30, "databases")
+    notion.add_to_list("to-do", "one thing")
+    aria._review = {"items": notion.open_todo_items(), "i": 0, "coming": "tomorrow 15:00 Dentist"}
+    reply, _ = aria.handle_turn("done", check_state=False)
+    assert reply == ("Ticked off one thing. That's all of them. This week you put in 1 h 20 min of focus in 2 blocks, "
+                     "mostly c# (50 min), databases (30 min) — nice. Coming up: tomorrow 15:00 Dentist.")

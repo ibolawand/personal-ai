@@ -164,7 +164,8 @@ While she's asleep, Aria sometimes speaks up first:
   worth keeping ("come back in 3 weeks"), it goes into a "Dentist notes" note. Repeating events (gym, classes) are skipped.
 - **Weekly review**, Sunday from 18:00: she goes through your open to-dos one at a time. Answer "done" (ticks it off),
   "keep", "drop it" (removes it), "remind me Monday at 10" or "later" (a reminder), or "stop". These answers are
-  handled in code, so a tick-off really happens. At the end she mentions what's coming up.
+  handled in code, so a tick-off really happens. At the end she sums up your week's focus time ("1 h 20 min of
+  focus in 2 blocks, mostly C#") and mentions what's coming up.
 - **Morning:** after the daily briefing she asks what you want to get done today. What you name goes on your to-do list.
 - **Casual chats:** now and then a normal conversation, not about tasks: what you're up to ("how's the coding
   going?" after a while in PyCharm), something she knows about you, your day, the day of the week, or a fun question.

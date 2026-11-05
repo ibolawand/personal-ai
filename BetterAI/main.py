@@ -890,7 +890,16 @@ class Aria:
             return random.choice(["Next: {}?", "What about {}?", "And {}?"]).format(item[1])
         coming = self._review.get("coming")
         self._review = None
-        return ("That's all of them. " + (f"Coming up: {coming}." if coming else "")).strip()
+        out = "That's all of them."
+        focus = getattr(self, "focus", None)
+        if focus is not None and getattr(focus, "memory", None):
+            stats = focus.stats("week")
+            if not stats.startswith("No finished") and not stats.startswith("I don't"):
+                out += " This week you put in " + stats[0].lower() + stats[1:].replace(" in the last 7 days", "")
+                out = out.rstrip(".") + " — nice."
+        if coming:
+            out += f" Coming up: {coming}."
+        return out
 
     def _check_state_bg(self, user_input):
         try:
