@@ -10,3 +10,4 @@ real model where it matters) and committed separately. The full feature overview
 | 3 | **Calendar clash warnings** | Adding or moving an event that overlaps another one: "Heads up: that overlaps with Meeting at 15:00." | `tests/test_notion.py` |
 | 4 | **Calculator, bill splitter, unit converter** | Exact maths instead of guesses. The model first split a bill wrong (tip only, 4.37 each), so bill splitting got its own tool with the formula in code (33.50 each). Safe parser, no `eval`. | `tests/test_calc.py` |
 | 5 | **Reminder card** | A reminder or timer going off shows a card with Snooze 5 min / 10 min / Done. | `tests/test_conversation.py` |
+| 6 | **Remembering conversations** | "What did we talk about yesterday?", "when did I mention Packet Tracer?" search her message history, now 3000 messages instead of 200. Past days ("monday", "3 days ago") get their own parser, since the calendar's only looks ahead. | `tests/test_recall.py` |

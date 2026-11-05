@@ -146,7 +146,7 @@ class AriaMemory:
                 )
                 conn.execute("""
                     DELETE FROM messages WHERE id NOT IN (
-                        SELECT id FROM messages ORDER BY id DESC LIMIT 200
+                        SELECT id FROM messages ORDER BY id DESC LIMIT 3000
                     )
                 """)
 
@@ -181,6 +181,24 @@ class AriaMemory:
             with self._connect() as conn:
                 return conn.execute("SELECT day, minutes, task FROM focus_log WHERE day >= ? ORDER BY day",
                                     (day,)).fetchall()
+
+    def messages_on(self, day: str) -> list:
+        """[(HH:MM, role, content)] for a local date 'YYYY-MM-DD'."""
+        with self._lock:
+            with self._connect() as conn:
+                return conn.execute("SELECT strftime('%H:%M', ts, 'localtime'), role, content FROM messages "
+                                    "WHERE date(ts, 'localtime') = ? ORDER BY id", (day,)).fetchall()
+
+    def search_messages(self, words: list, limit: int = 8) -> list:
+        """[(date, HH:MM, role, content)] of messages containing all the words, newest first."""
+        if not words:
+            return []
+        where = " AND ".join("lower(content) LIKE ?" for _ in words)
+        with self._lock:
+            with self._connect() as conn:
+                return conn.execute(f"SELECT date(ts, 'localtime'), strftime('%H:%M', ts, 'localtime'), role, content "
+                                    f"FROM messages WHERE {where} ORDER BY id DESC LIMIT ?",
+                                    [f"%{w.lower()}%" for w in words] + [limit]).fetchall()
 
     def messages_today(self) -> int:
         """How many messages Lala sent today (local time)."""

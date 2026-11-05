@@ -29,6 +29,7 @@ from Engines.Activity import Activity
 from Engines.Followups import Followups
 from Engines.Weather import Weather
 from Engines.Undo import Undo
+from Engines.Recall import Recall
 from Engines.Initiative import Initiative, NOT_NOW_RE
 from Engines.Reminders import Reminders
 from Engines.ScreenEngine import ScreenEngine
@@ -409,6 +410,7 @@ class Aria:
             activity=self.activity,
             weather=self.weather,
             undo=self.undo,
+            recall=Recall(self.memory),
         )
         print(f"[Tools] {len(self.tools.schemas)} tools available")
 

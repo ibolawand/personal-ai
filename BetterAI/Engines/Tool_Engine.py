@@ -44,7 +44,8 @@ def _tool(tool_name, description, handler, optional=(), **params):
 class ToolEngine:
     def __init__(self, spotify=None, arduino=None, vision=None, ha=None,
                  reminders=None, focus=None, screen=None, laptop=None, files=None, notion=None,
-                 owner_check=None, initiative=None, memory_note=None, activity=None, weather=None, undo=None):
+                 owner_check=None, initiative=None, memory_note=None, activity=None, weather=None, undo=None,
+                 recall=None):
         self.spotify = spotify
         self.arduino = arduino
         self.vision = vision
@@ -61,6 +62,7 @@ class ToolEngine:
         self.activity = activity
         self.weather = weather
         self.undo = undo
+        self.recall = recall
         self._registry = {t["schema"]["function"]["name"]: t for t in self._build()}
 
     # Tools that touch the laptop, files, clipboard/screen or phone — gated by owner_check
@@ -71,6 +73,7 @@ class ToolEngine:
         "check_phone_location", "check_phone_battery", "notify_phone",
         "read_note", "search_notes", "list_notes", "get_events", "move_event", "delete_event",
         "clear_list", "daily_briefing", "what_you_know_about_me", "forget_about_me",
+        "recall_conversation", "search_conversations",
     }
 
     # Changes "undo that" can take back (Engines/Undo.py)
@@ -385,6 +388,16 @@ class ToolEngine:
                 _tool("forget_about_me", "Forget something saved about Lala ('forget that I study C#', "
                       "'forget everything about me').", mn.forget,
                       what=("string", "what to forget, in a few words, or 'everything'")),
+            ]
+
+        if self.recall:
+            tools += [
+                _tool("recall_conversation", "What you and Lala talked about on a day ('what did we talk about "
+                      "yesterday?', '…on monday').", self.recall.conversations_on, optional=("day",),
+                      day=("string", "'today', 'yesterday', a weekday or a date")),
+                _tool("search_conversations", "Find when something came up in your conversations ('when did I "
+                      "mention the exam?', 'what did I say about Lina?').", self.recall.search,
+                      query=("string", "the key words")),
             ]
 
         if self.undo:

@@ -48,6 +48,8 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 - **Long-term memory:** after a conversation, lasting facts about you are saved in SQLite (`database.py`).
   The model "thinks" first, which runs in the background, so it skips commands, passing moods ("I'm tired"),
   calendar contents and facts it already knows.
+- **Remembering conversations** (`Engines/Recall.py`): "what did we talk about yesterday?" (or on Monday, 3 days ago)
+  and "when did I mention Packet Tracer?" look through her message history (the last 3000 messages; it used to keep 200).
 - **You can see and fix what Aria remembers** (`Engines/MemoryNote.py`):
   - The MyNotion note **"What Aria knows about me"** lists every fact, one per line. Delete or change a line and she
     forgets it or uses your version; add a line and she knows it. Synced every minute in both directions.
