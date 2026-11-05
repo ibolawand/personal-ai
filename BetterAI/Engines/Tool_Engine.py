@@ -229,20 +229,31 @@ class ToolEngine:
                       nt.add_to_list,
                       list_name=("string", "which list, e.g. 'shopping' or 'to-do'"),
                       items=("string", "the items, comma-separated, e.g. 'oat milk, eggs'")),
-                _tool("remove_from_list", "Remove items from a list note (bought / done).", nt.remove_from_list,
+                _tool("remove_from_list", "Delete items from a list entirely (only when Lala says remove/delete; "
+                                          "for bought/done use check_off).", nt.remove_from_list,
                       list_name=("string", "which list"), items=("string", "items to remove, comma-separated")),
+                _tool("check_off",
+                      "Tick items off a checklist when Lala did/bought them ('I paid the rent', 'got the eggs', "
+                      "'done with the essay'). Set done=false to untick.",
+                      nt.check_off, optional=("list_name", "done"),
+                      items=("string", "the item(s), comma-separated"),
+                      list_name=("string", "which list, if Lala says it"),
+                      done=("boolean", "true = tick (default), false = untick")),
                 _tool("clear_list", "Remove everything from a list (asks to confirm).", nt.clear_list,
                       list_name=("string", "which list")),
                 # calendar (MyNotion)
                 _tool("get_events", "Read Lala's MyNotion calendar.", nt.get_events, optional=("when",),
                       when=("string", "'today', 'tomorrow', 'friday', '12.11.', 'this week', 'next week', "
                                       "'weekend' or 'this month'. Default: this week")),
-                _tool("add_event", "Add an event to Lala's MyNotion calendar. Leave time empty for all-day events.",
-                      nt.add_event, optional=("time", "duration_hours"),
+                _tool("add_event", "Add an event to Lala's MyNotion calendar. Leave time empty for all-day events. "
+                      "For things that repeat ('every monday', 'each week', birthdays) set repeat.",
+                      nt.add_event, optional=("time", "duration_hours", "repeat"),
                       title=("string", "what, e.g. 'Dentist'"),
-                      date=("string", "as Lala said it: 'tomorrow', 'friday', '12.11.', '20 november'"),
+                      date=("string", "as Lala said it: 'tomorrow', 'friday', '12.11.', '20 november', "
+                                      "or several weekdays in ONE call: 'monday and thursday'"),
                       time=("string", "start time HH:MM, e.g. '15:00'"),
-                      duration_hours=("number", "length in hours, default 1")),
+                      duration_hours=("number", "length in hours, default 1"),
+                      repeat=("string", "'daily', 'weekly', 'monthly' or 'yearly'; empty for a one-off")),
                 _tool("move_event", "Move a calendar event to another day and/or time (asks to confirm).",
                       nt.move_event, optional=("new_date", "new_time", "date"),
                       title=("string", "the event, e.g. 'dentist'"),

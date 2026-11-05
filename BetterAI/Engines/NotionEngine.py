@@ -38,6 +38,8 @@ MONTHS = ["january", "february", "march", "april", "may", "june", "july", "augus
 
 def html_to_text(content: str) -> str:
     s = content or ""
+    s = re.sub(r"<li[^>]*data-checked=\"true\"[^>]*>", "\n☑ ", s, flags=re.I)
+    s = re.sub(r"<li[^>]*data-checked=\"false\"[^>]*>", "\n☐ ", s, flags=re.I)
     s = re.sub(r"<li[^>]*>", "\n• ", s, flags=re.I)
     s = re.sub(r"<br\s*/?>|</p>|</h\d>|</li>|</blockquote>", "\n", s, flags=re.I)
     s = re.sub(r"<[^>]+>", "", s)
@@ -59,8 +61,20 @@ def list_html(items) -> str:
     return "<ul>" + "".join(f"<li><p>{html.escape(i)}</p></li>" for i in items) + "</ul>"
 
 
+def task_item(text: str, checked: bool = False) -> str:
+    """One checklist item in the HTML MyNotion's editor (TipTap task list) uses."""
+    c = "true" if checked else "false"
+    box = '<input type="checkbox" checked="checked">' if checked else '<input type="checkbox">'
+    return (f'<li data-checked="{c}" data-type="taskItem"><label>{box}<span></span></label>'
+            f'<div><p>{html.escape(text)}</p></div></li>')
+
+
+def li_text(li_html: str) -> str:
+    return html_to_text(li_html).lstrip("•☐☑ ").strip()
+
+
 def list_items(content: str) -> list:
-    return [html_to_text(m) for m in re.findall(r"<li[^>]*>(.*?)</li>", content or "", flags=re.S | re.I)]
+    return [li_text(m) for m in re.findall(r"<li[^>]*>.*?</li>", content or "", flags=re.S | re.I)]
 
 
 def split_items(items) -> list:
@@ -161,6 +175,22 @@ def fmt_day(d: dt.date, today: dt.date = None) -> str:
     return f"{d.strftime('%A')} {d.day} {d.strftime('%B')}"
 
 
+_FILLER_WORDS = {"just", "already", "finally", "done", "with", "that", "this", "have", "the", "some"}
+
+
+def _repeat_value(text) -> str | None:
+    """'weekly' / 'every week' / 'each monday' -> 'weekly' (None if empty or unknown)"""
+    s = str(text or "").strip().lower()
+    if not s or s in ("none", "no", "once", "never"):
+        return None
+    for key, words in {"daily": ("daily", "day"), "weekly": ("weekly", "week", "monday", "tuesday", "wednesday",
+                       "thursday", "friday", "saturday", "sunday"), "monthly": ("monthly", "month"),
+                       "yearly": ("yearly", "annual", "year", "birthday")}.items():
+        if any(w in s for w in words):
+            return key
+    return None
+
+
 def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9äöüß ]", " ", (s or "").lower()).strip()
 
@@ -202,6 +232,7 @@ class NotionEngine:
         self.confirm = confirm
         self.user_id = int(user_id or os.environ.get("NOTION_USER_ID") or 0) or self._find_user()
         self.last_reply = lambda: ""        # set by Aria: her previous answer, for "save that as a note"
+        self._ensure_repeat_column()
 
     @contextmanager
     def _conn(self):
@@ -333,8 +364,9 @@ class NotionEngine:
         title = name.strip().strip(".").capitalize()
         if "list" not in title.lower():
             title += " list"
-        nid = self._create_note(title, "<ul></ul>")
-        return {"id": nid, "title": title, "content": "<ul></ul>"}
+        empty = '<ul data-type="taskList"></ul>'
+        nid = self._create_note(title, empty)
+        return {"id": nid, "title": title, "content": empty}
 
     def add_to_list(self, list_name: str, items):
         new = split_items(items)
@@ -346,9 +378,17 @@ class NotionEngine:
         new = [i for i in new if i.lower() not in have]
         if not new:
             return f"That's already on your {n['title']}."
-        addition = "".join(f"<li><p>{html.escape(i)}</p></li>" for i in new)
-        idx = content.lower().rfind("</ul>")
-        content = content[:idx] + addition + content[idx:] if idx >= 0 else content + f"<ul>{addition}</ul>"
+        is_checklist = 'data-type="tasklist"' in content.lower() or "<ul" not in content.lower()
+        if is_checklist:
+            addition = "".join(task_item(i) for i in new)
+            start = content.lower().rfind('<ul data-type="tasklist"')
+            idx = content.lower().find("</ul>", start) if start >= 0 else -1
+            wrapper = f'<ul data-type="taskList">{addition}</ul>'
+        else:
+            addition = "".join(f"<li><p>{html.escape(i)}</p></li>" for i in new)
+            idx = content.lower().rfind("</ul>")
+            wrapper = f"<ul>{addition}</ul>"
+        content = content[:idx] + addition + content[idx:] if idx >= 0 else content + wrapper
         self._set_content(n["id"], content)
         return f"Added {', '.join(new)} to your {n['title']}."
 
@@ -359,10 +399,10 @@ class NotionEngine:
         content, removed = n["content"] or "", []
         for item in split_items(items):
             for li in re.findall(r"<li[^>]*>.*?</li>", content, flags=re.S | re.I):
-                li_text = html_to_text(li).lstrip("• ").strip()
-                if _match_score(item, li_text) >= 60:
+                text = li_text(li)
+                if _match_score(item, text) >= 60:
                     content = content.replace(li, "", 1)
-                    removed.append(li_text)
+                    removed.append(text)
                     break
         if not removed:
             return f"None of that is on your {n['title']}."
@@ -378,28 +418,109 @@ class NotionEngine:
             return f"Your {n['title']} is already empty."
 
         def do():
-            self._set_content(n["id"], "<ul></ul>")
+            self._set_content(n["id"], '<ul data-type="taskList"></ul>')
             return f"Cleared your {n['title']}."
         return self.confirm.request(f"clear all {count} items from {n['title']}", do) if self.confirm else do()
 
+    def check_off(self, items, list_name: str = "", done: bool = True):
+        """Tick (or untick) checklist items. Without a list name, looks through all checklists."""
+        done = str(done).lower() not in ("false", "0", "no")
+        wanted = split_items(items)
+        if not wanted:
+            return "Which item?"
+        if list_name:
+            n = self._list_note(list_name, create=False)
+            pool = [n] if n else []
+        else:
+            pool = [n for n in self._notes() if 'data-type="tasklist"' in (n["content"] or "").lower()]
+        if not pool:
+            return "I couldn't find that list." if list_name else "You don't have any checklists yet."
+        changed = []
+        for item in wanted:
+            best = None
+            for n in pool:
+                for li in re.findall(r'<li[^>]*data-type="taskItem"[^>]*>.*?</li>', n["content"] or "", flags=re.S | re.I):
+                    score = _match_score(item, li_text(li))
+                    if score >= 60 and (not best or score > best[0]):
+                        best = (score, n, li)
+            if not best:
+                # "I paid the rent" vs "pay rent": accept one shared meaningful word if it points to a single item
+                words = {w for w in _stem(_norm(item)).split() if len(w) > 3 and w not in _FILLER_WORDS}
+                hits = [(n, li) for n in pool
+                        for li in re.findall(r'<li[^>]*data-type="taskItem"[^>]*>.*?</li>', n["content"] or "", flags=re.S | re.I)
+                        if words & set(_stem(_norm(li_text(li))).split())]
+                if len(hits) == 1:
+                    best = (50, *hits[0])
+            if best:
+                _, n, li = best
+                n["content"] = n["content"].replace(li, task_item(li_text(li), done), 1)
+                changed.append((n, li_text(li)))
+        if not changed:
+            return f"I couldn't find {', '.join(wanted)} on your checklists."
+        for n in {id(n): n for n, _ in changed}.values():
+            self._set_content(n["id"], n["content"])
+        names = ", ".join(t for _, t in changed)
+        return f"Ticked off {names}." if done else f"Unticked {names}."
+
+    def _open_todos(self):
+        """Unticked items on to-do/task lists (not the shopping list etc.)."""
+        out = []
+        for n in self._notes():
+            if not re.search(r"to-?do|task", n["title"], re.I):
+                continue
+            for li in re.findall(r'<li[^>]*data-checked="false"[^>]*>.*?</li>', n["content"] or "", flags=re.S | re.I):
+                out.append(li_text(li))
+        return out
+
     # ── calendar ──
 
-    def _events_between(self, start: dt.date, end: dt.date):
+    def _ensure_repeat_column(self):
+        """MyNotion adds this too; whichever starts first creates it."""
         with self._conn() as c:
-            rows = c.execute(
-                "SELECT * FROM EVENTS WHERE userID = ? AND date BETWEEN ? AND ? "
-                "ORDER BY date, allDay DESC, COALESCE(startHour, 0)",
-                (self.user_id, start.isoformat(), end.isoformat())).fetchall()
-        return [dict(r) for r in rows]
+            cols = [r["name"] for r in c.execute("PRAGMA table_info(EVENTS)")]
+            if cols and "repeat" not in cols:
+                c.execute("ALTER TABLE EVENTS ADD COLUMN repeat TEXT DEFAULT NULL")
 
     @staticmethod
-    def _fmt_event(e, today=None, with_day=True) -> str:
+    def _occurs_on(e, day: dt.date) -> bool:
+        first = dt.date.fromisoformat(e["date"])
+        rep = e.get("repeat")
+        if not rep:
+            return day == first
+        if day < first:
+            return False
+        return {"daily": True,
+                "weekly": day.weekday() == first.weekday(),
+                "monthly": day.day == first.day,
+                "yearly": (day.month, day.day) == (first.month, first.day)}.get(rep, False)
+
+    def _events_between(self, start: dt.date, end: dt.date):
+        """Events in [start, end], with repeating events expanded into one entry per day they happen."""
+        with self._conn() as c:
+            rows = [dict(r) for r in c.execute(
+                "SELECT * FROM EVENTS WHERE userID = ? AND date <= ? AND (date >= ? OR repeat IS NOT NULL)",
+                (self.user_id, end.isoformat(), start.isoformat()))]
+        out = []
+        day = start
+        while day <= end:
+            for e in rows:
+                if self._occurs_on(e, day):
+                    out.append({**e, "date": day.isoformat(), "first_date": e["date"]})
+            day += dt.timedelta(days=1)
+        out.sort(key=lambda e: (e["date"], -int(bool(e["allDay"])), e["startHour"] or 0))
+        return out
+
+    REPEAT_WORDS = {"daily": "every day", "weekly": "every week", "monthly": "every month", "yearly": "every year"}
+
+    @classmethod
+    def _fmt_event(cls, e, today=None, with_day=True) -> str:
         d = dt.date.fromisoformat(e["date"])
         day = fmt_day(d, today) + " " if with_day else ""
+        rep = f" ({cls.REPEAT_WORDS[e['repeat']]})" if e.get("repeat") in cls.REPEAT_WORDS else ""
         if e["allDay"] or e["startHour"] is None:
-            return f"{day}(all day) {e['title']}"
+            return f"{day}(all day) {e['title']}{rep}"
         end = f"–{fmt_hour(e['startHour'] + e['duration'])}" if e.get("duration") else ""
-        return f"{day}{fmt_hour(e['startHour'])}{end} {e['title']}"
+        return f"{day}{fmt_hour(e['startHour'])}{end} {e['title']}{rep}"
 
     def get_events(self, when: str = "this week"):
         today = dt.date.today()
@@ -424,12 +545,41 @@ class NotionEngine:
         if not events:
             return f"Nothing in your calendar {label}."
         single = start == end
-        return f"Calendar {label}: " + "; ".join(self._fmt_event(e, today, with_day=not single) for e in events) + "."
+        if single:
+            return f"Calendar {label}: " + "; ".join(self._fmt_event(e, today, with_day=False) for e in events) + "."
+        daily, rest = self._split_daily(events)
+        parts = [f"every day {self._fmt_event(e, today, with_day=False).replace(' (every day)', '')}" for e in daily]
+        parts += [self._fmt_event(e, today) for e in rest]
+        return f"Calendar {label}: " + "; ".join(parts) + "."
 
-    def add_event(self, title: str, date: str, time: str = "", duration_hours=1):
+    @staticmethod
+    def _split_daily(events):
+        """Daily events once (not 7 times in a week view), everything else as is."""
+        daily, seen, rest = [], set(), []
+        for e in events:
+            if e.get("repeat") == "daily":
+                if e["id"] not in seen:
+                    seen.add(e["id"])
+                    daily.append(e)
+            else:
+                rest.append(e)
+        return daily, rest
+
+    def add_event(self, title: str, date: str, time: str = "", duration_hours=1, repeat: str = ""):
         title = (title or "").strip()
         if not title:
             return "What's the event called?"
+        # "monday and thursday" / "mondays, wednesdays" -> one event per weekday (weekly unless told otherwise)
+        days = [d for d in WEEKDAYS if re.search(rf"\b{d}s?\b", str(date or "").lower())]
+        if len(days) > 1:
+            results = [self.add_event(title, d, time, duration_hours, repeat or "weekly") for d in days]
+            ok = [r for r in results if r.startswith("Added")]
+            if len(ok) == len(results):
+                every = "every " if _repeat_value(repeat or "weekly") == "weekly" else ""
+                names = " and ".join(d.capitalize() for d in days)
+                at = f" at {fmt_hour(parse_time(time))}" if time and parse_time(time) is not None else ""
+                return f"Added '{title}' {every}{names}{at}. I'll remind you {EVENT_REMINDER_MIN} minutes before each one."
+            return " ".join(results)
         day = parse_day(date)
         if not day:
             return f"I couldn't understand the date '{date}'. Say e.g. 'friday' or '12.11.'."
@@ -438,12 +588,17 @@ class NotionEngine:
             return f"I couldn't understand the time '{time}'. Use HH:MM."
         all_day = start is None
         duration = None if all_day else max(0.25, float(duration_hours or 1))
+        rep = _repeat_value(repeat)
+        if repeat and rep is None and str(repeat).strip().lower() not in ("none", "no", "once", "never"):
+            return f"I can repeat events daily, weekly, monthly or yearly — not '{repeat}'."
         with self._conn() as c:
-            c.execute("INSERT INTO EVENTS (date, startHour, duration, title, color, allDay, userID) "
-                      "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            c.execute("INSERT INTO EVENTS (date, startHour, duration, title, color, allDay, userID, repeat) "
+                      "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                       (day.isoformat(), start, duration, title,
-                       None if all_day else ARIA_EVENT_COLOR, 1 if all_day else 0, self.user_id))
+                       None if all_day else ARIA_EVENT_COLOR, 1 if all_day else 0, self.user_id, rep))
         when = f"{fmt_day(day)} ({day.strftime('%d.%m.')})"
+        if rep:
+            when = f"{self.REPEAT_WORDS[rep]} from {when}"
         if all_day:
             return f"Added '{title}' {when} as an all-day event."
         note = " MyNotion's week view only shows 08:00–23:00." if start < 8 else ""
@@ -489,8 +644,9 @@ class NotionEngine:
         def do():
             with self._conn() as c:
                 c.execute("DELETE FROM EVENTS WHERE id = ?", (e["id"],))
-            return f"Deleted '{e['title']}'."
-        return self.confirm.request(f"delete '{self._fmt_event(e)}' from your calendar", do) if self.confirm else do()
+            return f"Deleted '{e['title']}'" + (" and all its repeats." if e.get("repeat") else ".")
+        what = f"'{self._fmt_event(e)}'" + (" (the whole series)" if e.get("repeat") else "")
+        return self.confirm.request(f"delete {what} from your calendar", do) if self.confirm else do()
 
     # ── open things in the MyNotion app ──
 
@@ -558,7 +714,7 @@ class NotionEngine:
         else:
             parts.append("Nothing else in the calendar today.")
 
-        later = self._events_between(today + dt.timedelta(days=1), today + dt.timedelta(days=6))
+        _, later = self._split_daily(self._events_between(today + dt.timedelta(days=1), today + dt.timedelta(days=6)))
         if later:
             parts.append("Coming up: " + "; ".join(self._fmt_event(e, today) for e in later[:4]) + ".")
 
@@ -568,6 +724,11 @@ class NotionEngine:
             if rem:
                 parts.append("Reminders today: " + "; ".join(
                     f"{r['text']} at {dt.datetime.fromtimestamp(r['due']).strftime('%H:%M')}" for r in rem) + ".")
+
+        todos = self._open_todos()
+        if todos:
+            shown = ", ".join(todos[:3]) + (f" and {len(todos) - 3} more" if len(todos) > 3 else "")
+            parts.append(f"Open to-dos: {shown}.")
 
         inbox = self._find_note(INBOX_TITLE)
         if inbox and _match_score(INBOX_TITLE, inbox["title"]) >= 80:

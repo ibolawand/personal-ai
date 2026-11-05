@@ -72,6 +72,8 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 ## Voice — `speech_to_text.py`, `wakeworddetector.py`, `Engines/voice_engine.py`
 
 - Wake word, speech-to-text with live mic level shown on the orb, text-to-speech with the voice level driving the orb.
+- **Talks while thinking:** replies are streamed. Aria starts speaking the first sentence after about 0.6 s,
+  while the rest is still being written. Code blocks are never read out (they go to the clipboard).
 - **Voice engine:** Kokoro (`af_heart` voice) runs on the CPU, about 4x faster than real time. That leaves the whole
   graphics card to the language model, which before had to run 62% on the CPU next to Chatterbox.
   - `KOKORO_VOICE` in `Engines/.env` changes the voice, e.g. `af_bella`, `af_nicole`, `bf_emma` (British).
@@ -148,9 +150,11 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
 - **Quick notes:** "note that I need to call the landlord" adds a timestamped line to the **Inbox** note.
   "Add to my trip ideas: Lisbon in spring" adds to a named note, creating it if needed.
 - **Save answers:** "save that as a note called pancakes" saves Aria's previous answer, such as a recipe, an explanation or a plan.
-- **Lists:**
+- **Lists are checklists:**
   - "add oat milk and eggs to my shopping list", "what's on my packing list?"
-  - "I bought the eggs" (removes it), "clear my shopping list" (asks first)
+  - "I bought the eggs" / "I paid the rent" ticks it off; "untick it" undoes that.
+  - "remove the eggs" deletes an item; "clear my shopping list" asks first.
+  - You can tick items yourself in MyNotion too, using the ☑ To-do button in the editor.
   - Any list works: shopping, to-do, packing, films to watch. A new one is created the first time you mention it.
   - List commands only ever change notes that are lists, so your other notes are never touched.
 - **Ask your notes:** "when is Sara's birthday?", "what did I note about the landlord?" Aria searches your notes and answers from them.
@@ -160,15 +164,26 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
   - "put dentist on friday at 15:00"
   - "move the dentist to 16:30" and "delete the team meeting" ask first
   - Dates can be said naturally: "tomorrow", "next monday", "in 3 days", "12.11.", "20 november".
+  - **Repeating events:** "gym every monday and thursday at 6pm", "mum's birthday on 14 march every year".
+    You can repeat daily, weekly, monthly or yearly, and MyNotion's calendar has a matching "Repeat" option.
+    Deleting a repeating event deletes the whole series (Aria asks first).
   - Aria's events show in purple. MyNotion's week view only shows 08:00–23:00.
 - **Event heads-up:** 15 minutes before every timed event, Aria flashes the orb and says "Dentist starts in 15 minutes".
   It follows edits you make in MyNotion, so a moved or deleted event moves or drops its heads-up.
 - **Daily briefing:** the first time Aria greets you each day, she sums up the day: the time, today's events,
-  what's coming this week, today's reminders, and the latest Inbox note. "Brief me" or "what's my day like?" works anytime.
+  what's coming this week, today's reminders, open to-dos, and the latest Inbox note. "Brief me" or "what's my day like?" works anytime.
 - **Open things in MyNotion:** "open my calendar", "show me my shopping list", "open the birthdays note", "open MyNotion".
   Aria starts MyNotion or brings it to the front on that page. "What's on my shopping list?" reads it aloud instead.
   "Open/show <calendar or an existing note>" is handled in code, so it's instant and reliable; anything else ("open vs code") goes to the model as usual.
 - Note, list and calendar reading tools are protected by the optional `ARIA_OWNER` face lock.
+
+## MyNotion app (`../MyNotion`)
+
+- A real desktop app in the Mint menu: `./build_app.sh` builds it, and `./install_desktop.sh` adds the menu entry.
+- **No login:** it's a local app for one person, so it opens straight to your notes.
+- Data lives in `~/.config/MyNotion/noted.db`, with a **daily backup** in `~/.config/MyNotion/backups/` (the last 14 are kept).
+- Only one copy runs at a time. `MyNotion --open=calendar|note:<id>|home` shows that page (Aria uses this).
+- Refreshes live when Aria changes notes or events.
 
 ## Music & home
 

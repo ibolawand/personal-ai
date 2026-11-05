@@ -73,6 +73,57 @@ FILLER_RE = re.compile(
     r"hope (?:this|that) helps|happy to help|is there something else", re.I)
 
 
+class SentenceStreamer:
+    """Turns the streamed reply into whole sentences for the voice, as soon as each one is complete.
+    Code blocks are never spoken (they go to the clipboard), and filler sentences are dropped."""
+    _END = re.compile(r"[.!?](?=\s)|\n")
+    _ABBREV = re.compile(r"\b(?:e\.g|i\.e|etc|vs|approx|ca|dr|mr|mrs|ms|z\.b|no)\.$", re.I)
+
+    def __init__(self, emit):
+        self.emit = emit
+        self.buf = ""
+        self.in_code = False
+        self.saw_code = False
+        self.count = 0
+
+    def feed(self, text: str):
+        self.buf += text
+        while True:
+            if self.in_code:
+                end = self.buf.find("```")
+                if end < 0:
+                    self.buf = self.buf[-2:]          # keep a possible half "```"
+                    return
+                self.buf = self.buf[end + 3:]
+                self.in_code = False
+                continue
+            fence = self.buf.find("```")
+            m = self._END.search(self.buf)
+            while m and self._ABBREV.search(self.buf[:m.end()]):     # "e.g." is not a sentence end
+                m = self._END.search(self.buf, m.end())
+            if fence >= 0 and (not m or fence < m.start()):
+                self._say(self.buf[:fence])
+                self.buf = self.buf[fence + 3:]
+                self.in_code = self.saw_code = True
+                continue
+            if not m:
+                return
+            self._say(self.buf[:m.end()])
+            self.buf = self.buf[m.end():]
+
+    def flush(self):
+        if not self.in_code:
+            self._say(self.buf)
+        self.buf = ""
+
+    def _say(self, sentence: str):
+        sentence = sentence.strip()
+        if len(sentence.strip("-*•#>:. ")) < 2 or FILLER_RE.search(sentence):
+            return
+        self.count += 1
+        self.emit(sentence)
+
+
 def tidy_reply(text: str) -> str:
     """Strip trailing filler and leftover markdown so bubbles and speech read naturally."""
     text = (text or "").strip()
@@ -386,7 +437,7 @@ class Aria:
             self.arduino.stop_talking()
         return interrupted_text
 
-    def handle_turn(self, user_input: str, check_state: bool = True):
+    def handle_turn(self, user_input: str, check_state: bool = True, on_text=None):
         """One full turn: mood → state check → LLM with tools → save. Returns (reply, tools_used)."""
         self.ui.set_state("thinking")
 
@@ -425,7 +476,7 @@ class Aria:
 
         system_prompt = self.context.build_system_prompt(BASE_PROMPT)
         reply, used = self.llm.chat_with_tools(
-            prompt, self._history(), system_prompt, self.tools.schemas, self.tools.execute
+            prompt, self._history(), system_prompt, self.tools.schemas, self.tools.execute, on_text=on_text
         )
         reply = tidy_reply(self._move_code_to_clipboard(reply, used))
         if not reply.strip():
@@ -440,6 +491,55 @@ class Aria:
 
         self._save_turn(user_input, reply)
         return reply, used
+
+    def _turn_and_speak(self, user_input: str):
+        """Run a turn and speak the reply. With the voice on, the reply is streamed: Aria starts
+        speaking the first sentence while the model is still writing the rest.
+        Returns (reply, tools_used, interrupted_text)."""
+        if not self.voice or self.muted:
+            response, used = self.handle_turn(user_input)
+            print(f"Aria: {response}")
+            return response, used, self.speak(response)
+
+        sentences = queue.Queue()
+        streamer = SentenceStreamer(sentences.put)
+        box = {}
+
+        def produce():
+            try:
+                box["result"] = self.handle_turn(user_input, on_text=streamer.feed)
+                if streamer.count:
+                    self.ui.message("aria", box["result"][0])   # bubble with the tidied full reply
+            except Exception as e:
+                box["error"] = e
+            finally:
+                streamer.flush()
+                sentences.put(None)
+
+        worker = threading.Thread(target=produce, daemon=True)
+        worker.start()
+        interrupted = None
+        first = sentences.get()          # first finished sentence, or None if nothing was streamed
+        if first is not None:
+            if self.arduino:
+                self.arduino.send_command()
+
+            def stream():
+                yield first
+                yield from iter(sentences.get, None)
+            interrupted = self.voice.speak_sentences(stream())
+            if self.arduino:
+                self.arduino.stop_talking()
+        worker.join()
+        if "error" in box:
+            raise box["error"]
+        response, used = box["result"]
+        print(f"Aria: {response}")
+        if streamer.count == 0:
+            interrupted = self.speak(response)   # confirmations, "open my calendar", errors…
+        elif streamer.saw_code and not interrupted and "clipboard" in response.lower():
+            self.voice.speak("The code is on your clipboard.")
+        return response, used, interrupted
 
     def _open_in_notion(self, text: str):
         """'open my calendar' / 'show me the shopping list' -> MyNotion, if it names the calendar or
@@ -665,9 +765,7 @@ class Aria:
                 last_interaction = time.time()
 
                 try:
-                    response, used = self.handle_turn(user_input)
-                    print(f"Aria: {response}")
-                    interrupted = self.speak(response)
+                    response, used, interrupted = self._turn_and_speak(user_input)
                     last_interaction = time.time()
                 except Exception as e:
                     print(f"[Error] {e}")

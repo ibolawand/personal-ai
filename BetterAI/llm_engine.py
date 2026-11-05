@@ -2,6 +2,7 @@ import json
 import os
 
 import ollama
+from types import SimpleNamespace
 
 # ~56 tool definitions alone are ~3k tokens; Ollama's default window would silently truncate.
 # 8192 fits tools + history + a read file and stays within an 8 GB GPU next to the TTS model.
@@ -36,7 +37,7 @@ class LLMEngine:
         except Exception as e:
             return f"Error: {e}"
 
-    def chat_with_tools(self, user_input, history, system_prompt, tools, execute, max_rounds=3):
+    def chat_with_tools(self, user_input, history, system_prompt, tools, execute, max_rounds=3, on_text=None):
         """
         One conversation turn with native tool calling.
         tools:   list of Ollama tool schemas
@@ -45,15 +46,15 @@ class LLMEngine:
         Also sets self.last_trace: this turn's assistant/tool messages (tool results shortened),
         to be replayed as history. Seeing its earlier tool calls is what keeps a small model
         calling tools instead of answering live questions from memory.
+        on_text: optional fn(str) called with reply text as it streams in, so Aria can start
+        speaking the first sentence while the rest is still being generated.
         """
         messages = self._messages(user_input, history, system_prompt)
         used, trace = [], []
         self.last_trace = trace
         try:
             for _ in range(max_rounds):
-                response = ollama.chat(model=self.model, messages=messages,
-                                       tools=tools or None, think=self.think, options=self.options)
-                msg = response.message
+                msg = self._round(messages, tools, on_text)
                 if not msg.tool_calls:
                     reply = (msg.content or "").strip()
                     trace.append({"role": "assistant", "content": reply})
@@ -74,12 +75,27 @@ class LLMEngine:
                     trace.append({"role": "tool", "tool_name": name, "content": short})
 
             # Ran out of rounds — ask for a final answer without tools
-            response = ollama.chat(model=self.model, messages=messages, think=self.think, options=self.options)
-            reply = (response.message.content or "").strip()
+            reply = (self._round(messages, None, on_text).content or "").strip()
             trace.append({"role": "assistant", "content": reply})
             return reply, used
         except Exception as e:
             return f"Error: {e}", used
+
+    def _round(self, messages, tools, on_text):
+        """One model call. Streams when on_text is given; returns a message with .content/.tool_calls."""
+        if not on_text:
+            return ollama.chat(model=self.model, messages=messages, tools=tools or None,
+                               think=self.think, options=self.options).message
+        content, calls = [], []
+        for chunk in ollama.chat(model=self.model, messages=messages, tools=tools or None,
+                                 think=self.think, options=self.options, stream=True):
+            m = chunk.message
+            if m.content:
+                content.append(m.content)
+                on_text(m.content)
+            if m.tool_calls:
+                calls.extend(m.tool_calls)
+        return SimpleNamespace(content="".join(content), tool_calls=calls or None)
 
     def extract_facts(self, conversation: list) -> tuple[list, list]:
         """After a conversation, pull out (facts, topics) worth remembering about the user."""

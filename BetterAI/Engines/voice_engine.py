@@ -229,7 +229,11 @@ class VoiceEngine:
         text = normalize_for_tts(text)
         if not text:
             return None
+        return self.speak_sentences(re.split(r'(?<=[.!?\n])\s+', text))
 
+    def speak_sentences(self, sentences) -> str | None:
+        """Speak sentences as they arrive. `sentences` can be a generator fed by the LLM stream:
+        sentence 1 is synthesized and playing while later ones are still being written."""
         self._interrupted = False
         self._interrupted_text = None
         self._stop_interrupt_listener = False
@@ -238,11 +242,10 @@ class VoiceEngine:
         interrupt_thread = threading.Thread(target=self._listen_for_interrupt, daemon=True)
         interrupt_thread.start()
 
-        sentences = re.split(r'(?<=[.!?\n])\s+', text)
         for sentence in sentences:
             if self._interrupted:
                 break
-            sentence = sentence.strip()
+            sentence = normalize_for_tts(sentence or "").strip()
             if not sentence:
                 continue
             audio_np, sr = self._synthesize(sentence)
