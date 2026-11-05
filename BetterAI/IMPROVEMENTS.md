@@ -17,3 +17,4 @@ real model where it matters) and committed separately. The full feature overview
 | 10 | **Text box history** | ↑ / ↓ in the text box bring back earlier messages, like a terminal. Also the first overlay tests (rendered off-screen): history, quick capture mode, ticking a card checkbox. | `tests/test_overlay.py` |
 | 11 | **Weekly recap** | The Sunday review ends with the week's focus time and top tasks before what's coming up. | `tests/test_conversation.py` |
 | 12 | **Pronunciation fixes** | Checked Kokoro's phonemes: "C#" lost its "#", "MyNotion" was "mi-NO-tion", "VS Code" was "viz code", "km" was "K M". A pronunciation list fixes these and spells out units, °C, € and "e.g.". | `tests/test_conversation.py` |
+| 13 | **Low battery warning** | On battery at 15% and 7%, Aria tells you to plug in, once per level; resets when charging. | `tests/test_battery.py` |

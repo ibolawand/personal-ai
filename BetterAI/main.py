@@ -31,6 +31,7 @@ from Engines.Weather import Weather
 from Engines.Undo import Undo
 from Engines.Recall import Recall
 from Engines.Health import Health
+from Engines.Battery import BatteryWatch
 from Engines.Initiative import Initiative, NOT_NOW_RE
 from Engines.Reminders import Reminders
 from Engines.ScreenEngine import ScreenEngine
@@ -425,6 +426,7 @@ class Aria:
         threading.Thread(target=Health(self).log_startup, daemon=True).start()
         self.activity.start()
         self.focus.start_watching()
+        BatteryWatch(self._announce).start()
         self.files.start_indexing()
 
     def _event_reminder_loop(self):

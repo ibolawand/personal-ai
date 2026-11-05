@@ -238,6 +238,8 @@ To try one right now: `./aria.sh --chat`, `--followup`, `--break`, `--review` or
 - **System:**
   - "How's my laptop?" gives battery, CPU/GPU temperature, RAM and free disk space
   - lock the screen
+  - **low battery warning** (`Engines/Battery.py`): on battery at 15% and again at 7%, she tells you to plug in
+    (and wakes up to say it). Resets once the charger is connected.
   - suspend, shutdown and restart (asks first)
 - **Connections:**
   - Wi-Fi on/off (turning it off asks first)
