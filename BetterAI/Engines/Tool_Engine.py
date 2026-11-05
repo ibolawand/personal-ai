@@ -152,11 +152,14 @@ class ToolEngine:
 
         if self.laptop:
             lp = self.laptop
-            apps = ", ".join(__import__("Engines.LaptopEngine", fromlist=["APPS"]).APPS)
             tools += [
-                _tool("open_app", f"Open (or bring up) an app on the laptop. Known apps: {apps}. "
+                _tool("open_app", "Open (or bring up) any app installed on the laptop — everything in the Mint "
+                      "menu, e.g. VS Code, Packet Tracer, Discord, LibreOffice Writer. "
                       "For MyNotion, the calendar or a note use open_mynotion instead.",
-                      lp.open_app, app=("string", "app name")),
+                      lp.open_app, app=("string", "app name as Lala says it")),
+                _tool("find_app", "Check whether a program/app is installed ('where is my packet tracer?', "
+                      "'do I have discord?'). For documents and other files use find_files.",
+                      lp.find_app, app=("string", "app name")),
                 _tool("switch_to_app", "Bring an open app or window to the front.",
                       lp.switch_to_app, app=("string", "app name or words from the window title")),
                 _tool("close_app", "Close an app's windows (asks the user to confirm).",

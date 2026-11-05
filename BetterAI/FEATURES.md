@@ -50,6 +50,10 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
   on your next message. Set `MOOD_USE_CAMERA=1` to include the camera; it's off by default because the vision model pushes
   the chat model out of graphics-card memory.
 - **Clean replies:** filler like "Let me know if you need anything else!" and leftover markdown are removed.
+- **No parroting:** if a reply comes out word-for-word like one of her last two (small models do that after "no"
+  or "what"), it's rewritten before it's spoken. Sentences that match her previous answer are held back while she
+  streams, so a repeat is never said out loud. Replies after a tool call may repeat ("Opening your calendar" twice is fine).
+- **No made-up offers:** she only offers what she has tools for, and searches for a file before saying where it is.
 - **Only working devices are offered:** Home Assistant (phone/TV), the LEDs and RVC voice conversion are skipped when
   they aren't set up (`HA_TOKEN`, a connected Arduino, `RVC_ENABLED=1`). That means fewer tools for the model to choose from,
   faster prompts and no startup warnings.
@@ -160,8 +164,10 @@ Settings in `Engines/.env`: `ARIA_INITIATIVE=0` (off), `ARIA_QUIET=22:30-08:30`,
 
 ## Laptop control — `Engines/LaptopEngine.py`
 
-- **Apps:** open, switch to, close (asks first), list open windows. Works with VS Code, PyCharm, Chrome, Firefox,
-  Spotify, Files, Terminal, Settings and Calculator.
+- **Apps:** open, switch to, close (asks first), list open windows. Works with **every app in the Mint menu**
+  ("open Packet Tracer", "open Discord", "open Writer", even "open the web browser"). Apps are started the way the
+  menu starts them (`gtk-launch`), and an app that's already open is brought to the front instead.
+  "Where is my Packet Tracer?" / "do I have Discord?" says whether it's installed and offers to open it.
 - **Sound:**
   - set, raise or lower the volume; mute
   - list audio outputs and switch between them ("switch to my headphones")

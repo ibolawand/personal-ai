@@ -58,6 +58,8 @@ If you produce code or anything long, put it on the clipboard with copy_to_clipb
 If you don't know something, say so or use web_search.
 When asked what you see or who is there, use the look tool. For anything about the computer screen, use look_at_screen.
 If a tool reports a failure, or there is no tool for what was asked, say so plainly. Never claim you did something you didn't.
+Only offer what your tools can do — never suggest checking cloud storage, external drives, other devices or anything else you have no tool for.
+When asked where a file is on this computer, call find_files before answering; don't guess.
 Tool rule: for ANY action, or ANY live information (battery, volume, windows, files, time left, what's playing),
 you MUST call a tool in this turn — even if the conversation history shows a similar answer. Never answer those from memory."""
 
@@ -111,12 +113,16 @@ class SentenceStreamer:
     _END = re.compile(r"[.!?](?=\s)|\n")
     _ABBREV = re.compile(r"\b(?:e\.g|i\.e|etc|vs|approx|ca|dr|mr|mrs|ms|z\.b|no)\.$", re.I)
 
-    def __init__(self, emit):
+    def __init__(self, emit, previous=()):
         self.emit = emit
         self.buf = ""
         self.in_code = False
         self.saw_code = False
         self.count = 0
+        # Aria's last replies: while the new reply is word-for-word the start of one of them, its
+        # sentences are held back, so a repeated answer is never spoken (handle_turn rewrites it)
+        self.previous = [_norm_reply(p) for p in previous if p]
+        self.held = []
 
     def feed(self, text: str):
         self.buf += text
@@ -152,8 +158,21 @@ class SentenceStreamer:
         sentence = sentence.strip()
         if len(sentence.strip("-*•#>:. ")) < 2 or FILLER_RE.search(sentence):
             return
+        if self.previous is not None:
+            so_far = _norm_reply(" ".join(self.held + [sentence]))
+            if any(p.startswith(so_far) for p in self.previous):
+                self.held.append(sentence)
+                return
+            held, self.held, self.previous = self.held, [], None     # it's a new answer: say what was held
+            for h in held:
+                self.count += 1
+                self.emit(h)
         self.count += 1
         self.emit(sentence)
+
+
+def _norm_reply(text: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9 ]", " ", (text or "").lower()).split())
 
 
 def tidy_reply(text: str) -> str:
@@ -572,6 +591,16 @@ class Aria:
             # the model occasionally returns nothing at all; one plain retry usually gives an answer
             reply = self.llm.chat(prompt, self._history(), system_prompt) or ""
         reply = tidy_reply(self._move_code_to_clipboard(reply, used))
+        if reply.strip() and not used and _norm_reply(reply) in {_norm_reply(p) for p in self._last_replies()}:
+            # small models copy their previous answer after short messages ("no", "what")
+            print("[Aria] reply repeated an earlier one — rewriting it")
+            retry = self.llm.chat(
+                prompt + "\n[You just gave exactly this answer before: \"" + reply + "\". Don't repeat it. "
+                "Respond to this message specifically. If they seem confused ('what?'), rephrase or explain "
+                "what you meant. One or two short sentences.]",
+                self._history(), system_prompt, temperature=0.8)
+            if retry.strip() and not retry.startswith("Error:"):
+                reply = tidy_reply(retry)
         if not reply.strip():
             # the model sometimes returns nothing (e.g. asked for something it has no tool for)
             reply = (used[-1][1] if used else "Sorry, I can't do that one.")[:300]
@@ -588,6 +617,17 @@ class Aria:
         self._save_turn(user_input, reply)
         return reply, used
 
+    def _last_replies(self, n=2):
+        out = []
+        for turn in reversed(self._recent):
+            for m in reversed(turn):
+                if m.get("role") == "assistant" and m.get("content") and not m.get("tool_calls"):
+                    out.append(m["content"])
+                    break
+            if len(out) >= n:
+                break
+        return out
+
     def _turn_and_speak(self, user_input: str):
         """Run a turn and speak the reply. With the voice on, the reply is streamed: Aria starts
         speaking the first sentence while the model is still writing the rest.
@@ -598,7 +638,7 @@ class Aria:
             return response, used, self.speak(response)
 
         sentences = queue.Queue()
-        streamer = SentenceStreamer(sentences.put)
+        streamer = SentenceStreamer(sentences.put, previous=self._last_replies())
         box = {}
 
         def produce():

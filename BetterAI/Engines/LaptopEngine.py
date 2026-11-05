@@ -7,7 +7,9 @@ apps/actions and never gets a shell. Risky actions go through Confirmer.
 
 import difflib
 import json
+import os
 import re
+import time
 import shutil
 import subprocess
 import urllib.parse
@@ -53,15 +55,104 @@ def _match_app(name: str):
         if name == key or name in aliases:
             return key
     names = list(APPS) + [a for _, _, al in APPS.values() for a in al]
-    close = difflib.get_close_matches(name, names, n=1, cutoff=0.6)
+    close = difflib.get_close_matches(name, names, n=1, cutoff=0.8)   # typos only ("pycharn"); "discord" ≠ "vscode"
     if close:
         return next(k for k, (_, _, al) in APPS.items() if close[0] == k or close[0] in al)
     return None
 
 
+# ── Any app from the Mint menu ────────────────────────────────────────────────
+# Read from the same .desktop files the menu uses and launched with gtk-launch, exactly like
+# clicking it in the menu. Aria never builds a command line herself.
+
+MENU_DIRS = ["/usr/share/applications", "/usr/local/share/applications",
+             os.path.expanduser("~/.local/share/applications"),
+             "/var/lib/flatpak/exports/share/applications",
+             os.path.expanduser("~/.local/share/flatpak/exports/share/applications"),
+             "/var/lib/snapd/desktop/applications"]
+
+
+def _norm_words(text: str) -> list:
+    return re.sub(r"[^a-z0-9+#]+", " ", (text or "").lower()).split()
+
+
+def _read_desktop(path):
+    entry, section = {}, None
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("["):
+                    section = line
+                    continue
+                if section == "[Desktop Entry]" and "=" in line:
+                    k, v = line.split("=", 1)
+                    entry.setdefault(k.strip(), v.strip())      # unlocalised keys come first
+    except OSError:
+        return None
+    if entry.get("Type") != "Application" or entry.get("NoDisplay") == "true" or entry.get("Hidden") == "true":
+        return None
+    if "Cinnamon" in entry.get("NotShowIn", "") or (entry.get("OnlyShowIn") and "X-Cinnamon" not in entry["OnlyShowIn"]
+                                                    and "Cinnamon" not in entry["OnlyShowIn"]):
+        return None
+    exe = os.path.basename(entry.get("Exec", "").split()[0]) if entry.get("Exec") else ""
+    return {"id": os.path.basename(path)[:-len(".desktop")], "name": entry.get("Name", ""),
+            "generic": entry.get("GenericName", ""), "keywords": entry.get("Keywords", ""),
+            "wm": (entry.get("StartupWMClass") or re.sub(r"\.(appimage|sh|py)$", "", exe, flags=re.I)).lower()}
+
+
+class MenuApps:
+    """The apps in the Mint menu, re-read at most once a minute (new installs show up)."""
+    def __init__(self):
+        self._apps, self._at = [], 0.0
+
+    def all(self):
+        if time.time() - self._at > 60:
+            seen, apps = set(), []
+            for d in MENU_DIRS:
+                try:
+                    names = sorted(os.listdir(d))
+                except OSError:
+                    continue
+                for fn in names:
+                    if fn.endswith(".desktop") and fn not in seen:
+                        app = _read_desktop(os.path.join(d, fn))
+                        if app and app["name"]:
+                            seen.add(fn)
+                            apps.append(app)
+            self._apps, self._at = apps, time.time()
+        return self._apps
+
+    def find(self, query: str):
+        """Best menu entry for 'packet tracer' / 'discord' / 'libre office writer', or None."""
+        q = _norm_words(query)
+        q = [w for w in q if w not in ("the", "app", "my", "program", "application")] or q
+        if not q:
+            return None
+        best, best_score = None, 0
+        for a in self.all():
+            name = _norm_words(a["name"])
+            extra = _norm_words(a["generic"] + " " + a["keywords"].replace(";", " "))
+            if name == q:
+                score = 100
+            elif all(w in name for w in q):
+                score = 85 - len(name)          # "Cisco Packet Tracer 9.0.1" beats "…Ptsa 9.0.1"
+            elif "".join(q) in "".join(name):
+                score = 70 - len(name)          # "libreoffice" vs "LibreOffice Writer"
+            elif all(w in name + extra for w in q):
+                score = 50 - len(name)          # matched via GenericName/Keywords ("web browser")
+            else:
+                ratio = difflib.SequenceMatcher(None, " ".join(q), " ".join(name)).ratio()
+                score = 40 * ratio if ratio > 0.75 else 0
+            if score > best_score:
+                best, best_score = a, score
+        return best
+
+
 class LaptopEngine:
     def __init__(self, confirmer):
         self.confirm = confirmer
+        self.menu = MenuApps()
 
     # ── Apps & windows ────────────────────────────────────────────────────────
 
@@ -78,20 +169,45 @@ class LaptopEngine:
         frag = APPS[key][1]
         return [w for w in self._windows() if frag in w[1]]
 
+    def _menu_windows(self, entry):
+        frag = entry["wm"]
+        title = entry["name"].lower()
+        return [w for w in self._windows() if (frag and frag in w[1]) or title in w[2].lower()]
+
     def open_app(self, app: str):
         key = _match_app(app)
-        if not key:
-            return f"I don't have '{app}' on my list. I can open: {', '.join(APPS)}."
-        if not shutil.which(APPS[key][0][0]):
-            return f"{key} doesn't seem to be installed."
-        if self._app_windows(key):
-            return self.switch_to_app(key)
-        _launch(APPS[key][0])
-        return f"Opening {key}."
+        if key and shutil.which(APPS[key][0][0]):
+            if self._app_windows(key):
+                return self.switch_to_app(key)
+            _launch(APPS[key][0])
+            return f"Opening {key}."
+        entry = self.menu.find(app)
+        if not entry:
+            return f"I couldn't find an app called '{app}' in your menu."
+        wins = self._menu_windows(entry)
+        if wins:
+            _run(["wmctrl", "-i", "-a", wins[0][0]])
+            return f"{entry['name']} is already open — switched to it."
+        _launch(["gtk-launch", entry["id"]])
+        return f"Opening {entry['name']}."
+
+    def find_app(self, app: str):
+        """'where is packet tracer' / 'do I have discord installed?'"""
+        key = _match_app(app)
+        entry = self.menu.find(app)
+        if not entry and not (key and shutil.which(APPS[key][0][0])):
+            return f"'{app}' isn't installed as an app (it's not in your menu). If it's a file, use find_files."
+        name = entry["name"] if entry else key
+        running = bool(self._menu_windows(entry) if entry else self._app_windows(key))
+        return f"{name} is installed and in your Mint menu" + (" — it's open right now." if running else
+                                                             ". I can open it for you.")
 
     def switch_to_app(self, app: str):
         key = _match_app(app)
         wins = self._app_windows(key) if key else []
+        if not wins:
+            entry = self.menu.find(app)
+            wins = self._menu_windows(entry) if entry else []
         if not wins:
             # fall back to matching a window title, e.g. "switch to the essay document"
             q = (app or "").lower()
@@ -104,6 +220,10 @@ class LaptopEngine:
     def close_app(self, app: str):
         key = _match_app(app)
         wins = self._app_windows(key) if key else []
+        if not wins:
+            entry = self.menu.find(app)
+            if entry:
+                key, wins = entry["name"], self._menu_windows(entry)
         if not wins:
             return f"{app} isn't open."
 
