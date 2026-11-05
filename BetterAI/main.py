@@ -27,6 +27,7 @@ from Engines.NotionEngine import NotionEngine
 from Engines.FocusMode import FocusMode
 from Engines.Activity import Activity
 from Engines.Followups import Followups
+from Engines.Weather import Weather
 from Engines.Initiative import Initiative, NOT_NOW_RE
 from Engines.Reminders import Reminders
 from Engines.ScreenEngine import ScreenEngine
@@ -384,6 +385,7 @@ class Aria:
         self.memory_note = MemoryNote(self.memory, self.notion, self.confirm, on_card=self.ui.show_card)
         self.memory_note.llm = self.llm
         self.followups = Followups(self.memory, self.notion)
+        self.weather = Weather()
         self.activity = Activity(menu=self.laptop.menu)
         self.focus.activity = self.activity
         self.focus.on_nudge = self._announce
@@ -403,6 +405,7 @@ class Aria:
             initiative=self.initiative,
             memory_note=self.memory_note,
             activity=self.activity,
+            weather=self.weather,
         )
         print(f"[Tools] {len(self.tools.schemas)} tools available")
 
@@ -978,6 +981,9 @@ class Aria:
             return prompt
         try:
             facts = self.notion.daily_briefing(self.reminders)
+            weather = self.weather.brief()
+            if weather:
+                facts += " " + weather
         except Exception as e:
             print(f"[MyNotion] briefing failed: {e}")
             return prompt

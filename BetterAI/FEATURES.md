@@ -310,6 +310,10 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
 - **Home Assistant** (`Controller/homeController.py`):
   - phone: notify, battery level, location, Do Not Disturb
   - TV: on/off and volume
+- **Weather** (`Engines/Weather.py`, Open-Meteo, free, no key): "what's the weather?", "do I need a jacket tomorrow?",
+  "will it rain the day after tomorrow?", "weather in Berlin". Tell her once "I live in Vienna" (or set `ARIA_LOCATION`).
+  Clothing advice (coat, jacket, umbrella) is decided in code from the temperature and rain chance, and the
+  morning briefing includes today's weather.
 - **Web search** (`Engines/WebSearch.py`), using only official APIs:
   - **Wikipedia** (no key needed): facts, people, places, how things work. Aria answers in a sentence or two and says where it's from.
   - **DuckDuckGo instant answers** (no key needed).

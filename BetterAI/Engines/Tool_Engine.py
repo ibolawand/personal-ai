@@ -44,7 +44,7 @@ def _tool(tool_name, description, handler, optional=(), **params):
 class ToolEngine:
     def __init__(self, spotify=None, arduino=None, vision=None, ha=None,
                  reminders=None, focus=None, screen=None, laptop=None, files=None, notion=None,
-                 owner_check=None, initiative=None, memory_note=None, activity=None):
+                 owner_check=None, initiative=None, memory_note=None, activity=None, weather=None):
         self.spotify = spotify
         self.arduino = arduino
         self.vision = vision
@@ -59,6 +59,7 @@ class ToolEngine:
         self.initiative = initiative
         self.memory_note = memory_note
         self.activity = activity
+        self.weather = weather
         self._registry = {t["schema"]["function"]["name"]: t for t in self._build()}
 
     # Tools that touch the laptop, files, clipboard/screen or phone — gated by owner_check
@@ -362,6 +363,16 @@ class ToolEngine:
                 _tool("forget_about_me", "Forget something saved about Lala ('forget that I study C#', "
                       "'forget everything about me').", mn.forget,
                       what=("string", "what to forget, in a few words, or 'everything'")),
+            ]
+
+        if self.weather:
+            tools += [
+                _tool("get_weather", "Weather now, today, tomorrow or the day after ('do I need a jacket?', "
+                      "'will it rain tomorrow?', 'weather in Berlin').", self.weather.get_weather,
+                      optional=("when", "city"), when=("string", "'now', 'today', 'tomorrow' or 'day after tomorrow'"),
+                      city=("string", "only if Lala names another city")),
+                _tool("set_home_city", "Remember which city Lala lives in, for the weather ('I live in Vienna').",
+                      self.weather.set_home_city, city=("string", "city name")),
             ]
 
         if self.activity:
