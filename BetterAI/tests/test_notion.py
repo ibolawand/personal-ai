@@ -99,3 +99,24 @@ def test_moving_into_a_clash_is_flagged(notion):
     notion.add_event("Dentist", day, "10:00", 1)
     notion.move_event("dentist", new_time="15:15")
     assert "overlaps with Meeting" in notion.confirm.resolve("yes")
+
+
+def test_birthdays_repeat_yearly_and_are_all_day(notion):
+    msg = notion.add_event("Lina's birthday", "3 march")
+    assert "every year" in msg and "all-day" in msg
+
+
+def test_day_ahead_heads_up_and_briefing(notion, memory):
+    import time
+    from Engines.Reminders import Reminders
+    reminders = Reminders(memory, on_due=lambda r: None)
+    in2 = dt.date.today() + dt.timedelta(days=2)
+    notion.add_event("Lina's birthday", in2.isoformat())
+    notion.sync_event_reminders(reminders)
+    day_ahead = reminders.pending(("dayahead",))
+    assert [r["text"] for r in day_ahead] == ["Lina's birthday"]
+    assert dt.datetime.fromtimestamp(day_ahead[0]["due"]) == dt.datetime.combine(in2 - dt.timedelta(days=1), dt.time(9))
+    notion.sync_event_reminders(reminders)                        # idempotent
+    assert len(reminders.pending(("dayahead",))) == 1
+    assert "Special days ahead: Lina's birthday in 2 days" in notion.daily_briefing()
+    assert Reminders.announcement(day_ahead[0]) == "Heads up: tomorrow is Lina's birthday."

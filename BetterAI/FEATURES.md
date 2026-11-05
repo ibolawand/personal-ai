@@ -291,6 +291,9 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
 - **Open things in MyNotion:** "open my calendar", "show me my shopping list", "open the birthdays note", "open MyNotion".
   Aria starts MyNotion or brings it to the front on that page. "What's on my shopping list?" reads it aloud instead.
   "Open/show <calendar or an existing note>" is handled in code, so it's instant and reliable; anything else ("open vs code") goes to the model as usual.
+- **Birthdays & special days:** "Lina's birthday is on 3 March" becomes a yearly all-day event automatically
+  (also anniversaries). You get a heads-up at 09:00 the day before ("tomorrow is Lina's birthday"), and the morning
+  briefing counts down special days in the next two weeks.
 - **Clash warnings:** adding or moving a timed event that overlaps another one ends with "Heads up: that overlaps
   with Meeting at 15:00." (all-day events never clash).
 - **Undo** (`Engines/Undo.py`): "undo that" / "that was wrong" takes back her last change to notes, lists, events or

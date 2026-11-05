@@ -22,6 +22,8 @@ import time
 from contextlib import contextmanager
 
 EVENT_REMINDER_MIN = 15          # announce events this many minutes before they start
+DAY_AHEAD_HOUR = 9               # birthdays & co: heads-up at this hour the day before
+YEARLY_RE = re.compile(r"\b(birthday|bday|anniversary|name ?day)\b", re.I)
 ARIA_EVENT_COLOR = "purple"      # MyNotion's calendar colours: blue, green, purple, red
 INBOX_TITLE = "Inbox"
 # the packaged app (MyNotion: build_app.sh); override with MYNOTION_BIN in Engines/.env
@@ -670,6 +672,8 @@ class NotionEngine:
         rep = _repeat_value(repeat)
         if repeat and rep is None and str(repeat).strip().lower() not in ("none", "no", "once", "never"):
             return f"I can repeat events daily, weekly, monthly or yearly — not '{repeat}'."
+        if not repeat and YEARLY_RE.search(title):
+            rep = "yearly"                  # birthdays come back every year
         clash = self._conflicts(day, start, duration)
         with self._conn() as c:
             c.execute("INSERT INTO EVENTS (date, startHour, duration, title, color, allDay, userID, repeat) "
@@ -792,6 +796,29 @@ class NotionEngine:
         for (title, k), due in wanted.items():
             if (title, k) not in have:
                 reminders.add(title, "event", due)
+        self._sync_day_ahead(reminders, now, today)
+
+    @staticmethod
+    def _is_special(e) -> bool:
+        return bool(e["allDay"] or e["startHour"] is None) and (e.get("repeat") == "yearly" or YEARLY_RE.search(e["title"]))
+
+    def _sync_day_ahead(self, reminders, now, today):
+        """Birthdays and other yearly all-day days: a heads-up at DAY_AHEAD_HOUR the day before."""
+        wanted = {}
+        for e in self._events_between(today + dt.timedelta(days=1), today + dt.timedelta(days=2)):
+            if not self._is_special(e):
+                continue
+            day = dt.date.fromisoformat(e["date"])
+            due = dt.datetime.combine(day - dt.timedelta(days=1), dt.time(DAY_AHEAD_HOUR)).timestamp()
+            if due > now:
+                wanted[(e["title"], round(due))] = due
+        have = {(r["text"], round(r["due"])): r for r in reminders.pending(("dayahead",))}
+        for key, r in have.items():
+            if key not in wanted:
+                reminders.cancel_id(r["id"])
+        for (title, k), due in wanted.items():
+            if (title, k) not in have:
+                reminders.add(title, "dayahead", due)
 
     # ── daily briefing ──
 
@@ -812,6 +839,13 @@ class NotionEngine:
         _, later = self._split_daily(self._events_between(today + dt.timedelta(days=1), today + dt.timedelta(days=6)))
         if later:
             parts.append("Coming up: " + "; ".join(self._fmt_event(e, today) for e in later[:4]) + ".")
+        special = [e for e in self._events_between(today + dt.timedelta(days=1), today + dt.timedelta(days=14))
+                   if self._is_special(e)]
+        if special:
+            parts.append("Special days ahead: " + "; ".join(
+                f"{e['title']} in {(dt.date.fromisoformat(e['date']) - today).days} days"
+                if (dt.date.fromisoformat(e['date']) - today).days > 1 else f"{e['title']} tomorrow"
+                for e in special[:3]) + " (maybe mention a gift or plan if it's a birthday).")
 
         if reminders:
             rem = [r for r in reminders.pending(("reminder", "timer"))

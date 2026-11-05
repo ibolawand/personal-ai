@@ -232,12 +232,13 @@ class Reminders:
         return f"I'll remind you to {text} {describe_repeat(rep)} at {hh:02d}:{mm:02d}, starting {starting}."
 
     def list_reminders(self):
-        items = self.pending(("timer", "reminder", "focus", "focusbreak", "event"))
+        items = self.pending(("timer", "reminder", "focus", "focusbreak", "event", "dayahead"))
         if not items:
             return "No timers or reminders set."
         parts = []
         for r in items:
             what = {"timer": f"timer '{r['text']}'", "focus": "focus session ends", "focusbreak": "break ends",
+                    "dayahead": f"heads-up for {r['text']} tomorrow",
                     "event": f"heads-up for {r['text']}"}.get(r["kind"], r["text"])
             rep = f" (repeats {describe_repeat(r.get('repeat'))})" if r.get("repeat") else ""
             parts.append(f"{what} {_fmt_when(r['due'])}{rep}")
@@ -280,4 +281,6 @@ class Reminders:
             return "Time's up." if r["text"] == "timer" else f"Time's up: {r['text']}."
         if r["kind"] == "event":
             return f"Heads up: {r['text']} starts in 15 minutes."
+        if r["kind"] == "dayahead":
+            return f"Heads up: tomorrow is {r['text']}."
         return f"Reminder: {r['text']}."
