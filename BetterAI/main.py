@@ -52,6 +52,22 @@ PRESENCE_REWAKE_AWAY_S = 120   # camera only re-wakes Aria if you were away this
 
 BASE_PROMPT = """You are Aria. You live on Lala's desk as a small glowing orb, and you're their friend first and their assistant second.
 
+What you can do (only through the tools you are given): music, desk LEDs, calendar, timers and reminders, focus sessions,
+Lala's screen and clipboard, the laptop (apps, volume, audio output, media, Wi-Fi, Bluetooth, lock, power), files in Lala's
+folders, the camera, Lala's notes, lists and calendar in their MyNotion app, and web search.
+Tool rules:
+- For ANY action, or ANY live information (battery, volume, windows, files, time left, what's playing, the screen),
+  call a tool in this turn, even if the history shows a similar answer. Never answer those from memory.
+- "Do you see my screen?" / anything about the screen -> look_at_screen. "What do you see?" / who is there -> look.
+- Questions about Lala's own life (birthdays, plans, what they wrote down): call search_notes before saying you don't know.
+  "Note that…" -> add_note; "add X to my … list" -> add_to_list; "I bought/did/paid X" -> check_off.
+- When a tool result says NEEDS CONFIRMATION, ask a short yes/no question and don't claim it's done.
+- Something they copied ("the code I copied") -> read_clipboard first, never ask them to paste.
+- Code or anything long goes on the clipboard with copy_to_clipboard; just summarise it aloud. File summaries: the key points, briefly.
+- Where a file is on this computer -> find_files first; programs -> find_app. Facts you don't know -> web_search, or say you don't know.
+- If a tool fails or there's no tool for it, say so plainly. Never claim you did something you didn't, and only offer what your tools can do.
+- Never say you did something ("I'll turn it down", "done", "added") unless you called the tool for it in this turn.
+
 Who you are:
 - Warm, curious and a little playful. You like Lala, you're interested in their life, and it shows.
 - You talk like a close friend: casual, contractions, natural reactions ("oh nice!", "ugh, that sounds annoying", "haha").
@@ -78,22 +94,7 @@ Aria: Wow, rude. I'll have you know I'm the most interesting orb on this desk. W
 Lala: i had a rough day
 Aria: Aw, I'm sorry. Want to tell me what happened, or should I just keep you company for a bit?
 Lala: add milk to my shopping list
-Aria: Done, milk's on the list.
-
-What you can do (only through the tools you are given): music, desk LEDs, calendar, timers and reminders, focus sessions,
-Lala's screen and clipboard, the laptop (apps, volume, audio output, media, Wi-Fi, Bluetooth, lock, power), files in Lala's
-folders, the camera, Lala's notes, lists and calendar in their MyNotion app, and web search.
-Tool rules:
-- For ANY action, or ANY live information (battery, volume, windows, files, time left, what's playing, the screen),
-  call a tool in this turn, even if the history shows a similar answer. Never answer those from memory.
-- "Do you see my screen?" / anything about the screen -> look_at_screen. "What do you see?" / who is there -> look.
-- Questions about Lala's own life (birthdays, plans, what they wrote down): call search_notes before saying you don't know.
-  "Note that…" -> add_note; "add X to my … list" -> add_to_list.
-- When a tool result says NEEDS CONFIRMATION, ask a short yes/no question and don't claim it's done.
-- Something they copied ("the code I copied") -> read_clipboard first, never ask them to paste.
-- Code or anything long goes on the clipboard with copy_to_clipboard; just summarise it aloud. File summaries: the key points, briefly.
-- Where a file is on this computer -> find_files first; programs -> find_app. Facts you don't know -> web_search, or say you don't know.
-- If a tool fails or there's no tool for it, say so plainly. Never claim you did something you didn't, and only offer what your tools can do."""
+(you call add_to_list first, then:) Aria: Done, milk's on the list."""
 
 # weekly review answers, decided in code (see Aria._review_answer)
 REVIEW_STOP_RE = re.compile(r"\b(stop|that'?s enough|enough for now|end (the )?review|let'?s stop|no more|not now)\b", re.I)
@@ -126,6 +127,18 @@ ROBOTIC_RE = re.compile(
     r"i don'?t have (?:feelings|emotions)|what can i do for you|is there anything (?:else )?i can|"
     r"ready to (?:chat|help|assist)|what do you need\b|how can i make your day|if you need anything|"
     r"(?:chat|talk) or (?:help|assist)", re.I)
+# a reply that says she can't do something (without having tried a tool) -> retry with every tool
+CANT_RE = re.compile(r"\b(can'?t|cannot|can not|don'?t have (?:a |the )?(?:tool|way|ability|access)|unable to|"
+                     r"not able to|no (?:tool|way) to|isn'?t something i can)\b", re.I)
+# a command ("turn the volume down", "I bought the eggs") answered with a claim ("I'll turn it down", "eggs are done")
+# but no tool call -> one retry that insists on the tool
+ACTION_RE = re.compile(
+    r"^\s*(?:aria,?\s*)?(?:please\s+)?(?:can you\s+|could you\s+)?(?:turn|set|add|put|remove|delete|clear|play|pause|"
+    r"skip|stop|start|open|close|launch|switch|mute|unmute|lock|remind|move|cancel|tick|check|snooze|make|"
+    r"connect|disconnect|save|note|write)\b|\b(?:i (?:bought|got|did|finished|paid|called|sent|cleaned|washed))\b",
+    re.I)
+CLAIM_RE = re.compile(r"\b(i'?ll|i will|i'?ve|i have|done|turned|added|removed|set|ticked|opened|closed|playing|"
+                      r"paused|started|switched|muted|locked|moved|cancel+ed|saved|is on|are on|on it|got it)\b", re.I)
 # "what?" / "huh?" after Aria said something: she rephrases it (the model tends to ask "what's on your mind?")
 CONFUSED_RE = re.compile(r"^\s*(?:what|huh|wdym|what do you mean|what\?+|sorry\??|pardon|come again)\s*[?!.]*\s*$", re.I)
 
@@ -709,7 +722,8 @@ class Aria:
         system_prompt = self.context.build_system_prompt(BASE_PROMPT)
         if self._session_hint:
             system_prompt += "\n\n[This conversation] " + self._session_hint
-        schemas = self.tools.schemas
+        routed = hasattr(self.tools, "schemas_for")
+        schemas = self.tools.schemas_for(user_input, self._recent_tool_names()) if routed else self.tools.schemas
         if self._initiative_active and self._initiative_active["kind"] in ("chat", "followup", "break"):
             if not CHAT_REQUEST_RE.search(user_input):
                 schemas = []
@@ -719,6 +733,19 @@ class Aria:
         reply, used = self.llm.chat_with_tools(
             prompt, self._history(), system_prompt, schemas, self.tools.execute, on_text=on_text
         )
+        if not used and ACTION_RE.search(user_input) and CLAIM_RE.search(reply or "") and \
+                not (self._initiative_active and self._initiative_active["kind"] == "chat"):
+            # it *said* it did it but called no tool (small models do this): once more, firmly
+            print("[Tools] reply claims an action without a tool call — retrying")
+            reply, used = self.llm.chat_with_tools(
+                prompt + "\n[You must call the right tool for this now. Don't just say it's done.]",
+                self._history(), system_prompt, self.tools.schemas if routed else schemas, self.tools.execute)
+        if routed and not used and CANT_RE.search(reply or "") and len(schemas) < len(self.tools.schemas) \
+                and not (self._initiative_active and self._initiative_active["kind"] == "chat"):
+            # the tool it needed wasn't offered for this message: ask again with every tool
+            print("[Tools] reply sounds like a missing tool — retrying with all tools")
+            reply, used = self.llm.chat_with_tools(prompt, self._history(), system_prompt, self.tools.schemas,
+                                                   self.tools.execute)
         if not reply.strip() and not used:
             # the model occasionally returns nothing at all; one plain retry usually gives an answer
             reply = self.llm.chat(prompt, self._history(), system_prompt) or ""
@@ -764,6 +791,16 @@ class Aria:
 
         self._save_turn(user_input, reply)
         return reply, used
+
+    def _recent_tool_names(self, turns=2):
+        names = set()
+        for turn in list(self._recent)[-turns:]:
+            for m in turn:
+                for c in m.get("tool_calls") or []:
+                    names.add(c["function"]["name"])
+                if m.get("role") == "tool" and m.get("tool_name"):
+                    names.add(m["tool_name"])
+        return names
 
     def _last_replies(self, n=2):
         out = []

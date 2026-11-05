@@ -81,6 +81,65 @@ class ToolEngine:
     UNDOABLE = {"add_note", "save_as_note", "add_to_list", "remove_from_list", "check_off", "add_event",
                 "set_reminder", "set_timer"}
 
+    # ── Tool routing ──────────────────────────────────────────────────────────
+    # All ~75 tool descriptions take ~5,500 of the model's 8,192 context tokens. So each turn gets the core set plus
+    # only the groups the message is about (and groups used in the last turns, for follow-ups). Tools that are in
+    # no group are always offered. If the model then says it can't do something, main.py retries with all tools.
+    CORE = {"calculate", "web_search", "set_timer", "set_reminder", "list_reminders", "cancel_reminder",
+            "snooze_reminder", "add_note", "add_to_list", "get_events", "search_notes", "undo_last", "get_weather"}
+    GROUPS = {
+        "music": (r"\b(play|music|song|spotify|pause|resume|skip|next|previous|track|playlist|artist|album|listen|"
+                  r"what'?s playing|lo-?fi|genre)\b",
+                  {"play_song", "play_artist", "play_playlist", "play_genre", "pause_music", "skip_track",
+                   "previous_track", "now_playing", "set_music_volume", "media_control"}),
+        "laptop": (r"\b(open|close|quit|launch|start|app|apps|window|windows|switch|volume|louder|quieter|mute|sound|"
+                   r"audio|headphones?|speakers?|earbuds|wi-?fi|internet|bluetooth|lock|shut ?down|restart|reboot|"
+                   r"suspend|battery|cpu|temperature|laptop|computer|website|browser|google|youtube|github|install|"
+                   r"installed|notification|program)\b",
+                   {"open_app", "find_app", "switch_to_app", "close_app", "list_open_windows", "set_laptop_volume",
+                    "change_laptop_volume", "mute_laptop", "switch_audio_output", "media_control", "lock_screen",
+                    "power", "laptop_status", "set_wifi", "set_bluetooth", "connect_bluetooth", "open_website",
+                    "notify_desktop", "open_mynotion"}),
+        "files": (r"\b(files?|pdfs?|docs?|documents?|folders?|downloads?|slides?|powerpoint|word|summari[sz]e|"
+                  r"read|assignment|notebook|homework|worksheet|tidy|where is|where'?s|find|open (?:the|it|that)|"
+                  r"first|second|third|last one)\b",
+                  {"find_files", "search_file_contents", "open_file", "read_file", "open_folder", "tidy_downloads",
+                   "undo_tidy_downloads", "save_as_note"}),
+        "notion": (r"\b(notes?|lists?|calendar|events?|schedule|meeting|appointment|to-?do|tasks?|tick|check(?:ed)? off|"
+                   r"bought|got the|done with|briefing|plan|plans|agenda|week|weekend|tomorrow|today|tonight|"
+                   r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|birthday|inbox|remove|clear|move|"
+                   r"delete|cancel|shopping|packing|mynotion|notion|save that|day like)\b",
+                   {"add_note", "save_as_note", "read_note", "search_notes", "list_notes", "add_to_list",
+                    "remove_from_list", "check_off", "clear_list", "get_events", "add_event", "move_event",
+                    "delete_event", "open_mynotion", "daily_briefing"}),
+        "screen": (r"\b(screen|see|look|looking|copied|clipboard|this error|error|camera|who'?s|who is|in front)\b",
+                   {"look_at_screen", "look", "read_clipboard", "copy_to_clipboard"}),
+        "focus": (r"\b(focus|pomodoro|study|studying|deep work|concentrat\w*|how long|screen time|break|rounds?)\b",
+                  {"start_focus", "stop_focus", "focus_status", "focus_stats", "screen_time"}),
+        "memory": (r"\b(remember|forget|know about me|memory|talk(?:ed)? about|mention(?:ed)?|said|yesterday|"
+                   r"last time|ago)\b",
+                   {"what_you_know_about_me", "remember_about_me", "forget_about_me", "clean_up_memory",
+                    "recall_conversation", "search_conversations"}),
+        "home": (r"\b(lights?|leds?|lamp|colou?r|bright|dim|phone|tv|television)\b",
+                 {"set_led_color", "set_led_effect", "set_led_brightness", "led_off", "notify_phone",
+                  "check_phone_battery", "check_phone_location", "turn_on_tv", "turn_off_tv", "set_tv_volume"}),
+        "misc": (r"\b(conversations?|systems?|working|status|okay|convert|bill|tip|split|miles?|km|kilo\w*|kg|"
+                 r"pounds?|celsius|fahrenheit|inch\w*|feet|cups?|units?|city|live in)\b",
+                 {"conversation_starters", "system_check", "split_bill", "convert_units", "set_home_city"}),
+    }
+
+    def schemas_for(self, text: str, recent_tools=()) -> list:
+        """The schemas for this message: core + matching groups + groups of recently used tools + ungrouped."""
+        import re
+        grouped = set().union(*(names for _, names in self.GROUPS.values()))
+        wanted = set(self.CORE)
+        recent = set(recent_tools)
+        for pattern, names in self.GROUPS.values():
+            if re.search(pattern, text or "", re.I) or names & recent:
+                wanted |= names
+        return [s for n, s in ((t["schema"]["function"]["name"], t["schema"]) for t in self._registry.values())
+                if n in wanted or n not in grouped]
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     @property

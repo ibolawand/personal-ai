@@ -43,6 +43,13 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
   - After she asks you something, she waits 2 minutes for your answer instead of 1 before dozing off.
 
 - **Model:** Ollama `qwen3:8b` with native tool calling (`llm_engine.py`), thinking off for speed, 8192-token context.
+- **Tool routing** (`ToolEngine.schemas_for`): all ~78 tool descriptions took 5,487 of the model's 8,192 context
+  tokens on every turn. Now each message gets a core set (reminders, notes, weather, maths…) plus only the groups it's
+  about (music, laptop, files, notes & calendar, screen, focus, memory, home, misc), and groups used in the last two
+  turns. Small talk: 1,278 tokens; "add eggs to my list": 2,297. If the model says it can't do something without
+  trying a tool, the turn is retried with every tool. Tested: 16/16 everyday commands pick the right tool.
+- **No fake actions:** if your message is a command and her reply claims it ("I'll turn the volume down") but no
+  tool was called, she gets one retry that insists on the tool. The tool rules also come first in her instructions now.
 - **Tool-call memory:** the real tool calls and results of the last 6 turns stay in the conversation, so Aria
   keeps using tools instead of making up answers. Tested: tool use went from 4/8 to 12/12.
 - **Long-term memory:** after a conversation, lasting facts about you are saved in SQLite (`database.py`).
