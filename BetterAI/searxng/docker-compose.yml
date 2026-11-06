@@ -1,0 +1,11 @@
+# SearXNG: an open-source search engine that runs on this computer, so Aria can search the web
+# without an account or API key. Only reachable from this machine (127.0.0.1). Start with ./start.sh.
+services:
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: aria-searxng
+    restart: unless-stopped          # comes back after a reboot
+    ports:
+      - "127.0.0.1:8888:8080"
+    volumes:
+      - ./config:/etc/searxng

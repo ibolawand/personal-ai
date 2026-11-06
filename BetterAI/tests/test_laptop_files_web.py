@@ -115,6 +115,53 @@ def test_question_words_are_removed_for_wikipedia(monkeypatch):
     assert out[0].startswith("[Wikipedia: Photosynthesis]")       # exact title first, despite search rank
 
 
+class _Resp:
+    def __init__(self, data, status=200):
+        self.data, self.status_code = data, status
+
+    def json(self):
+        return self.data
+
+    def raise_for_status(self):
+        pass
+
+
+def test_searxng_results_come_first(monkeypatch):
+    import Engines.WebSearch as W
+    calls = []
+
+    def fake_get(url, params=None, **_):
+        calls.append(url)
+        if "/search" in url:
+            return _Resp({"results": [{"title": "Match report", "url": "https://x.test/a", "content": "<b>2-1</b> win"}]})
+        return _Resp({"Answer": ""})
+    monkeypatch.setattr(W.requests, "get", fake_get)
+    monkeypatch.setattr(W, "page_text", lambda url: "")
+    monkeypatch.setattr(W.WebSearch, "_wikipedia", lambda self, q: [])
+    out = W.WebSearch("http://searx.test").search("latest arsenal score")
+    assert "[Match report — https://x.test/a] 2-1 win" in out
+    assert "may not cover recent things" not in out
+    assert calls[0] == "http://searx.test/search"
+
+
+def test_without_searxng_it_falls_back_and_waits_before_trying_again(monkeypatch):
+    import Engines.WebSearch as W
+    calls = []
+
+    def fake_get(url, params=None, **_):
+        calls.append(url)
+        if "/search" in url:
+            raise W.requests.ConnectionError("refused")
+        return _Resp({"Answer": ""})
+    monkeypatch.setattr(W.requests, "get", fake_get)
+    monkeypatch.setattr(W.WebSearch, "_wikipedia", lambda self, q: ["[Wikipedia: Arsenal F.C.] A football club."])
+    ws = W.WebSearch("http://searx.test")
+    out = ws.search("latest arsenal score")
+    assert "Wikipedia: Arsenal" in out and "may not cover recent things" in out
+    ws.search("something else")
+    assert sum("/search" in c for c in calls) == 1        # not retried within a minute
+
+
 def test_page_text_keeps_sentences_not_menus():
     p = __import__("Engines.WebSearch", fromlist=["_TextExtractor"])._TextExtractor()
     p.feed("<nav>Home About</nav><p>" + "This is a real sentence that is long enough to keep. " * 2 + "</p>"

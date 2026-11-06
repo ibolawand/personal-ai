@@ -1,17 +1,19 @@
 """
-Web search for Aria, using only official APIs (no scraping of search result pages).
+Web search for Aria, with no accounts and no API keys.
 
-  Brave Search API  — real web results (news, prices, anything recent). Used when BRAVE_API_KEY is set in
-                      Engines/.env. Free plan: https://brave.com/search/api/ (about 2000 searches a month).
-                      The top result's page is read too, so Aria can answer from it, not just from a snippet.
-  Wikipedia API     — always, no key: facts about people, places, history, science, definitions.
-  DuckDuckGo        — instant answers (short facts, calculations), no key.
+  SearXNG       — real web results (news, prices, anything recent) from a search engine running on this
+                  computer in Docker (see searxng/README.md, one command to start). Used when it answers at
+                  SEARXNG_URL (default http://127.0.0.1:8888). The top result's page is read too, so Aria can
+                  answer from it, not just from a snippet.
+  Wikipedia API — always: facts about people, places, history, science, definitions.
+  DuckDuckGo    — instant answers (short facts), from its official API.
 
 The tool returns the material; the model answers from it and names the source.
 """
 
 import os
 import re
+import time
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -85,26 +87,36 @@ def page_text(url: str) -> str:
     return text[:MAX_PAGE_CHARS]
 
 
+SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://127.0.0.1:8888").rstrip("/")
+RETRY_SEARXNG_S = 60       # after SearXNG didn't answer, don't wait for it again for a minute
+
+
 class WebSearch:
-    def __init__(self):
-        self.brave_key = os.environ.get("BRAVE_API_KEY", "").strip()
+    def __init__(self, searxng_url=None):
+        self.searxng_url = (searxng_url or SEARXNG_URL).rstrip("/")
+        self._searxng_down_at = 0.0
+
+    def searxng_running(self) -> bool:
+        try:
+            return requests.get(self.searxng_url + "/healthz", headers=UA, timeout=2).status_code == 200
+        except requests.RequestException:
+            return False
 
     def search(self, query: str) -> str:
         query = (query or "").strip()
         if not query:
             return "What should I search for?"
-        parts = []
-        if self.brave_key:
-            parts += self._brave(query)
+        web = self._searxng(query)
+        parts = list(web)
         instant = self._ddg_instant(query)
         if instant:
             parts.append(f"[DuckDuckGo] {instant}")
-        if not self.brave_key or len(parts) < 2:
+        if len(parts) < 3:
             parts += self._wikipedia(query)
         if not parts:
             return f"I couldn't find anything about '{query}'."
         note = ""
-        if not self.brave_key and RECENT_RE.search(query):
+        if not web and RECENT_RE.search(query):
             note = ("\n(Only Wikipedia and instant answers were searched, which may not cover recent things. "
                     "If these don't answer it, say so instead of guessing.)")
         return (f"Search results for '{query}'. Answer from these in one or two spoken sentences and mention "
@@ -112,20 +124,22 @@ class WebSearch:
 
     # ── sources ──
 
-    def _brave(self, query):
+    def _searxng(self, query):
+        if time.time() - self._searxng_down_at < RETRY_SEARXNG_S:
+            return []
         try:
-            r = requests.get("https://api.search.brave.com/res/v1/web/search",
-                             params={"q": query, "count": 5},
-                             headers={"Accept": "application/json", "X-Subscription-Token": self.brave_key},
-                             timeout=TIMEOUT)
+            r = requests.get(self.searxng_url + "/search", params={"q": query, "format": "json"},
+                             headers=UA, timeout=(2, 8))
             r.raise_for_status()
-            results = r.json().get("web", {}).get("results", [])
+            results = r.json().get("results", [])
         except Exception as e:
-            print(f"[WebSearch] Brave failed: {e}")
+            self._searxng_down_at = time.time()
+            if not isinstance(e, requests.ConnectionError):
+                print(f"[WebSearch] SearXNG failed: {e}")
             return []
         out, read = [], False
         for res in results[:5]:
-            snippet = re.sub(r"<[^>]+>", "", res.get("description", ""))
+            snippet = re.sub(r"<[^>]+>", "", res.get("content") or "")
             out.append(f"[{res.get('title', '')} — {res.get('url', '')}] {snippet}")
             if not read:       # read the first page that loads, for detail beyond the snippet
                 text = page_text(res.get("url", ""))

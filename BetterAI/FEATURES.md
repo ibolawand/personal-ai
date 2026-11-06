@@ -348,12 +348,12 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
   "will it rain the day after tomorrow?", "weather in Berlin". Tell her once "I live in Vienna" (or set `ARIA_LOCATION`).
   Clothing advice (coat, jacket, umbrella) is decided in code from the temperature and rain chance, and the
   morning briefing includes today's weather.
-- **Web search** (`Engines/WebSearch.py`), using only official APIs:
+- **Web search** (`Engines/WebSearch.py`), with no accounts or API keys:
   - **Wikipedia** (no key needed): facts, people, places, how things work. Aria answers in a sentence or two and says where it's from.
   - **DuckDuckGo instant answers** (no key needed).
-  - **Brave Search** for news, prices and anything recent: put a free key from https://brave.com/search/api/ in
-    `Engines/.env` as `BRAVE_API_KEY=...`. Aria then also reads the top result's page. Without the key, she says
-    when the sources don't cover something recent instead of guessing.
+  - **SearXNG** for news, prices and anything recent: a search engine running on this computer in Docker,
+    no account or API key (`cd searxng && ./start.sh` once; see `searxng/README.md`). Aria also reads the top
+    result's page. When it isn't running, she says when the sources don't cover something recent instead of guessing.
 
 ---
 

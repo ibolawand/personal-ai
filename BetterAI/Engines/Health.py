@@ -3,7 +3,6 @@
 Also printed to the log at startup. (The vision model was missing for weeks without anyone noticing.)
 """
 
-import os
 
 
 def _check(name, fn):
@@ -73,8 +72,10 @@ class Health:
         out.append(_check("Weather", weather))
 
         def web():
-            key = os.environ.get("BRAVE_API_KEY")
-            return True, "Wikipedia + Brave Search" if key else "Wikipedia only (add BRAVE_API_KEY for recent things)"
+            from Engines.WebSearch import WebSearch
+            if WebSearch().searxng_running():
+                return True, "SearXNG + Wikipedia"
+            return True, "Wikipedia only — for recent things start SearXNG: cd searxng && ./start.sh"
         out.append(_check("Web search", web))
 
         def files():

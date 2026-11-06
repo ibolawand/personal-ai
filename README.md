@@ -24,7 +24,7 @@ Die vollständige Liste mit allen Details steht in **[BetterAI/FEATURES.md](Bett
 | **Laptop** | Jede App aus dem Menü öffnen, Lautstärke und Audioausgang, Medien, WLAN/Bluetooth, Sperren, Akku und Temperaturen |
 | **Dateien** | Nach Namen *und* Inhalt suchen („das PDF über Zahnradgetriebe"), vorlesen, zusammenfassen und als Notiz speichern, Downloads aufräumen |
 | **Bildschirm & Kamera** | „Was ist das für ein Fehler auf meinem Bildschirm?", Gesichter erkennen, merken, wann man am Platz ist |
-| **Wissen** | Websuche über Wikipedia (und Brave Search mit eigenem Schlüssel) |
+| **Wissen** | Websuche über Wikipedia und eine eigene SearXNG-Suchmaschine (ohne Konto oder API-Schlüssel) |
 | **Musik** | Spotify: Lieder, Künstler, Playlists, Genres |
 
 Riskante Aktionen (Apps schließen, Herunterfahren, Termine löschen …) fragen immer erst nach, und das „Ja" wird im
@@ -64,8 +64,13 @@ Einstellungen kommen in `BetterAI/Engines/.env` (wird nicht eingecheckt), zum Be
 DB_PATH=/home/<du>/.config/MyNotion/noted.db  # MyNotion-Datenbank
 SPOTIFY_CLIENT_ID=...                         # optional
 SPOTIFY_CLIENT_SECRET=...
-BRAVE_API_KEY=...                             # optional: Websuche für Aktuelles
 ARIA_QUIET=22:30-08:30                        # Ruhezeiten
+```
+
+Für Websuche zu aktuellen Themen einmal die lokale Suchmaschine starten (braucht Docker, kein Schlüssel):
+
+```bash
+cd BetterAI/searxng && ./start.sh
 ```
 
 Alle Einstellungen sind in [FEATURES.md](BetterAI/FEATURES.md) beschrieben.
