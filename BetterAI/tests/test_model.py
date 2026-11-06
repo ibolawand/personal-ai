@@ -56,6 +56,7 @@ COMMANDS = [
     ("how many miles is 42 km", "convert_units"), ("how much battery do I have", "laptop_status"),
     ("is wifi on?", "network_status"), ("quiz me on my databases note", "start_quiz"),
     ("test me on the gear trains pdf", "start_quiz"), ("this is my good posture", "remember_good_posture"),
+    ("add call the bank to today's note", "add_note"),
 ]
 
 

@@ -26,6 +26,16 @@ DAY_AHEAD_HOUR = 9               # birthdays & co: heads-up at this hour the day
 YEARLY_RE = re.compile(r"\b(birthday|bday|anniversary|name ?day)\b", re.I)
 ARIA_EVENT_COLOR = "purple"      # MyNotion's calendar colours: blue, green, purple, red
 INBOX_TITLE = "Inbox"
+# Today's note: MyNotion's Ctrl+D opens a note with this title, made from the same template.
+DAILY_RE = re.compile(r"^\s*(?:my\s+)?(?:today'?s?|daily|day)(?:\s+note)?\s*$", re.I)
+DAILY_TEMPLATE = ('<h2>Plan</h2><ul data-type="taskList"><li data-checked="false" data-type="taskItem"><label>'
+                  '<input type="checkbox"><span></span></label><div><p></p></div></li></ul><h2>Notes</h2><p></p>')
+
+
+def daily_title(day: dt.date = None) -> str:
+    """'Saturday, 7 November 2026', the same as MyNotion's today's note."""
+    d = day or dt.date.today()
+    return f"{d.strftime('%A')}, {d.day} {d.strftime('%B %Y')}"
 # the packaged app (MyNotion: build_app.sh); override with MYNOTION_BIN in Engines/.env
 MYNOTION_BIN = os.environ.get("MYNOTION_BIN") or str(
     Path(__file__).resolve().parents[3] / "MyNotion" / "note" / "out" / "MyNotion-linux-x64" / "MyNotion")
@@ -295,10 +305,25 @@ class NotionEngine:
 
     # ── notes: tools ──
 
+    def _daily_note(self, create=True):
+        title = daily_title()
+        n = next((x for x in self._notes() if (x["title"] or "").strip() == title), None)
+        if not n and create:
+            self._create_note(title, DAILY_TEMPLATE)
+            n = next((x for x in self._notes() if (x["title"] or "").strip() == title), None)
+        return n
+
     def add_note(self, text: str, title: str = ""):
         text = (text or "").strip()
         if not text:
             return "What should the note say?"
+        if title and DAILY_RE.match(title):
+            n = self._daily_note()
+            content = n["content"] or ""
+            if content.endswith("<h2>Notes</h2><p></p>"):          # fill the template's empty line first
+                content = content[:-len("<p></p>")]
+            self._set_content(n["id"], content + text_to_html(text))
+            return "Added to today's note."
         if title:
             existing = self._find_note(title)
             if existing and _match_score(title, existing["title"]) >= 80:
@@ -322,7 +347,12 @@ class NotionEngine:
         return self.add_note(text, title=title or "Saved from Aria")
 
     def read_note(self, title: str):
-        n = self._find_note(title)
+        if DAILY_RE.match(title or ""):
+            n = self._daily_note(create=False)
+            if not n:
+                return "There's no note for today yet."
+        else:
+            n = self._find_note(title)
         if not n:
             return f"I couldn't find a note called '{title}'. " + self._titles_hint()
         if self._is_list(n):

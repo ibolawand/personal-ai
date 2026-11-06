@@ -120,3 +120,14 @@ def test_day_ahead_heads_up_and_briefing(notion, memory):
     assert len(reminders.pending(("dayahead",))) == 1
     assert "Special days ahead: Lina's birthday in 2 days" in notion.daily_briefing()
     assert Reminders.announcement(day_ahead[0]) == "Heads up: tomorrow is Lina's birthday."
+
+
+def test_todays_note_matches_mynotion_and_takes_additions(notion):
+    from Engines.NotionEngine import daily_title
+    assert daily_title(dt.date(2026, 11, 7)) == "Saturday, 7 November 2026"     # same as MyNotion's Ctrl+D note
+    assert notion.read_note("today") == "There's no note for today yet."
+    assert notion.add_note("call the bank", title="today's note") == "Added to today's note."
+    notion.add_note("buy stamps", title="today")
+    n = notion._find_note(daily_title())
+    assert n["content"].count("<h2>Notes</h2>") == 1 and n["content"].endswith("<p>call the bank</p><p>buy stamps</p>")
+    assert "call the bank" in notion.read_note("my daily note")

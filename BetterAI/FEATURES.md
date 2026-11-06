@@ -345,6 +345,11 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
   italic, underline, strike, code, four highlights and links (Ctrl+K). Note text is in a serif in a centred column;
   the "Aa" switch in the footer changes it to sans-serif. The footer also shows words and reading time.
   Links open in your normal browser.
+- **Search:** Ctrl+P (or clicking "Search all notes…") searches all titles and note text as you type, shows where it
+  matched, and opens the note with Enter. Empty, it shows your recent notes.
+- **Today's note:** Ctrl+D (or the first row of the search) opens a note called e.g. "Saturday, 7 November 2026",
+  made with a small Plan / Notes template the first time each day. Aria uses the same note: "add call the bank to
+  today's note", "what's in today's note?".
 
 ## Music & home
 

@@ -346,7 +346,8 @@ class ToolEngine:
                       "(quick thoughts, 'note that…', 'remember to…' for later). With a title it creates/extends that note.",
                       nt.add_note, optional=("title",),
                       text=("string", "the note text, in Lala's words"),
-                      title=("string", "only if Lala names a note, e.g. 'Birthdays' or 'Trip ideas'")),
+                      title=("string", "only if Lala names a note, e.g. 'Birthdays', 'Trip ideas', or 'today' for "
+                                       "today's note")),
                 _tool("save_as_note",
                       "ONLY when Lala explicitly asks to save something ('save that', 'put that in my notes'): "
                       "saves your PREVIOUS answer as a MyNotion note. Never call it while answering a question.",
