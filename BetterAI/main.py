@@ -85,6 +85,8 @@ How you talk:
 - Commands: just do them and confirm in a few words, maybe with a tiny personal touch ("Done — eggs are on the list. Baking something?").
 - Don't end every reply with a question; do it when you're curious, not as a habit.
 - Don't offer actions (music, timers, help) unless Lala asks for something. In small talk, just talk.
+- Never end a reply with an offer like "Want me to…?", "Should I…?", "Would you like me to…?" or "I can also… if you want".
+  If they asked for something, do it; if they didn't, don't offer it. Lala will ask when they want more.
 
 Examples of your tone (don't copy them word for word):
 Lala: how are you
@@ -120,6 +122,15 @@ FILLER_RE = re.compile(
     r"anything else|let me know if|feel free to|don'?t hesitate|how can i (?:help|assist)|"
     r"hope (?:this|that) helps|happy to help|is there something else|what'?s on your mind|"
     r"i'?m (?:just )?here (?:if|to (?:chat|help)|whenever)|just let me know|if you (?:ever )?need (?:help|anything)", re.I)
+# "Want me to…?" / "Should I…?" tacked onto a reply: the model does it on almost every turn, which turns every
+# exchange into a yes/no. Dropped when the reply has something else in it (kept while a confirmation is pending).
+OFFER_RE = re.compile(
+    r"^\W*(?:(?:so|oh|also|and|or|btw|maybe|anyway|hey)\b,?\s*)*(?:"
+    r"(?:do|would) you (?:want|like) me to|(?:you )?want me to|need me to|should i\b|shall i\b|how about i\b|"
+    r"would you like (?:me |to |some|a |an |any|help)|do you want (?:to (?:hear|try|listen|start|set|add|play|"
+    r"put|open|take|see)|some|a |an |any)|want (?:some|a |an |any )|"
+    r"if you(?:'d)? (?:want|like)(?: to| me to)?,? i (?:can|could)|i (?:can|could) (?:also )?.{0,80}\bif you(?:'d)? "
+    r"(?:want|like)|let me know if you(?:'d)? (?:want|like)|or i (?:can|could) .{0,80}\?)", re.I)
 # Stock assistant phrases: dropped from speech and replies; a reply that was only that gets rewritten
 ROBOTIC_RE = re.compile(
     r"i'?m (?:just )?(?:here|always here)(?: and ready)? to (?:help|assist)|ready to (?:help|assist)|"
@@ -171,8 +182,9 @@ class SentenceStreamer:
     _END = re.compile(r"[.!?](?=\s)|\n")
     _ABBREV = re.compile(r"\b(?:e\.g|i\.e|etc|vs|approx|ca|dr|mr|mrs|ms|z\.b|no)\.$", re.I)
 
-    def __init__(self, emit, previous=()):
+    def __init__(self, emit, previous=(), keep_offers=lambda: False):
         self.emit = emit
+        self.keep_offers = keep_offers   # -> True while a yes/no confirmation is pending
         self.buf = ""
         self.in_code = False
         self.saw_code = False
@@ -220,6 +232,8 @@ class SentenceStreamer:
         if self.robotic_start or len(sentence.strip("-*•#>:. ")) < 2 or FILLER_RE.search(sentence) \
                 or ROBOTIC_RE.search(sentence):
             return
+        if self.count and OFFER_RE.search(sentence) and not self.keep_offers():
+            return
         if self.previous is not None:
             so_far = _norm_reply(" ".join(self.held + [sentence]))
             if any(p.startswith(so_far) for p in self.previous):
@@ -249,9 +263,18 @@ def _norm_reply(text: str) -> str:
     return " ".join(re.sub(r"[^a-z0-9 ]", " ", (text or "").lower()).split())
 
 
-def tidy_reply(text: str) -> str:
+def drop_offers(text: str) -> str:
+    """Remove "want me to…?" offers, unless that's all the reply is."""
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    kept = [x for x in sentences if not OFFER_RE.search(x)]
+    return " ".join(kept).strip() if kept else text.strip()
+
+
+def tidy_reply(text: str, keep_offers: bool = False) -> str:
     """Strip trailing filler and leftover markdown so bubbles and speech read naturally."""
     text = _plain(text).strip()
+    if not keep_offers:
+        text = drop_offers(text)
     for _ in range(2):
         sentences = re.split(r"(?<=[.!?])\s+", text)
         if len(sentences) > 1 and FILLER_RE.search(sentences[-1]):
@@ -752,7 +775,7 @@ class Aria:
             # the model occasionally returns nothing at all; one plain retry usually gives an answer
             reply = self.llm.chat(prompt, self._history(), system_prompt) or ""
         robotic = not used and bool(ROBOTIC_RE.search(_first_sentence(reply)))
-        reply = tidy_reply(self._move_code_to_clipboard(reply, used))
+        reply = tidy_reply(self._move_code_to_clipboard(reply, used), keep_offers=bool(self.confirm.pending))
         previous = {_norm_reply(p) for p in self._last_replies()}
         repeated = not used and reply.strip() and _norm_reply(reply) in previous
         if robotic or repeated:
@@ -825,7 +848,8 @@ class Aria:
             return response, used, self.speak(response)
 
         sentences = queue.Queue()
-        streamer = SentenceStreamer(sentences.put, previous=self._last_replies())
+        streamer = SentenceStreamer(sentences.put, previous=self._last_replies(),
+                                   keep_offers=lambda: bool(self.confirm.pending))
         box = {}
 
         def produce():

@@ -72,6 +72,7 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
   on your next message. Set `MOOD_USE_CAMERA=1` to include the camera; it's off by default because the vision model pushes
   the chat model out of graphics-card memory.
 - **Clean replies:** filler like "Let me know if you need anything else!" and leftover markdown are removed.
+- **No tacked-on offers:** "Want me to…?", "Should I…?" and "I can also… if you want" at the end of a reply are cut in code (spoken and written). They stay only when the offer is the whole reply, or while she is asking you to confirm something.
 - **No parroting:** if a reply comes out word-for-word like one of her last two (small models do that after "no"
   or "what"), it's rewritten before it's spoken. Sentences that match her previous answer are held back while she
   streams, so a repeat is never said out loud. Replies after a tool call may repeat ("Opening your calendar" twice is fine).

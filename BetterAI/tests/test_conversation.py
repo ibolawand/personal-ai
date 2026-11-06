@@ -59,6 +59,45 @@ def test_streamer_holds_everything_after_a_stock_opener():
     assert out == [] and s.robotic_start
 
 
+@pytest.mark.parametrize("text,expected", [
+    ("Done, milk's on the list. Want me to add anything else?", "Done, milk's on the list."),
+    ("Volume's at 40. Do you want me to turn it down more?", "Volume's at 40."),
+    ("Oh nice, carbonara! Should I put on some cooking music?", "Oh nice, carbonara!"),
+    ("That sounds rough. Would you like me to set a timer for a break?", "That sounds rough."),
+    ("It's 14 degrees. I can also check tomorrow if you want.", "It's 14 degrees."),
+    ("Haha fair. If you want, I can remind you later.", "Haha fair."),
+    ("Ugh, exams. Would you like some music to focus?", "Ugh, exams."),
+    # kept: real questions, feelings, and a reply that is only an offer
+    ("Aw, I'm sorry. Want to tell me what happened, or should I just keep you company?",
+     "Aw, I'm sorry. Want to tell me what happened, or should I just keep you company?"),
+    ("Nice! How did the exam go?", "Nice! How did the exam go?"),
+    ("Want me to open Spotify?", "Want me to open Spotify?"),
+])
+def test_trailing_offers_are_dropped(text, expected):
+    assert tidy_reply(text) == expected
+
+
+def test_offers_are_kept_while_a_confirmation_is_pending():
+    assert tidy_reply("Found two events. Should I delete both?", keep_offers=True) == \
+        "Found two events. Should I delete both?"
+
+
+def test_streamer_drops_offers_unless_confirming():
+    out, _ = stream("Done, it's on the list. Want me to add bread too?")
+    assert out == ["Done, it's on the list."]
+    out = []
+    s = SentenceStreamer(out.append, keep_offers=lambda: True)
+    s.feed("Found it. Should I delete it? ")
+    s.flush()
+    assert out == ["Found it.", "Should I delete it?"]
+
+
+def test_handle_turn_drops_the_offer(aria):
+    aria.llm.replies = [("Pretty good, just glowing here. Want me to play some music?", [])]
+    reply, _ = aria.handle_turn("how are you", check_state=False)
+    assert reply == "Pretty good, just glowing here."
+
+
 # ── handle_turn rewrites ──
 
 def test_repeated_reply_is_rewritten(aria):
