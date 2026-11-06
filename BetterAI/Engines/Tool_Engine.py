@@ -45,7 +45,7 @@ class ToolEngine:
     def __init__(self, spotify=None, arduino=None, vision=None, ha=None,
                  reminders=None, focus=None, screen=None, laptop=None, files=None, notion=None,
                  owner_check=None, initiative=None, memory_note=None, activity=None, weather=None, undo=None,
-                 recall=None, health=None, posture=None):
+                 recall=None, health=None, posture=None, quiz=None):
         self.spotify = spotify
         self.arduino = arduino
         self.vision = vision
@@ -65,6 +65,7 @@ class ToolEngine:
         self.recall = recall
         self.health = health
         self.posture = posture
+        self.quiz = quiz
         self._registry = {t["schema"]["function"]["name"]: t for t in self._build()}
 
     # Tools that touch the laptop, files, clipboard/screen or phone — gated by owner_check
@@ -116,6 +117,8 @@ class ToolEngine:
                     "delete_event", "open_mynotion", "daily_briefing"}),
         "screen": (r"\b(screen|see|look|looking|copied|clipboard|this error|error|camera|who'?s|who is|in front)\b",
                    {"look_at_screen", "look", "read_clipboard", "copy_to_clipboard"}),
+        "quiz": (r"\b(quiz|test me|ask me (?:some )?questions|revise|revision|flash ?cards?|study with me)\b",
+                 {"start_quiz"}),
         "posture": (r"\b(posture|slouch\w*|sitting|sit (?:up|straight|like this)|how i'?m sitting)\b",
                     {"remember_good_posture"}),
         "focus": (r"\b(focus|pomodoro|study|studying|deep work|concentrat\w*|how long|screen time|break|rounds?)\b",
@@ -231,6 +234,16 @@ class ToolEngine:
                 _tool("focus_stats", "How much Lala focused ('how much did I focus this week/today?').",
                       fm.stats, optional=("period",), period=("string", "'today', 'week' or 'month'")),
             ]
+
+        if self.quiz:
+            tools += [_tool("start_quiz",
+                            "Quiz Lala out loud on one of their notes or documents ('quiz me on my C# note', 'test me "
+                            "on the gear trains PDF', 'quiz me on my mistakes'). Asks short questions one at a time; "
+                            "their answers are checked for you.",
+                            self.quiz.start, optional=("count",),
+                            topic=("string", "the note or document title or subject, or 'mistakes' to retry missed "
+                                             "questions"),
+                            count=("integer", "how many questions, default 5"))]
 
         if self.posture:
             tools += [_tool("remember_good_posture",

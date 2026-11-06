@@ -34,6 +34,7 @@ from Engines.Health import Health
 from Engines.Battery import BatteryWatch
 from Engines.Initiative import Initiative, NOT_NOW_RE, idle_seconds
 from Engines.Posture import Posture
+from Engines.Quiz import Quiz
 from Engines.Reminders import Reminders
 from Engines.ScreenEngine import ScreenEngine
 from Engines.Tool_Engine import ToolEngine
@@ -432,6 +433,7 @@ class Aria:
         self.followups = Followups(self.memory, self.notion)
         self.weather = Weather()
         self.undo = Undo(self.notion, self.reminders)
+        self.quiz = Quiz(self.notion, self.files, model=LLM_MODEL)
         self.activity = Activity(menu=self.laptop.menu)
         self.focus.activity = self.activity
         self.focus.on_nudge = self._announce
@@ -457,6 +459,7 @@ class Aria:
             recall=Recall(self.memory),
             health=Health(self),
             posture=self.posture,
+            quiz=self.quiz,
         )
         print(f"[Tools] {len(self.tools.schemas)} tools available")
 
@@ -725,6 +728,15 @@ class Aria:
                 self._recent.append([{"role": "user", "content": user_input},
                                      {"role": "assistant", "content": handled}])
                 return handled, [("weekly_review", handled)]
+        quiz = getattr(self, "quiz", None)
+        if quiz and quiz.active:
+            # during a quiz every reply is an answer (or skip / hint / repeat / stop), checked in code
+            handled = quiz.answer(user_input)
+            if handled is not None:
+                self._save_turn(user_input, handled)
+                self._recent.append([{"role": "user", "content": user_input},
+                                     {"role": "assistant", "content": handled}])
+                return handled, [("quiz", handled)]
         opened = self._open_in_notion(user_input)
         if opened:
             self._save_turn(user_input, opened)

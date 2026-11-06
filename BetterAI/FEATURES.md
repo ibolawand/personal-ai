@@ -261,6 +261,18 @@ To try one right now: `./aria.sh --chat`, `--followup`, `--break`, `--review` or
 - **Web:** "open github", or search anything in the browser.
 - **Desktop notifications.**
 
+## Quiz me — `Engines/Quiz.py`
+
+- "Quiz me on my C# note", "test me on the gear trains PDF", "quiz me on databases, 8 questions".
+  The material comes from a MyNotion note or a document in your folders. For long ones a random part is used, so
+  every quiz is a bit different.
+- The model writes short questions whose answers you can say out loud (no code or symbols). After that everything is
+  handled in code: she asks one question at a time, and each reply is your answer. If it contains the expected words
+  it's right straight away; otherwise the model decides whether you meant the same thing ("3NF" for "third normal form").
+- Say "skip" or "I don't know" to hear the answer, "hint" for the first letter, "repeat" for the question again, and
+  "stop" to end. You get your score at the end.
+- Missed questions are kept: "quiz me on my mistakes" asks them again, and the ones you get right are dropped.
+
 ## Files & school work — `Engines/FilesEngine.py`
 
 - "Find my plsql pdf", "find powerpoints from this week". Results are numbered, newest first.
@@ -328,6 +340,11 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
 - Data lives in `~/.config/MyNotion/noted.db`, with a **daily backup** in `~/.config/MyNotion/backups/` (the last 14 are kept).
 - Only one copy runs at a time. `MyNotion --open=calendar|note:<id>|home` shows that page (Aria uses this).
 - Refreshes live when Aria changes notes or events.
+- **The editor:** type `/` for a menu of blocks (headings, to-do list, lists, quote, code, divider, today's date),
+  each with its Markdown shortcut next to it (`#`, `[ ]`, `-`, `>`, …). Selecting text shows a small bar with bold,
+  italic, underline, strike, code, four highlights and links (Ctrl+K). Note text is in a serif in a centred column;
+  the "Aa" switch in the footer changes it to sans-serif. The footer also shows words and reading time.
+  Links open in your normal browser.
 
 ## Music & home
 

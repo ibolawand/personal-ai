@@ -14,7 +14,7 @@ class Any:
 def tools():
     a = Any()
     return ToolEngine(spotify=a, arduino=a, vision=a, ha=a, reminders=a, focus=a, screen=a, laptop=a, files=a,
-                      notion=a, initiative=a, memory_note=a, activity=a, weather=a, undo=a, recall=a, health=a, posture=a)
+                      notion=a, initiative=a, memory_note=a, activity=a, weather=a, undo=a, recall=a, health=a, posture=a, quiz=a)
 
 
 def names(tools, text, recent=()):
@@ -27,7 +27,7 @@ def names(tools, text, recent=()):
     ("what's this error on my screen?", "look_at_screen"), ("start a pomodoro on c#", "start_focus"),
     ("add eggs to my shopping list", "add_to_list"), ("move the dentist to friday", "move_event"),
     ("I bought the eggs", "check_off"), ("what did we talk about yesterday?", "recall_conversation"),
-    ("forget that I'm bored", "forget_about_me"), ("this is my good posture", "remember_good_posture"), ("how many miles is 42 km", "convert_units"),
+    ("forget that I'm bored", "forget_about_me"), ("this is my good posture", "remember_good_posture"), ("quiz me on my c# note", "start_quiz"), ("how many miles is 42 km", "convert_units"),
     ("split the bill between 3", "split_bill"), ("are your systems okay?", "system_check"),
     ("remind me at 6 to call mum", "set_reminder"), ("do I need a jacket tomorrow?", "get_weather"),
     ("dim the lights", "set_led_brightness"), ("I live in Vienna", "set_home_city"),
