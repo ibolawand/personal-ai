@@ -85,7 +85,7 @@ cd BetterAI
 .venv/bin/python -m pytest
 ```
 
-215 Tests in etwa 14 Sekunden, dazu 19 optionale Tests mit dem echten Sprachmodell (`ARIA_MODEL_TESTS=1 .venv/bin/python -m pytest -m model`). Sie brauchen weder Sprachmodell noch Kamera, Mikrofon oder Internet,
+215 Tests in etwa 14 Sekunden, dazu 19 optionale Tests mit dem echten Sprachmodell (`ARIA_MODEL_TESTS=1 .venv/bin/python -m pytest -m model`). Die normalen Tests brauchen weder Sprachmodell noch Kamera, Mikrofon oder Internet,
 arbeiten nur mit temporären Datenbanken und schlagen fehl, falls ein Test die echten Daten öffnen will.
 
 ## Datenschutz
