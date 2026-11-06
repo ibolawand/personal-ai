@@ -21,3 +21,29 @@ real model where it matters) and committed separately. The full feature overview
 | 14 | **Tool routing + no fake actions** | All 78 tool descriptions used 5,487 of 8,192 context tokens per turn; now each message gets only the relevant groups (1,278 tokens for small talk), with a retry using all tools if she says she can't. Testing it revealed a regression from the personality change: she *said* "I'll turn the volume down" without doing it. Fixed by putting the tool rules first, correcting an example, and retrying commands whose reply claims an action without a tool call. 16/16 everyday commands correct, personality unchanged. | `tests/test_routing.py` |
 | 15 | **Real-model checks** | Opt-in `pytest -m model` (ARIA_MODEL_TESTS=1): 15 commands must call the right tool and 3 small-talk lines must sound like a friend. 18/18 in 4 of 5 runs; the claim check now also catches "lowering it now"-style replies. | `tests/test_model.py` |
 | 16 | **Checking Wi-Fi without switching it** | "Is Wi-Fi on?" used to call `set_wifi` (which switches it). A read-only `network_status` now answers: network name, Bluetooth and connected devices. Added to the real-model checks: 19/19. | `tests/test_laptop_files_web.py`, `tests/test_model.py` |
+
+## Things I noticed along the way
+
+- **The personality change had quietly broken some commands.** Aria said "I'll turn the volume down" without doing
+  it. The new real-model checks (#15) caught it, and #14 fixed it. Run `ARIA_MODEL_TESTS=1 .venv/bin/python -m pytest -m model`
+  after changing her instructions.
+- **Tool descriptions filled two thirds of the model's context** on every turn. Routing (#14) brings that down to
+  1,300–2,300 tokens.
+- **Kokoro mispronounced** "C#", "MyNotion" and "VS Code". I could only check this through its phonemes, not by
+  listening, so tell me if something still sounds wrong.
+
+## Left for later (they need you)
+
+- **Spotify likes and playlists** ("like this song", "add to my study playlist"): need extra Spotify permissions,
+  so you'd have to log in to Spotify again once.
+- **Search in MyNotion**: the sidebar is where it belongs, and you have uncommitted work there I didn't want to touch.
+- **German**: Whisper could understand it, but Kokoro has no German voice, so Aria would answer in English.
+- **Pushing to GitHub**: blocked for me. Run `git push origin main` in both repos when you want it online.
+- **The new shortcut** (Ctrl+Alt+N): run `./install_desktop.sh` once to register it.
+- **Weather**: tell Aria once where you live ("I live in Vienna").
+
+## Numbers
+
+- Tests: 215 fast ones (~14 s) + 19 opt-in real-model checks (~40 s).
+- Tool prompt per turn: 5,487 → 1,278 tokens (small talk) / 2,297 (lists).
+- Screen look: never worked (model missing) → ~9 s.
