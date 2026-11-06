@@ -32,7 +32,8 @@ from Engines.Undo import Undo
 from Engines.Recall import Recall
 from Engines.Health import Health
 from Engines.Battery import BatteryWatch
-from Engines.Initiative import Initiative, NOT_NOW_RE
+from Engines.Initiative import Initiative, NOT_NOW_RE, idle_seconds
+from Engines.Posture import Posture
 from Engines.Reminders import Reminders
 from Engines.ScreenEngine import ScreenEngine
 from Engines.Tool_Engine import ToolEngine
@@ -42,7 +43,7 @@ from llm_engine import LLMEngine
 from Engines.Confirm import NO_RE, YES_RE
 from speech_to_text import LOW_CONFIDENCE, STTEngine
 from vision.tray import AriaTray
-from vision.vision import AriaVision
+from vision.vision import AriaVision, GONE_AFTER_SECONDS
 from wakeworddetector import WakeWordDetector
 
 load_dotenv(Path(__file__).parent / "Engines" / ".env")
@@ -389,6 +390,8 @@ class Aria:
             on_user_gone=self._on_user_gone,
             memory=self.memory,
         )
+        self.posture = Posture()
+        self.vision.on_face_sample = self.posture.add
         self.vision.start()
 
         self.state_engine = UserStateEngine(vision=self.vision, llm_model=LLM_MODEL)
@@ -432,6 +435,7 @@ class Aria:
         self.activity = Activity(menu=self.laptop.menu)
         self.focus.activity = self.activity
         self.focus.on_nudge = self._announce
+        self.focus.idle_seconds = idle_seconds
 
         self.tools = ToolEngine(
             spotify=self.spotify,
@@ -452,6 +456,7 @@ class Aria:
             undo=self.undo,
             recall=Recall(self.memory),
             health=Health(self),
+            posture=self.posture,
         )
         print(f"[Tools] {len(self.tools.schemas)} tools available")
 
@@ -495,8 +500,16 @@ class Aria:
             return True
         return self._gone_since is not None and time.time() - self._gone_since >= PRESENCE_REWAKE_AWAY_S
 
+    def _focus_back(self):
+        """Someone is at the desk again: a focus block paused while they were away continues."""
+        focus = getattr(self, "focus", None)
+        msg = focus.user_back() if focus else None
+        if msg:
+            self._announce(msg)
+
     def _on_known_user(self, name: str):
         print(f"[Vision] Known user: {name}")
+        self._focus_back()
         self._vision_user = name
         self.is_user_known = True
         if self._presence_may_wake():
@@ -504,6 +517,7 @@ class Aria:
         self._gone_since = None
 
     def _on_unknown_user(self):
+        self._focus_back()      # recognition is shaky in bad light; any face at the desk counts as back
         if self._unknown_in_progress or not self._presence_may_wake():
             return
         print("[Vision] Unknown person detected")
@@ -558,6 +572,8 @@ class Aria:
     def _on_user_gone(self):
         print("[Vision] User left")
         self._gone_since = time.time()
+        if getattr(self, "focus", None):
+            self.focus.user_left(time.time() - GONE_AFTER_SECONDS)
         self._wake_event.clear()
 
     # ── Reminders ─────────────────────────────────────────────────────────────

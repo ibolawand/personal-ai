@@ -218,6 +218,10 @@ To try one right now: `./aria.sh --chat`, `--followup`, `--break`, `--review` or
   she reminds you once per round: "Psst, it's still focus time — Discord can wait 12 more minutes."
 - **Stats:** every finished block is logged. "How much did I focus this week?" gives the total, the number of blocks and
   the top tasks.
+- **Away from the desk:** if the camera doesn't see you for 3 minutes during a work block (and the keyboard is idle),
+  the block pauses from the moment you left, and lo-fi stops. When you're back (camera or typing) it continues:
+  "Welcome back! I paused your focus on databases while you were away, 12 minutes to go." Time away isn't counted
+  in the stats. After 2 hours away the session ends quietly.
 - "How long is left?", "stop focus".
 
 ## Screen & clipboard — `Engines/ScreenEngine.py`
@@ -366,6 +370,12 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
   usually only a metadata node. Set `CAMERA_INDEX` to force one.
 - One shared camera connection: snapshots reuse the running camera instead of opening it a second time, which fails on Linux.
   If the camera is unplugged or taken by another app, Aria reconnects.
+- **Posture nudges** (`Engines/Posture.py`): from where your face is in the picture, worked out in code (no vision
+  model, so no slowdown). If you sit clearly closer to the screen than usual (face 25% bigger) or lower in the chair
+  (slouching) for 8 of the last 10 minutes, she says one short line, like "Posture check: you're sliding down in your chair."
+  At most every 30 minutes and 6 times a day, and not in quiet hours, while muted, mid-conversation, during a video or call.
+  "Usual" is learnt from the first minutes after you sit down; say "this is my good posture" while sitting well to set it
+  yourself. `ARIA_POSTURE=0` turns it off.
 
 ---
 

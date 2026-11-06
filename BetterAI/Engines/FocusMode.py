@@ -6,6 +6,8 @@ Focus mode — one command that sets up the desk for deep work, and works with j
   - Pomodoro rounds: "4 rounds on databases" = 25 min work / 5 min break, repeating on its own
   - a gentle nudge (once per round) if a distracting app (Discord, YouTube, games…) is in front for 2+ minutes
   - stats: every finished block is logged, "how much did I focus this week?"
+  - away from the desk: when the camera hasn't seen Lala for AWAY_PAUSE_S (and the keyboard is idle too), the
+    work block pauses from the moment they left; it continues with the same time left when they're back
 
 The countdown is a reminder ('focus' = work block ends, 'focusbreak' = break ends), so it survives restarts;
 the rest of the session (round, task, previous notification setting) is kept in ~/.cache/aria/focus.json.
@@ -29,6 +31,9 @@ NOTIFY_SCHEMA = ["org.cinnamon.desktop.notifications", "display-notifications"]
 DISTRACTING = re.compile(r"discord|steam|youtube|netflix|twitch|instagram|tiktok|reddit|whatsapp|telegram|"
                          r"minecraft|roblox|lutris|heroic", re.I)
 DISTRACTED_AFTER_MIN = 2
+AWAY_PAUSE_S = 3 * 60          # gone this long (camera) -> pause; shorter absences don't count
+TYPING_MEANS_HERE_S = 90       # keyboard/mouse used this recently -> they're here, even if the camera lost the face
+GIVE_UP_AFTER_S = 2 * 3600     # paused this long -> the session ends quietly
 
 
 def _gsettings(*args):
@@ -47,6 +52,8 @@ class FocusMode:
         self.memory = memory              # for the focus log (stats)
         self.activity = None              # set by Aria: what's in front, for distraction nudges
         self.on_nudge = None              # set by Aria: fn(text) to say something
+        self.idle_seconds = None          # set by Aria: fn() -> seconds since keyboard/mouse use, or None
+        self._away_since = None
         self.state = self._load()
         self.music_started = self.state.get("music", False)
 
@@ -72,13 +79,17 @@ class FocusMode:
         return items[0] if items else None
 
     @property
+    def paused(self):
+        return self.state.get("paused")       # {"left": seconds, "at": when they left} or None
+
+    @property
     def active(self) -> bool:
         """In a work block (breaks don't count, so Aria may chat during a break)."""
-        return self._block() is not None
+        return self._block() is not None or bool(self.paused)
 
     @property
     def in_session(self) -> bool:
-        return self._block(("focus", "focusbreak")) is not None
+        return self._block(("focus", "focusbreak")) is not None or bool(self.paused)
 
     @property
     def task(self):
@@ -158,16 +169,20 @@ class FocusMode:
 
     def stop(self):
         block = self._block(("focus", "focusbreak"))
-        if not block:
+        if not block and not self.paused:
             return "No focus session is running."
-        self.reminders.cancel_id(block["id"])
-        mins = self._log_block() if block["kind"] == "focus" else 0
+        if block:
+            self.reminders.cancel_id(block["id"])
+        mins = self._log_block() if not block or block["kind"] == "focus" else 0
         self._desk_off()
         self.state = {}
         self._save()
         return f"Focus session ended early" + (f" after {mins} minutes." if mins else ".")
 
     def status(self):
+        if self.paused:
+            left = max(1, round(self.paused["left"] / 60))
+            return f"Focus is paused while you're away: {left} minutes left when you're back."
         block = self._block(("focus", "focusbreak"))
         if not block:
             return "No focus session is running."
@@ -234,7 +249,8 @@ class FocusMode:
 
     def _log_block(self) -> int:
         start = self.state.get("block_start") or time.time()
-        mins = round((time.time() - start) / 60)
+        end = self.paused["at"] if self.paused else time.time()      # time away doesn't count
+        mins = max(0, round((end - start) / 60))
         self.state["total"] = self.state.get("total", 0) + mins
         if self.memory and mins >= 1:
             try:
@@ -243,6 +259,65 @@ class FocusMode:
                 print(f"[Focus] log failed: {e}")
         return mins
 
+    # ── away from the desk ──
+
+    def user_left(self, at=None):
+        """The camera stopped seeing them (at = when the face was last seen)."""
+        self._away_since = at or time.time()
+
+    def user_back(self):
+        """The camera sees someone again. Returns what to say if a paused block continues, else None."""
+        self._away_since = None
+        return self.resume()
+
+    def check_away(self, now=None):
+        """Every 30 s: pause after AWAY_PAUSE_S away; resume if they're typing again; give up after hours."""
+        now = now or time.time()
+        idle = self.idle_seconds() if self.idle_seconds else None
+        typing = idle is not None and idle < TYPING_MEANS_HERE_S
+        if self.paused:
+            if typing:
+                self._away_since = None
+                return self.resume(now)
+            if now - self.paused["at"] > GIVE_UP_AFTER_S:
+                self._log_block()
+                self._desk_off()
+                self.state = {}
+                self._save()
+                print("[Focus] away for hours — session ended")
+            return None
+        block = self._block()
+        if not block or self._away_since is None or typing or now - self._away_since < AWAY_PAUSE_S:
+            return None
+        self.reminders.cancel_id(block["id"])
+        self.state["paused"] = {"left": max(60.0, block["due"] - self._away_since), "at": self._away_since}
+        self.state["resume_music"] = self.music_started
+        self._pause_music()
+        self._save()
+        print(f"[Focus] paused — away since {time.strftime('%H:%M', time.localtime(self._away_since))}")
+        return None
+
+    def resume(self, now=None):
+        p = self.paused
+        if not p:
+            return None
+        now = now or time.time()
+        self.state.pop("paused")
+        self.state["block_start"] = self.state.get("block_start", p["at"]) + (now - p["at"])
+        self.reminders.add(self.task or "focus", "focus", now + p["left"])
+        if self.state.pop("resume_music", False) and self.spotify:
+            try:
+                self.spotify.play()
+                self.music_started = self.state["music"] = True
+            except Exception as e:
+                print(f"[Focus] Spotify resume failed: {e}")
+        self._save()
+        left = max(1, round(p["left"] / 60))
+        what = f" on {self.task}" if self.task else ""
+        if now - p["at"] < 60:          # barely gone: no need to say anything
+            return None
+        return f"Welcome back! I paused your focus{what} while you were away, {left} minutes to go."
+
     # ── distraction nudge ──
 
     def start_watching(self):
@@ -250,6 +325,9 @@ class FocusMode:
             while True:
                 time.sleep(30)
                 try:
+                    back = self.check_away()
+                    if back and self.on_nudge:
+                        self.on_nudge(back)
                     self.check_distraction()
                 except Exception as e:
                     print(f"[Focus] {e}")

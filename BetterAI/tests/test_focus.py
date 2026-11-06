@@ -89,3 +89,70 @@ def test_no_nudge_for_work_apps_or_videos_outside_focus(focus):
     focus.stop()
     focus.activity = types.SimpleNamespace(current=lambda: ("Firefox", 10), watching=lambda: True)
     assert focus.check_distraction() is None          # not in a session
+
+
+# ── away from the desk ──
+
+def _away(fm, minutes_ago):
+    fm.idle_seconds = lambda: 600          # keyboard untouched
+    fm.user_left(time.time() - minutes_ago * 60)
+
+
+def test_leaving_pauses_the_block_and_coming_back_continues_it(focus):
+    focus.spotify.play = lambda: focus.calls.append(("resume",))
+    focus.start(25, "databases")
+    due = focus._block()["due"]
+    _away(focus, 4)
+    focus.check_away()
+    assert focus.paused and focus._block() is None and focus.active and focus.in_session
+    assert abs(focus.paused["left"] - (due - (time.time() - 240))) < 2      # counted from when they left
+    assert ("pause",) in focus.calls
+    assert "paused while you're away" in focus.status()
+    msg = focus.user_back()
+    assert msg.startswith("Welcome back! I paused your focus on databases") and "29 minutes to go" in msg
+    assert not focus.paused and focus._block() is not None and ("resume",) in focus.calls
+
+
+def test_short_absences_and_typing_dont_pause(focus):
+    focus.start(25)
+    _away(focus, 2)                                  # under 3 minutes
+    focus.check_away()
+    assert not focus.paused
+    _away(focus, 5)
+    focus.idle_seconds = lambda: 10                  # camera lost the face, but they're typing
+    focus.check_away()
+    assert not focus.paused
+
+
+def test_typing_resumes_a_paused_block(focus):
+    focus.start(25)
+    _away(focus, 5)
+    focus.check_away()
+    focus.idle_seconds = lambda: 5
+    assert "Welcome back" in focus.check_away()
+    assert focus._block() is not None
+
+
+def test_time_away_is_not_logged(focus, memory):
+    focus.start(25, "c#")
+    focus.state["block_start"] = time.time() - 30 * 60       # started 30 min ago...
+    _away(focus, 20)                                         # ...left after 10
+    focus.check_away()
+    assert focus.stop() == "Focus session ended early after 10 minutes."
+    assert not focus.in_session
+
+
+def test_paused_for_hours_ends_the_session(focus):
+    focus.start(25)
+    _away(focus, 5)
+    focus.check_away()
+    focus.check_away(now=time.time() + 3 * 3600)
+    assert not focus.in_session
+
+
+def test_breaks_are_not_paused(focus):
+    focus.start(25, rounds=2)
+    finish_block(focus)
+    _away(focus, 5)
+    focus.check_away()
+    assert not focus.paused and focus._block(("focusbreak",))

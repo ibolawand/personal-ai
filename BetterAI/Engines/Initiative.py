@@ -183,6 +183,7 @@ class Initiative:
             self._present_since = self._present_since or now
         else:
             self._present_since = None
+        self._posture(now, present)
         why = self._blocked(now, present)
         if why:
             if why != self._last_reason:
@@ -196,6 +197,24 @@ class Initiative:
             self._save()
             print(f"[Initiative] starting a conversation: {opener['kind']}")
             self.aria.start_initiative(opener)
+
+    def _posture(self, now, present):
+        """A one-line posture nudge (Engines/Posture.py). Allowed during focus, but not while she shouldn't speak."""
+        a = self.aria
+        posture = getattr(a, "posture", None)
+        if not posture or not self.enabled or not present or a.awake or a.muted or a._shutting_down:
+            return
+        if in_quiet_hours():
+            return
+        activity = getattr(a, "activity", None)
+        if activity and activity.watching():
+            return
+        if screen_locked() or fullscreen_app() or mic_in_use_by_others():
+            return
+        line = posture.nudge(now)
+        if line:
+            print(f"[Posture] {line}")
+            a._announce(line)
 
     def _present(self) -> bool:
         vision = self.aria.vision

@@ -45,7 +45,7 @@ class ToolEngine:
     def __init__(self, spotify=None, arduino=None, vision=None, ha=None,
                  reminders=None, focus=None, screen=None, laptop=None, files=None, notion=None,
                  owner_check=None, initiative=None, memory_note=None, activity=None, weather=None, undo=None,
-                 recall=None, health=None):
+                 recall=None, health=None, posture=None):
         self.spotify = spotify
         self.arduino = arduino
         self.vision = vision
@@ -64,6 +64,7 @@ class ToolEngine:
         self.undo = undo
         self.recall = recall
         self.health = health
+        self.posture = posture
         self._registry = {t["schema"]["function"]["name"]: t for t in self._build()}
 
     # Tools that touch the laptop, files, clipboard/screen or phone — gated by owner_check
@@ -115,6 +116,8 @@ class ToolEngine:
                     "delete_event", "open_mynotion", "daily_briefing"}),
         "screen": (r"\b(screen|see|look|looking|copied|clipboard|this error|error|camera|who'?s|who is|in front)\b",
                    {"look_at_screen", "look", "read_clipboard", "copy_to_clipboard"}),
+        "posture": (r"\b(posture|slouch\w*|sitting|sit (?:up|straight|like this)|how i'?m sitting)\b",
+                    {"remember_good_posture"}),
         "focus": (r"\b(focus|pomodoro|study|studying|deep work|concentrat\w*|how long|screen time|break|rounds?)\b",
                   {"start_focus", "stop_focus", "focus_status", "focus_stats", "screen_time"}),
         "memory": (r"\b(remember|forget|know about me|memory|talk(?:ed)? about|mention(?:ed)?|said|yesterday|"
@@ -228,6 +231,12 @@ class ToolEngine:
                 _tool("focus_stats", "How much Lala focused ('how much did I focus this week/today?').",
                       fm.stats, optional=("period",), period=("string", "'today', 'week' or 'month'")),
             ]
+
+        if self.posture:
+            tools += [_tool("remember_good_posture",
+                            "Lala is sitting the way they want to sit ('this is my good posture', 'remember how I'm "
+                            "sitting'): remember it from the camera, so you can tell them when they slouch or lean "
+                            "in too close.", self.posture.set_reference)]
 
         if self.screen:
             sc = self.screen

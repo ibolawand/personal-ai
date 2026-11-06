@@ -82,6 +82,7 @@ class AriaVision:
         self._frame          = None          # latest frame from the loop, shared with snapshot()
         self._frame_lock     = threading.Lock()
         self._camera_index   = None
+        self.on_face_sample  = None          # fn(width_share, centre_y_share) per frame with a face (posture)
 
         os.makedirs(FACES_DIR, exist_ok=True)
 
@@ -279,6 +280,12 @@ class AriaVision:
 
             if len(dets) > 0:
                 last_face_at       = time.time()
+                if self.on_face_sample:
+                    fx, fy, fw, fh = max(dets, key=lambda d: d[2])     # the biggest face is the one at the desk
+                    try:
+                        self.on_face_sample(fw / frame.shape[1], (fy + fh / 2) / frame.shape[0])
+                    except Exception as e:
+                        print(f"[Vision] face sample: {e}")
                 consecutive_full  += 1
 
                 if consecutive_full >= CONFIRM_PRESENT:
