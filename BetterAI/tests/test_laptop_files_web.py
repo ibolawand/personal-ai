@@ -152,3 +152,18 @@ def test_spotify_errors_become_sentences():
     def boom():
         raise spotipy.SpotifyException(403, -1, "Player command failed: Premium required", reason="PREMIUM_REQUIRED")
     assert "Premium" in boom()
+
+
+def test_network_status_is_read_only(monkeypatch):
+    calls = []
+    outputs = {"general": "enabled\n", "connection": "Home-5G:802-11-wireless\nlo:loopback\n",
+               "show": "Controller x\n\tPowered: yes\n", "devices": "Device AA:BB Galaxy Buds\n"}
+
+    def fake_run(cmd, timeout=5):
+        calls.append(cmd)
+        key = next(k for k in outputs if k in cmd)
+        return outputs[key]
+    monkeypatch.setattr(L, "_run", fake_run)
+    out = L.LaptopEngine(None).network_status()
+    assert out == "Wi-Fi is on, connected to Home-5G; Bluetooth is on, connected to Galaxy Buds."
+    assert not any(c[:3] == ["nmcli", "radio", "wifi"] for c in calls)        # never switches anything

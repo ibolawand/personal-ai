@@ -54,6 +54,7 @@ COMMANDS = [
     ("find the pdf about gear trains", "search_file_contents|find_files"),
     ("what did we talk about yesterday?", "recall_conversation"), ("what's 17% of 2340", "calculate"),
     ("how many miles is 42 km", "convert_units"), ("how much battery do I have", "laptop_status"),
+    ("is wifi on?", "network_status"),
 ]
 
 

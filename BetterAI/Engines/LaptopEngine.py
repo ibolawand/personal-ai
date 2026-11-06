@@ -375,6 +375,33 @@ class LaptopEngine:
             pass
         return "Laptop: " + "; ".join(parts) + "." if parts else "Couldn't read laptop status."
 
+    def network_status(self):
+        """Read-only: Wi-Fi on/off and which network, Bluetooth on/off and connected devices.
+        ('is wifi on?' used to call set_wifi, which switches it instead of checking.)"""
+        parts = []
+        try:
+            radio = _run(["nmcli", "-t", "-f", "WIFI", "general"]).strip()
+            active = [l.split(":") for l in _run(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show", "--active"]).splitlines()]
+            wifi = [n for n, t in (a[:2] for a in active if len(a) >= 2) if "wireless" in t]
+            wired = [n for n, t in (a[:2] for a in active if len(a) >= 2) if "ethernet" in t]
+            if radio != "enabled":
+                parts.append("Wi-Fi is off")
+            else:
+                parts.append(f"Wi-Fi is on, connected to {wifi[0]}" if wifi else "Wi-Fi is on but not connected")
+            if wired:
+                parts.append("cable connected")
+        except Exception:
+            parts.append("couldn't read Wi-Fi")
+        try:
+            show = _run(["bluetoothctl", "show"])
+            on = "Powered: yes" in show
+            devices = re.findall(r"Device \S+ (.+)", _run(["bluetoothctl", "devices", "Connected"])) if on else []
+            parts.append("Bluetooth is " + ("on" if on else "off") +
+                         (f", connected to {', '.join(devices)}" if devices else ""))
+        except Exception:
+            pass
+        return "; ".join(parts) + "."
+
     def set_wifi(self, on=True):
         on = str(on).lower() not in ("false", "0", "no", "off")
         if on:

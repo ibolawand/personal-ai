@@ -98,7 +98,8 @@ class ToolEngine:
                    r"installed|notification|program)\b",
                    {"open_app", "find_app", "switch_to_app", "close_app", "list_open_windows", "set_laptop_volume",
                     "change_laptop_volume", "mute_laptop", "switch_audio_output", "media_control", "lock_screen",
-                    "power", "laptop_status", "set_wifi", "set_bluetooth", "connect_bluetooth", "open_website",
+                    "power", "laptop_status", "network_status", "set_wifi", "set_bluetooth", "connect_bluetooth",
+                    "open_website",
                     "notify_desktop", "open_mynotion"}),
         "files": (r"\b(files?|pdfs?|docs?|documents?|folders?|downloads?|slides?|powerpoint|word|summari[sz]e|"
                   r"read|assignment|notebook|homework|worksheet|tidy|where is|where'?s|find|open (?:the|it|that)|"
@@ -272,7 +273,11 @@ class ToolEngine:
                 _tool("power", "Suspend, shut down or restart the laptop (asks to confirm).",
                       lp.power, action=("string", "suspend, shutdown or restart")),
                 _tool("laptop_status", "Laptop battery, temperatures, RAM and disk space.", lp.laptop_status),
-                _tool("set_wifi", "Turn laptop Wi-Fi on or off.", lp.set_wifi, on=("boolean", "true = on")),
+                _tool("network_status", "Check (without changing anything) whether Wi-Fi and Bluetooth are on and "
+                      "what's connected: 'is wifi on?', 'am I connected?', 'are my earbuds connected?'.",
+                      lp.network_status),
+                _tool("set_wifi", "Turn laptop Wi-Fi on or off — only when Lala asks to switch it, not to check it.",
+                      lp.set_wifi, on=("boolean", "true = on")),
                 _tool("set_bluetooth", "Turn laptop Bluetooth on or off.", lp.set_bluetooth, on=("boolean", "true = on")),
                 _tool("connect_bluetooth", "Connect a paired Bluetooth device, e.g. earbuds.",
                       lp.connect_bluetooth, device=("string", "device name")),

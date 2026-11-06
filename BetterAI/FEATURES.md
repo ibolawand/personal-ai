@@ -249,6 +249,7 @@ To try one right now: `./aria.sh --chat`, `--followup`, `--break`, `--review` or
     (and wakes up to say it). Resets once the charger is connected.
   - suspend, shutdown and restart (asks first)
 - **Connections:**
+  - "Is Wi-Fi on?" / "are my earbuds connected?" only *checks* (it used to switch Wi-Fi instead)
   - Wi-Fi on/off (turning it off asks first)
   - Bluetooth on/off
   - "connect my earbuds" (connects a paired device)
