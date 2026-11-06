@@ -71,8 +71,8 @@ class ScreenEngine:
         """Load the chat model again in the background, so Aria's next reply doesn't wait for it."""
         def load():
             try:
-                from llm_engine import LLM_MODEL_DEFAULT, NUM_CTX
-                ollama.generate(model=LLM_MODEL_DEFAULT, prompt="", options={"num_ctx": NUM_CTX})
+                from llm_engine import KEEP_ALIVE, LLM_MODEL_DEFAULT, chat_options
+                ollama.generate(model=LLM_MODEL_DEFAULT, prompt="", options=chat_options(), keep_alive=KEEP_ALIVE)
             except Exception as e:
                 print(f"[Screen] chat model preload failed: {e}")
         threading.Thread(target=load, daemon=True).start()

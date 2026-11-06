@@ -275,6 +275,7 @@ class VoiceEngine:
         self._interrupted_text = None
         self._stop_interrupt_listener = False
         self._flush_audio_queue()
+        self.first_audio_at = None       # when the first sentence started playing (speed log)
 
         interrupt_thread = threading.Thread(target=self._listen_for_interrupt, daemon=True)
         interrupt_thread.start()
@@ -293,6 +294,8 @@ class VoiceEngine:
                 pause = max(0.12, pause + tone["pause"])
                 silence = np.zeros(int(sr * pause), dtype=np.float32)
                 self.audio_queue.put((np.concatenate([audio_np, silence]), sr))
+                if self.first_audio_at is None:
+                    self.first_audio_at = time.time()
 
         while self.audio_queue.unfinished_tasks and not self._interrupted:
             time.sleep(0.05)

@@ -78,6 +78,21 @@ class Health:
             return True, "Wikipedia only — for recent things start SearXNG: cd searxng && ./start.sh"
         out.append(_check("Web search", web))
 
+        def speed():
+            import statistics
+            from Engines import Diagnostics
+            stt = getattr(a, "stt", None)
+            where = f"speech recognition on the {stt.device.upper()}" if getattr(stt, "device", None) else ""
+            starts = [t["starts_after"] for t in Diagnostics.read(7) if t["type"] == "timing" and "starts_after" in t]
+            if not starts:
+                return True, where or "no spoken replies measured yet"
+            typical = statistics.median(starts)
+            line = f"her voice starts about {typical:.1f} s after you stop talking" + (f", {where}" if where else "")
+            if typical > 4:
+                return False, line + " — slow; run ./aria.sh --report to see where the time goes"
+            return True, line
+        out.append(_check("Speed", speed))
+
         def files():
             import sqlite3
             from Engines.FilesEngine import INDEX_FILE

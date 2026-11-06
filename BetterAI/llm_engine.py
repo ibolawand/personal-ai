@@ -11,6 +11,16 @@ LLM_MODEL_DEFAULT = "qwen3:8b"
 # A tool result starting with this is already the answer for Lala (e.g. the vision model describing the screen):
 # it's returned as is, skipping another round with the chat model (which would first have to reload).
 FINAL_PREFIX = "FINAL ANSWER: "
+# Every call to the chat model must use the same context size and keep-alive: a call with a different num_ctx makes
+# Ollama reload the model (~3 s), and one without keep_alive lets it unload after 5 idle minutes (~3 s cold start).
+# Measured: both happened on most turns (the mood check runs on every turn). The vision model still evicts it when
+# it needs the memory; ScreenEngine loads it back afterwards.
+KEEP_ALIVE = int(os.environ.get("ARIA_KEEP_ALIVE", -1))     # seconds; -1 = keep it loaded
+
+
+def chat_options(**extra) -> dict:
+    """Options for any call to the chat model (temperature etc. on top)."""
+    return {"num_ctx": NUM_CTX, **extra}
 
 
 class LLMEngine:
@@ -18,7 +28,7 @@ class LLMEngine:
         self.model = model
         # qwen3 "thinking" adds seconds of latency per turn; off by default for a voice assistant
         self.think = think
-        self.options = {"num_ctx": NUM_CTX}
+        self.options = chat_options()
 
     def _messages(self, user_input, history, system_prompt):
         return [{"role": "system", "content": system_prompt}] + list(history) + \
@@ -26,7 +36,7 @@ class LLMEngine:
 
     def chat_stream(self, user_input: str, history: list, system_prompt: str):
         messages = self._messages(user_input, history, system_prompt)
-        for chunk in ollama.chat(model=self.model, messages=messages, stream=True, think=self.think, options=self.options):
+        for chunk in ollama.chat(model=self.model, messages=messages, stream=True, think=self.think, options=self.options, keep_alive=KEEP_ALIVE):
             tok = chunk["message"]["content"]
             if tok:
                 yield tok
@@ -36,8 +46,8 @@ class LLMEngine:
         options = dict(self.options, **({"temperature": temperature} if temperature is not None else {}))
         try:
             if stream:
-                return ollama.chat(model=self.model, messages=messages, stream=True, think=self.think, options=options)
-            response = ollama.chat(model=self.model, messages=messages, think=self.think, options=options)
+                return ollama.chat(model=self.model, messages=messages, stream=True, think=self.think, options=options, keep_alive=KEEP_ALIVE)
+            response = ollama.chat(model=self.model, messages=messages, think=self.think, options=options, keep_alive=KEEP_ALIVE)
             return response["message"]["content"].strip()
         except Exception as e:
             return f"Error: {e}"
@@ -98,10 +108,10 @@ class LLMEngine:
         """One model call. Streams when on_text is given; returns a message with .content/.tool_calls."""
         if not on_text:
             return ollama.chat(model=self.model, messages=messages, tools=tools or None,
-                               think=self.think, options=self.options).message
+                               think=self.think, options=self.options, keep_alive=KEEP_ALIVE).message
         content, calls = [], []
         for chunk in ollama.chat(model=self.model, messages=messages, tools=tools or None,
-                                 think=self.think, options=self.options, stream=True):
+                                 think=self.think, options=self.options, keep_alive=KEEP_ALIVE, stream=True):
             m = chunk.message
             if m.content:
                 content.append(m.content)
@@ -127,7 +137,7 @@ Keep real lasting facts (name, people, hobbies, preferences, school/work, routin
 
 Reply ONLY with JSON: {{"junk": [numbers of the facts that are not lasting facts]}}"""
         try:
-            response = ollama.chat(model=self.model, think=True, format="json",
+            response = ollama.chat(model=self.model, think=True, format="json", options=chat_options(), keep_alive=KEEP_ALIVE,
                                    messages=[{"role": "user", "content": prompt}])
             data = json.loads(response["message"]["content"])
             return sorted({int(i) for i in data.get("junk", []) if str(i).isdigit() and 0 <= int(i) < len(facts)})
@@ -174,7 +184,7 @@ Reply ONLY with JSON: {{"facts": ["...", ...], "topics": ["one or two word topic
 "followups": [{{"about": "...", "when": "...", "question": "..."}}, ...]}}
 Most conversations have no new facts and no follow-ups: then use empty lists."""
         try:
-            response = ollama.chat(model=self.model, think=think, format="json",
+            response = ollama.chat(model=self.model, think=think, format="json", options=chat_options(), keep_alive=KEEP_ALIVE,
                                    messages=[{"role": "user", "content": prompt}])
             data = json.loads(response["message"]["content"])
             facts = [f.strip() for f in data.get("facts", []) if isinstance(f, str) and f.strip()]

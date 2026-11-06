@@ -409,9 +409,25 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
 - "Are your systems okay?" / "why can't you see my screen?" checks the language and vision models, MyNotion,
   Spotify login, camera, microphone, voice, weather city, web search and the document index, and says how to fix
   whatever is missing. The same check is written to the log (`[Health] ✓/✗ …`) every time Aria starts.
+  It also says how quickly her voice starts after you stop talking, and whether speech recognition runs on the GPU.
+
+## Speed & problem log — `Engines/Diagnostics.py`
+
+- **Speed** (measured on this laptop, RTX 4070):
+  - Speech recognition runs on the GPU: 0.2 s per sentence instead of 2.6 s on the CPU, same accuracy
+    (`STT_DEVICE=cpu` to force the CPU).
+  - The end of what you say is 1.2 s of quiet instead of 2 s (`STT_SILENCE_S` to change it).
+  - The chat model stays loaded and every call uses the same context size. Before, it unloaded after 5 quiet minutes
+    (3.3 s to load again) and reloaded whenever the background mood check ran with a different context size
+    (3.2 s, on most turns). `ARIA_KEEP_ALIVE` (seconds) if you ever want it to unload.
+- **The log** (`~/.cache/aria/diagnostics.jsonl`, stays on this computer): for every spoken reply, how long each step
+  took; and every problem: misheard words she had to ask about, waking up when nobody spoke, you correcting her
+  ("no, I said…"), claimed-but-not-done actions, retries, rewritten replies, failed tools and crashes.
+- `./aria.sh --report` (or `--report 30`) shows typical and slow times, the slowest replies, problem counts and the
+  latest problems. Bring it to a fixing session.
 
 - **Checks with the real model** (`tests/test_model.py`, opt-in): `ARIA_MODEL_TESTS=1 .venv/bin/python -m pytest -m model`
-  runs 15 everyday commands and 3 small-talk lines through qwen3 (devices are stand-ins) in about 40 seconds. Run it
+  runs 19 everyday commands and 3 small-talk lines through qwen3 (devices are stand-ins) in about 40 seconds. Run it
   after changing the system prompt or tools. Expect an occasional single miss: the model isn't fully deterministic.
 
 ## Safety

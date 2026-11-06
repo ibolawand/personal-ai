@@ -16,7 +16,7 @@ import time
 
 import ollama
 
-from llm_engine import FINAL_PREFIX, LLM_MODEL_DEFAULT
+from llm_engine import FINAL_PREFIX, KEEP_ALIVE, LLM_MODEL_DEFAULT, chat_options
 
 STATE_FILE = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "aria", "quiz.json")
 CHUNK_CHARS = 5000           # how much of the source one quiz is made from (fits the model's context)
@@ -178,7 +178,7 @@ Text:
 
 Reply ONLY with JSON: {{"questions": [{{"q": "question?", "a": "short answer"}}]}}"""
         try:
-            resp = ollama.chat(model=self.model, think=False, format="json", options={"temperature": 0.4},
+            resp = ollama.chat(model=self.model, think=False, format="json", options=chat_options(temperature=0.4), keep_alive=KEEP_ALIVE,
                                messages=[{"role": "user", "content": prompt}])
             data = json.loads(resp["message"]["content"])
         except Exception as e:
@@ -203,7 +203,7 @@ Student said: {given}
 Is the student's answer essentially correct (same meaning, a synonym, or more detail is fine; vague or a different
 thing is not)? Reply ONLY with JSON: {{"correct": true or false}}"""
         try:
-            resp = ollama.chat(model=self.model, think=False, format="json", options={"temperature": 0},
+            resp = ollama.chat(model=self.model, think=False, format="json", options=chat_options(temperature=0), keep_alive=KEEP_ALIVE,
                                messages=[{"role": "user", "content": prompt}])
             return bool(json.loads(resp["message"]["content"]).get("correct")), ""
         except Exception as e:

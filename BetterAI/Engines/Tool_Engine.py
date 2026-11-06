@@ -167,6 +167,8 @@ class ToolEngine:
             return str(result) if result is not None else "Done."
         except Exception as e:
             print(f"[Tools] {name} failed: {e}")
+            from Engines import Diagnostics
+            Diagnostics.problem("tool_error", f"{name}: {e}")
             return f"{name} failed: {e}"
 
     # ── Registry ──────────────────────────────────────────────────────────────

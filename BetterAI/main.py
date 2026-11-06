@@ -35,6 +35,7 @@ from Engines.Battery import BatteryWatch
 from Engines.Initiative import Initiative, NOT_NOW_RE, idle_seconds
 from Engines.Posture import Posture
 from Engines.Quiz import Quiz
+from Engines import Diagnostics
 from Engines.Reminders import Reminders
 from Engines.ScreenEngine import ScreenEngine
 from Engines.Tool_Engine import ToolEngine
@@ -155,6 +156,9 @@ CLAIM_RE = re.compile(r"\b(i'?ll|i will|i'?ve|i have|done|turned|added|removed|s
                       r"turning|lowering|raising|adding|setting|opening|closing|starting|switching|muting|"
                       r"lowered|raised|coming right up)\b", re.I)
 # "what?" / "huh?" after Aria said something: she rephrases it (the model tends to ask "what's on your mind?")
+# "no, I said…" / "that's wrong": goes into the problem log (Engines/Diagnostics.py), the turn itself runs normally
+CORRECTION_RE = re.compile(r"^\s*(?:no+[,.!]?\s+)?(?:i said|i meant|i asked|that'?s (?:not what i (?:said|meant|asked)|wrong|"
+                           r"not right)|you misheard|you got it wrong|wrong)\b|^\s*no+[,.!]?\s+not\b", re.I)
 CONFUSED_RE = re.compile(r"^\s*(?:what|huh|wdym|what do you mean|what\?+|sorry\??|pardon|come again)\s*[?!.]*\s*$", re.I)
 
 # In a casual chat Aria started, the model only gets tools when Lala's message is clearly a request,
@@ -790,6 +794,7 @@ class Aria:
                 not (self._initiative_active and self._initiative_active["kind"] == "chat"):
             # it *said* it did it but called no tool (small models do this): once more, firmly
             print("[Tools] reply claims an action without a tool call — retrying")
+            Diagnostics.problem("claimed_no_tool", f"{user_input} -> {reply[:120]}")
             reply, used = self.llm.chat_with_tools(
                 prompt + "\n[You must call the right tool for this now. Don't just say it's done.]",
                 self._history(), system_prompt, self.tools.schemas if routed else schemas, self.tools.execute)
@@ -797,6 +802,7 @@ class Aria:
                 and not (self._initiative_active and self._initiative_active["kind"] == "chat"):
             # the tool it needed wasn't offered for this message: ask again with every tool
             print("[Tools] reply sounds like a missing tool — retrying with all tools")
+            Diagnostics.problem("missing_tool", f"{user_input} -> {reply[:120]}")
             reply, used = self.llm.chat_with_tools(prompt, self._history(), system_prompt, self.tools.schemas,
                                                    self.tools.execute)
         if not reply.strip() and not used:
@@ -809,6 +815,7 @@ class Aria:
         if robotic or repeated:
             # a stock opener ("I'm here to help…") or a copy of her last answer: write it again, up to twice
             print(f"[Aria] {'stock assistant reply' if robotic else 'repeated reply'} — rewriting it")
+            Diagnostics.problem("rewritten", f"{'stock' if robotic else 'repeat'}: {reply[:120]}")
             avoid = " / ".join(f'"{p}"' for p in self._last_replies())
             for temperature in (0.8, 1.0):
                 retry = tidy_reply(self.llm.chat(
@@ -831,6 +838,8 @@ class Aria:
                                                "Sorry, lost my thread there. What did you mean?"])
         if not reply.strip():
             # the model sometimes returns nothing (e.g. asked for something it has no tool for)
+            if not used:
+                Diagnostics.problem("empty_reply", user_input)
             reply = (used[-1][1] if used else "Sorry, I can't do that one.")[:300]
         if review_item:
             self._review["i"] += 1
@@ -875,6 +884,7 @@ class Aria:
             print(f"Aria: {response}")
             return response, used, self.speak(response)
 
+        t0 = time.time()
         sentences = queue.Queue()
         streamer = SentenceStreamer(sentences.put, previous=self._last_replies(),
                                    keep_offers=lambda: bool(self.confirm.pending))
@@ -895,6 +905,7 @@ class Aria:
         worker.start()
         interrupted = None
         first = sentences.get()          # first finished sentence, or None if nothing was streamed
+        first_at = time.time()
         if first is not None:
             if self.arduino:
                 self.arduino.send_command()
@@ -914,7 +925,18 @@ class Aria:
             interrupted = self.speak(response)   # confirmations, "open my calendar", errors…
         elif streamer.saw_code and not interrupted and "clipboard" in response.lower():
             self.voice.speak("The code is on your clipboard.")
+        self._log_timing(t0, first_at, used)
         return response, used, interrupted
+
+    def _log_timing(self, t0, first_at, used):
+        """Speed log for spoken turns (Engines/Diagnostics.py): only when the question came in by voice."""
+        heard, self._heard_timing = getattr(self, "_heard_timing", None), None
+        audio_at = getattr(self.voice, "first_audio_at", None)
+        if not heard or not audio_at or audio_at < t0:
+            return
+        Diagnostics.timing(silence_wait=heard.get("silence_wait", 0), transcribe=heard.get("transcribe", 0),
+                           first_sentence=first_at - t0, first_audio=audio_at - t0,
+                           tools=[name for name, _ in used][:4])
 
     def _open_in_notion(self, text: str):
         """'open my calendar' / 'show me the shopping list' -> MyNotion, if it names the calendar or
@@ -1183,6 +1205,7 @@ class Aria:
                 return None
             return text                            # they just said something new
         if confidence < LOW_CONFIDENCE and not matches_phrase(SLEEP_PHRASES + SHUTDOWN_PHRASES, text):
+            Diagnostics.problem("misheard", f"{text} ({confidence:.2f})")
             self._unsure_heard = text
             self.speak(f"Sorry, did you say: {text}?")
             return None
@@ -1248,6 +1271,7 @@ class Aria:
             last_interaction = time.time()
             pending_input = None
             prompted = False  # text mode: print the prompt only once per turn
+            said_anything = False   # woke by the wake word but nobody spoke -> "woke_for_nothing" in the problem log
 
             # ── Conversation loop ──────────────────────────────────────
             while True:
@@ -1261,6 +1285,8 @@ class Aria:
                 remaining = timeout - (time.time() - last_interaction)
                 if remaining <= 0:
                     print("\n[Wake] Going back to sleep.")
+                    if not said_anything and init is None and self.option == 2:
+                        Diagnostics.problem("woke_for_nothing")
                     # say it in voice mode; in text mode the orb dimming is enough
                     self._go_to_sleep("Going to sleep." if self.option == 2 else None)
                     break
@@ -1282,6 +1308,7 @@ class Aria:
                 else:
                     # short windows so typed input and sleep requests are noticed quickly
                     user_input = self.stt.listen(start_timeout=min(remaining, 3))
+                    self._heard_timing = dict(getattr(self.stt, "last_timing", {}) or {}) if user_input else None
                     if user_input:
                         user_input = self._check_heard(user_input, self.stt.last_confidence)
                         if user_input is None:
@@ -1293,6 +1320,9 @@ class Aria:
 
                 print(f"You: {user_input}")
                 self.ui.message("user", user_input)
+                said_anything = True
+                if CORRECTION_RE.search(user_input):
+                    Diagnostics.problem("corrected", f"{user_input}  (after: {self._last_reply[:100]})")
                 timeout = SLEEP_TIMEOUT
 
                 if self._initiative_active and not self._initiative_active.get("answered"):
@@ -1326,6 +1356,7 @@ class Aria:
                     timeout = CHAT_TIMEOUT if response.rstrip().endswith("?") else SLEEP_TIMEOUT
                 except Exception as e:
                     print(f"[Error] {e}")
+                    Diagnostics.problem("crash", f"{type(e).__name__}: {e}")
                     self.speak("Something went wrong.")
                     continue
 

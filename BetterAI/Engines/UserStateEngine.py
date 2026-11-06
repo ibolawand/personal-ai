@@ -22,6 +22,7 @@ import base64
 import cv2
 import ollama
 from Engines.ScreenEngine import VISION_MODEL
+from llm_engine import KEEP_ALIVE, chat_options
 from dataclasses import dataclass
 
 
@@ -112,6 +113,8 @@ Examples of when NOT to flag: normal requests, casual neutral chat, mild jokes, 
                 messages=[{"role": "user", "content": prompt}],
                 format="json",
                 think=False,
+                options=chat_options(),          # same context size as the chat, or Ollama reloads the model
+                keep_alive=KEEP_ALIVE,
             )
             raw = response['message']['content'].strip()
             raw = raw.replace("```json", "").replace("```", "").strip()
