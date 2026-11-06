@@ -381,6 +381,10 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
   Spotify login, camera, microphone, voice, weather city, web search and the document index, and says how to fix
   whatever is missing. The same check is written to the log (`[Health] ✓/✗ …`) every time Aria starts.
 
+- **Checks with the real model** (`tests/test_model.py`, opt-in): `ARIA_MODEL_TESTS=1 .venv/bin/python -m pytest -m model`
+  runs 15 everyday commands and 3 small-talk lines through qwen3 (devices are stand-ins) in about 40 seconds. Run it
+  after changing the system prompt or tools. Expect an occasional single miss: the model isn't fully deterministic.
+
 ## Safety
 
 - Aria can only run actions that are written in code. The model never gets a shell.

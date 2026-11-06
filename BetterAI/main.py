@@ -138,7 +138,9 @@ ACTION_RE = re.compile(
     r"connect|disconnect|save|note|write)\b|\b(?:i (?:bought|got|did|finished|paid|called|sent|cleaned|washed))\b",
     re.I)
 CLAIM_RE = re.compile(r"\b(i'?ll|i will|i'?ve|i have|done|turned|added|removed|set|ticked|opened|closed|playing|"
-                      r"paused|started|switched|muted|locked|moved|cancel+ed|saved|is on|are on|on it|got it)\b", re.I)
+                      r"paused|started|switched|muted|locked|moved|cancel+ed|saved|is on|are on|on it|got it|"
+                      r"turning|lowering|raising|adding|setting|opening|closing|starting|switching|muting|"
+                      r"lowered|raised|coming right up)\b", re.I)
 # "what?" / "huh?" after Aria said something: she rephrases it (the model tends to ask "what's on your mind?")
 CONFUSED_RE = re.compile(r"^\s*(?:what|huh|wdym|what do you mean|what\?+|sorry\??|pardon|come again)\s*[?!.]*\s*$", re.I)
 
