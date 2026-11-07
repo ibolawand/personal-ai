@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from email import policy
 from email.message import EmailMessage
 from email.parser import BytesParser
-from email.utils import getaddresses, parseaddr, parsedate_to_datetime
+from email.utils import formatdate, getaddresses, make_msgid, parseaddr, parsedate_to_datetime
 
 from Engines.MailAccount import mail_password
 from Engines.MailFilter import filter_reason
@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS mail_message (
   from_addr TEXT,
   to_addrs TEXT,
   cc TEXT,
+  reply_to TEXT,
   subject TEXT,
   date TEXT,
   preview TEXT,
@@ -79,8 +80,13 @@ CREATE TABLE IF NOT EXISTS mail_state (
 );
 """
 
+# columns added after the first version (MyNotion's MAIL_COLUMNS); added to older databases
+MAIL_COLUMNS = [("mail_message", "reply_to", "TEXT")]
+
 IMAP_HOST = "imap.gmail.com"
 SMTP_HOST = "smtp.gmail.com"
+OFFLINE_RETRY_S = 60                   # no internet: try the outbox again this often…
+OFFLINE_TRIES = 120                    # …for up to two hours
 UNDO_SEND_S = 10                       # Aria's mail waits this long in the outbox, so "undo" can still stop it
 PRIMARY_QUERY = "category:primary newer_than:90d"
 FRESH_FOR = timedelta(minutes=5)       # MyNotion syncs every 2 min; older than this and she checks Gmail herself
@@ -109,6 +115,27 @@ def _content(part) -> str:
         return part.get_content()
     except Exception:
         return (part.get_payload(decode=True) or b"").decode("utf-8", "replace")
+
+
+def _send_problem(e: Exception) -> str | None:
+    """What went wrong sending, in plain words; None when it's just no internet (try again later)."""
+    if isinstance(e, smtplib.SMTPAuthenticationError):
+        return "Gmail didn't accept the app password. Connect again in MyNotion's Inbox."
+    if isinstance(e, smtplib.SMTPRecipientsRefused):
+        return "Gmail says the address is wrong."
+    if isinstance(e, smtplib.SMTPResponseException):
+        if e.smtp_code == 552:
+            return "it's too big for Gmail (the limit is 25 MB)."
+        text = e.smtp_error.decode(errors="replace") if isinstance(e.smtp_error, bytes) else str(e.smtp_error)
+        return f"Gmail refused it ({e.smtp_code}: {text[:80]})."
+    if isinstance(e, (OSError, TimeoutError)):         # DNS, refused/reset connection, timeouts, server gone away
+        return None
+    return str(e)[:120]
+
+
+def _addr_list(header) -> str:
+    """'Name <addr>, addr' like MyNotion writes it."""
+    return ", ".join(f"{n} <{a}>" if n else a for n, a in getaddresses([str(header or "")]) if a)
 
 
 def _labels(people: dict) -> list[str]:
@@ -147,7 +174,12 @@ class MailEngine:
         self._waiting = None             # client_id of the mail in its undo window
         self._bg = lambda fn: threading.Thread(target=fn, daemon=True).start()
         self._sleep = time.sleep
+        self._tries = {}                 # client_id -> offline attempts so far
         with self._conn() as c:
+            for table, column, kind in MAIL_COLUMNS:       # older databases first, then the indexes/tables
+                cols = [r[1] for r in c.execute(f"PRAGMA table_info({table})")]
+                if cols and column not in cols:
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
             c.executescript(MAIL_SCHEMA)
 
     @contextmanager
@@ -249,12 +281,13 @@ class MailEngine:
         with self._conn() as c:
             c.execute(
                 "INSERT INTO mail_message (gm_msgid, gm_thrid, uid, message_id, from_name, from_addr, to_addrs, cc,"
-                " subject, date, preview, body_text, body_html, has_attachments, unread, archived, filtered, filter_reason)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?) ON CONFLICT(gm_msgid) DO UPDATE SET uid = excluded.uid",
+                " reply_to, subject, date, preview, body_text, body_html, has_attachments, unread, archived, filtered,"
+                " filter_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)"
+                " ON CONFLICT(gm_msgid) DO UPDATE SET uid = excluded.uid",
                 (num("X-GM-MSGID") or f"uid:{num('UID')}", num("X-GM-THRID"), int(num("UID") or 0),
                  str(msg.get("Message-ID", "")) or None, name or addr, addr.lower(),
-                 ", ".join(a for _, a in getaddresses([str(msg.get("To", ""))])),
-                 ", ".join(a for _, a in getaddresses([str(msg.get("Cc", ""))])),
+                 _addr_list(msg.get("To", "")), _addr_list(msg.get("Cc", "")),
+                 parseaddr(str(msg.get("Reply-To", "")))[1].lower() or None,
                  str(msg.get("Subject", "")).strip() or "(no subject)", date, " ".join(text.split())[:200],
                  text, html, 1 if atts else 0, 0 if "\\Seen" in flags else 1, 1 if reason else 0, reason))
 
@@ -267,7 +300,14 @@ class MailEngine:
         uids = (data[0] or b"").split() if data else []
         return uids[0].decode() if uids else None
 
-    def _on_gmail(self, row, *store_args):
+    def _pend_archive(self, gm_msgid):
+        """Gmail not reachable: MyNotion archives it on its next sync (same list it keeps), so it doesn't come back."""
+        import json
+        pending = json.loads(self._state("pending_archive") or "[]")
+        if gm_msgid not in pending:
+            self._set_state("pending_archive", json.dumps(pending + [gm_msgid]))
+
+    def _on_gmail(self, row, *store_args, on_fail=None):
         """UID STORE on the mail's current uid, in the background."""
         if not self._account():
             return
@@ -282,6 +322,8 @@ class MailEngine:
                 self._gmail(act)
             except Exception as e:
                 print(f"[Mail] couldn't update Gmail: {e}")
+                if on_fail:
+                    on_fail()
         self._bg(run)
 
     def _flag(self, row, seen: bool):
@@ -419,7 +461,8 @@ class MailEngine:
         body = self._write(r["from_name"], gist, r)
         subject = r["subject"] if re.match(r"\s*re:", r["subject"] or "", re.I) else f"Re: {r['subject']}"
         return self.confirm.request(f"Here's the reply to {r['from_name']}: {body} Send it?",
-                                    lambda: self._queue(r["from_addr"], r["from_name"], subject, body, r["id"]),
+                                    lambda: self._queue(r.get("reply_to") or r["from_addr"], r["from_name"], subject,
+                                                        body, r["id"]),
                                     strict=True)
 
     def draft_mail(self, to: str, gist: str, subject: str = "") -> str:
@@ -484,6 +527,8 @@ class MailEngine:
             address, pw = account
             msg = EmailMessage()
             msg["From"], msg["To"], msg["Subject"] = address, row["to_addrs"], row["subject"]
+            msg["Date"] = formatdate(localtime=True)
+            msg["Message-ID"] = make_msgid(domain=address.split("@")[-1])
             if orig and orig["message_id"]:
                 msg["In-Reply-To"] = msg["References"] = orig["message_id"]
             msg.set_content(row["body"])
@@ -500,13 +545,31 @@ class MailEngine:
                 c.execute("UPDATE mail_outbox SET state = 'sent', sent_at = ? WHERE client_id = ?",
                           (_iso(datetime.now(timezone.utc)), client_id))
         except Exception as e:
-            error = str(e)
-            if account:
-                error = error.replace(account[1], "***")
+            problem = _send_problem(e) if account else "email isn't set up."
+            error = str(e).replace(account[1], "***") if account else str(e)
+            if problem and account:
+                problem = problem.replace(account[1], "***")
+            tries = self._tries.get(client_id, 0) + 1
+            if problem is None and tries < OFFLINE_TRIES:
+                # no internet: back in the queue, try again in a minute (MyNotion may send it first)
+                self._tries[client_id] = tries
+                with self._conn() as c:
+                    c.execute("UPDATE mail_outbox SET state = 'queued', error = ?, send_after = ? WHERE client_id = ?",
+                              (error, _iso(datetime.now(timezone.utc) + timedelta(seconds=OFFLINE_RETRY_S)), client_id))
+                if tries == 1 and self.on_announce:
+                    self.on_announce(f"No internet right now, so the email to {to_name} waits. "
+                                     "It goes out once I'm back online.")
+
+                def retry():
+                    self._sleep(OFFLINE_RETRY_S)
+                    self._flush(client_id, to_name)
+                self._bg(retry)
+                return
+            self._tries.pop(client_id, None)
             with self._conn() as c:
                 c.execute("UPDATE mail_outbox SET state = 'failed', error = ? WHERE client_id = ?", (error, client_id))
             if self.on_announce:
-                self.on_announce(f"Couldn't send the email to {to_name}: {error[:120]}")
+                self.on_announce(f"Couldn't send the email to {to_name}: {problem or 'no internet for two hours.'}")
 
     # ── archive / read ────────────────────────────────────────────────────────
 
@@ -518,7 +581,7 @@ class MailEngine:
         r = rows[0]
         with self._conn() as c:
             c.execute("UPDATE mail_message SET archived = 1 WHERE id = ?", (r["id"],))
-        self._on_gmail(r, "-X-GM-LABELS", "(\\Inbox)")
+        self._on_gmail(r, "-X-GM-LABELS", "(\\Inbox)", on_fail=lambda: self._pend_archive(r["gm_msgid"]))
         return f"Archived the email from {r['from_name']}. It's still in All Mail."
 
     def mark_mail_read(self, which: str = "that", read: bool = True) -> str:
@@ -585,18 +648,22 @@ class MailEngine:
         with self._conn() as c:
             c.execute("INSERT OR IGNORE INTO mail_sender_rule (addr, rule) VALUES (?, 'important')", (addr.lower(),))
             last = c.execute("SELECT COALESCE(MAX(id), 0) FROM mail_message").fetchone()[0]
-        if not self._state("important_seen_id"):
-            self._set_state("important_seen_id", str(last))
+        # only mail that arrives from now on is news (per sender, so marking someone later doesn't dig up old mail)
+        if not self._state(f"important_since:{addr.lower()}"):
+            self._set_state(f"important_since:{addr.lower()}", str(last))
         return f"Okay, I'll tell you when {name} emails."
 
     def important_news(self) -> list[str]:
         """New unread mail from senders marked important, each said once."""
-        seen = int(self._state("important_seen_id") or 0)
         with self._conn() as c:
             rows = c.execute(
-                "SELECT m.id, m.from_name, m.subject FROM mail_message m JOIN mail_sender_rule r "
-                "ON r.addr = m.from_addr AND r.rule = 'important' WHERE m.id > ? AND m.unread = 1 AND m.archived = 0 "
-                "ORDER BY m.id", (seen,)).fetchall()
-        if rows:
-            self._set_state("important_seen_id", str(rows[-1]["id"]))
+                "SELECT m.id, m.from_name, m.from_addr, m.subject FROM mail_message m JOIN mail_sender_rule r "
+                "ON r.addr = m.from_addr AND r.rule = 'important' "
+                "LEFT JOIN mail_state s ON s.key = 'important_since:' || m.from_addr "
+                "WHERE m.id > COALESCE(CAST(s.value AS INTEGER), 0) AND m.unread = 1 AND m.archived = 0 ORDER BY m.id"
+            ).fetchall()
+            for r in rows:
+                c.execute("INSERT INTO mail_state (key, value) VALUES (?, ?) "
+                          "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                          (f"important_since:{r['from_addr']}", str(r["id"])))
         return [f"{r['from_name']} just emailed: {r['subject']}." for r in rows]

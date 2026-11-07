@@ -378,3 +378,88 @@ def test_yes_with_changes_does_not_send(writer, notion_db):
     writer.draft_reply("huber", "I'll be there at 3")
     assert writer.confirm.resolve("yes but make it 4") is None     # back to the model to rewrite it
     assert writer.smtp.sent == [] and outbox(notion_db) == []
+
+
+def test_offline_send_waits_and_goes_out_later(writer, notion_db):
+    said = []
+    writer.on_announce = said.append
+    later = []
+    writer._bg = later.append
+    add(notion_db, "a", "Mr Huber", "huber@school.example", "Meeting")
+    writer.draft_reply("huber", "ok")
+    writer.confirm.resolve("yes")
+    writer.smtp = FakeSMTP(fail=OSError("[Errno -3] Temporary failure in name resolution"))
+    later.pop(0)()                                    # first try: offline
+    assert outbox(notion_db)[0][0] == "queued"
+    assert said == ["No internet right now, so the email to Mr Huber waits. It goes out once I'm back online."]
+    writer.smtp = FakeSMTP()
+    later.pop(0)()                                    # the retry
+    assert outbox(notion_db)[0][0] == "sent" and len(writer.smtp.sent) == 1
+
+
+def test_send_errors_are_said_plainly(writer, notion_db):
+    said = []
+    writer.on_announce = said.append
+    import smtplib
+    writer.smtp = FakeSMTP(fail=smtplib.SMTPAuthenticationError(535, b"5.7.8 Username and Password not accepted"))
+    add(notion_db, "a", "Mr Huber", "huber@school.example", "Meeting")
+    writer.draft_reply("huber", "ok")
+    writer.confirm.resolve("yes")
+    assert said == ["Couldn't send the email to Mr Huber: Gmail didn't accept the app password. "
+                    "Connect again in MyNotion's Inbox."]
+
+
+def test_sent_mail_has_date_and_id(writer, notion_db):
+    add(notion_db, "a", "Mr Huber", "huber@school.example", "Meeting")
+    writer.draft_reply("huber", "ok")
+    writer.confirm.resolve("yes")
+    msg = writer.smtp.sent[0]
+    assert msg["Date"] and msg["Message-ID"]
+
+
+def test_marking_important_later_does_not_announce_old_mail(writer, notion_db):
+    add(notion_db, "a", "Sara K", "sara@gmail.com", "x", unread=0)
+    writer.mark_sender_important("sara")
+    add(notion_db, "b", "Tom", "tom@x.example", "old unread")
+    writer.mark_sender_important("tom")
+    assert writer.important_news() == []
+    add(notion_db, "c", "Tom", "tom@x.example", "new")
+    assert writer.important_news() == ["Tom just emailed: new."]
+
+
+def test_reply_goes_to_reply_to(writer, notion_db):
+    add(notion_db, "a", "Class bot", "noreply@school.example", "Group work")
+    with sqlite3.connect(notion_db) as c:
+        c.execute("UPDATE mail_message SET reply_to = 'class@school.example'")
+    writer.draft_reply("class bot", "count me in")
+    writer.confirm.resolve("yes")
+    assert writer.smtp.sent[0]["To"] == "class@school.example"
+
+
+def test_archive_offline_is_remembered_for_mynotion(writer, notion_db):
+    add(notion_db, "a", "Medium", "x@medium.example", "Stories", uid=9)
+    writer.imap.fail = OSError("Network is unreachable")
+    writer.archive_mail("medium")
+    with sqlite3.connect(notion_db) as c:
+        assert c.execute("SELECT value FROM mail_state WHERE key = 'pending_archive'").fetchone()[0] == '["a"]'
+
+
+def test_old_database_gets_new_columns(tmp_path):
+    db = tmp_path / "old.db"
+    from Engines.MailEngine import MAIL_SCHEMA
+    with sqlite3.connect(db) as c:                     # the first version's tables, before reply_to existed
+        c.executescript(MAIL_SCHEMA.replace("  reply_to TEXT,\n", ""))
+    MailEngine(str(db), Confirmer(), password=lambda a: None)
+    with sqlite3.connect(db) as c:
+        assert "reply_to" in [r[1] for r in c.execute("PRAGMA table_info(mail_message)")]
+
+
+def test_to_line_matches_mynotion(mail, notion_db):
+    with sqlite3.connect(notion_db) as c:
+        c.execute("UPDATE mail_state SET value = ? WHERE key = 'last_sync'", (iso(10),))
+    m = raw("Sara K <sara@gmail.com>", "hi", "x")
+    m = m.replace(b"To: lala@gmail.com", b"To: Lala <lala@gmail.com>, bob@x.example")
+    mail.imap.messages = {1: m}
+    mail.check_mail()
+    with sqlite3.connect(notion_db) as c:
+        assert c.execute("SELECT to_addrs FROM mail_message").fetchone()[0] == "Lala <lala@gmail.com>, bob@x.example"

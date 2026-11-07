@@ -88,3 +88,14 @@ def test_small_talk_is_not_retried(aria):
     aria.llm.replies = [("Pretty good! How are you?", [])]
     aria.handle_turn("how are you", check_state=False)
     assert len(aria.llm.prompts) == 1
+
+
+def test_led_tools_only_while_the_strip_is_plugged_in():
+    """The Arduino controller always exists (it keeps retrying in the background), so Aria offered to change
+    the desk lights with nothing plugged in."""
+    import types
+    strip = types.SimpleNamespace(is_connected=False)
+    t = ToolEngine(arduino=strip)
+    assert "set_led_color" not in names(t, "make the lights blue")
+    strip.is_connected = True                      # plugged in later
+    assert "set_led_color" in names(t, "make the lights blue")

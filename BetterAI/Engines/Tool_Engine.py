@@ -156,8 +156,16 @@ class ToolEngine:
         for pattern, names in self.GROUPS.values():
             if re.search(pattern, text or "", re.I) or names & recent:
                 wanted |= names
+        hidden = self._unplugged()
         return [s for n, s in ((t["schema"]["function"]["name"], t["schema"]) for t in self._registry.values())
-                if n in wanted or n not in grouped]
+                if (n in wanted or n not in grouped) and n not in hidden]
+
+    LED_TOOLS = {"set_led_color", "set_led_effect", "set_led_brightness", "led_off"}
+
+    def _unplugged(self) -> set:
+        """Tools for hardware that isn't plugged in right now. The Arduino controller exists even without a
+        board (it keeps retrying), so its tools are hidden until it actually connects."""
+        return set() if getattr(self.arduino, "is_connected", True) else self.LED_TOOLS
 
     # ── Public API ────────────────────────────────────────────────────────────
 

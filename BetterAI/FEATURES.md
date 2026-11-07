@@ -80,7 +80,8 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 - **No made-up offers:** she only offers what she has tools for, and searches for a file before saying where it is.
 - **Only working devices are offered:** Home Assistant (phone/TV), the LEDs and RVC voice conversion are skipped when
   they aren't set up (`HA_TOKEN`, a connected Arduino, `RVC_ENABLED=1`). That means fewer tools for the model to choose from,
-  faster prompts and no startup warnings.
+  faster prompts and no startup warnings. The LED tools appear only while the board is actually plugged in, and show
+  up by themselves once it connects.
 - **Snappier wake-up:** no greeting is generated when you wake Aria by typing a question or a reminder wakes her.
   In text mode she dozes off silently after a minute of quiet.
 
@@ -119,6 +120,9 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 ---
 
 ## Voice — `speech_to_text.py`, `wakeworddetector.py`, `Engines/voice_engine.py`
+
+- A long first sentence starts playing after its first clause (the voice is made on the CPU, ~1 s for a long
+  sentence), so she starts talking sooner.
 
 - Wake word, speech-to-text with live mic level shown on the orb, text-to-speech with the voice level driving the orb.
 - **"Hey Aria"** (voice mode: `ARIA_ARGS=--voice` in `Engines/.env`): a small openWakeWord model trained on this
@@ -400,6 +404,9 @@ mail from `noted.db` and talks to Gmail herself to send, archive and check when 
 - "Turn that into an event" → date and time from the email into the calendar, after a yes.
 - "Always tell me when Sara emails" → she says it when Sara's mail arrives, only while you're at the desk.
 - The morning briefing mentions new mail ("2 new emails: from Sara K and Mr Huber.").
+- No internet when sending: the email waits and goes out once she's back online (she says so once). Other send
+  problems are said in plain words ("Gmail didn't accept the app password…"). Replies go to the Reply-To address
+  when there is one. Archiving while offline is finished on the next sync instead of coming back.
 
 ## MyNotion app (`../MyNotion`)
 
@@ -496,7 +503,7 @@ mail from `noted.db` and talks to Gmail herself to send, archive and check when 
 
 ## Tests — `tests/`
 
-- About 440 tests (plus 31 opt-in checks with the real model), and MyNotion's mail tests (`cd ../MyNotion/note && npm test`): `.venv/bin/python -m pytest` (install once with `pip install -r requirements-dev.txt`).
+- About 480 tests (plus 31 opt-in checks with the real model), and MyNotion's mail tests (`cd ../MyNotion/note && npm test`): `.venv/bin/python -m pytest` (install once with `pip install -r requirements-dev.txt`).
 - They cover reminders and repeats, follow-up timing, the memory note sync, lists and the calendar, the weekly review,
   the reply filters (stock lines, repeats, "what?"), conversation-starter rules, app matching, file search and web search parsing.
 - No model, camera, microphone or network needed. They only use temporary databases: opening the real

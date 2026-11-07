@@ -495,3 +495,12 @@ def test_other_sleep_words_dont(text):
 
 def test_did_you_miss_me_is_dropped():
     assert tidy_reply("Hey there! Did you miss me? How was your day?") == "Hey there! How was your day?"
+
+
+def test_unplugged_led_strip_is_not_offered(aria):
+    aria.spotify = object()
+    aria.vision = types.SimpleNamespace(_camera_index=0)
+    aria.arduino = types.SimpleNamespace(is_connected=False)
+    assert "desk LEDs" not in aria._base_prompt()
+    aria.arduino.is_connected = True
+    assert aria._base_prompt() == main.BASE_PROMPT

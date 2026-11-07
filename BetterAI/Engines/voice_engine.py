@@ -215,6 +215,21 @@ def normalize_for_tts(text: str) -> str:
     return text.strip()
 
 
+FIRST_CHUNK_MIN = 60     # a first sentence longer than this starts playing after its first clause
+
+
+def first_chunks(sentence: str) -> list:
+    """The first sentence, split after its first comma/dash when it's long: the voice is made on the CPU (~1 s for a
+    long sentence), so speaking can start after the first clause while the rest is being made."""
+    if len(sentence) <= FIRST_CHUNK_MIN:
+        return [sentence]
+    m = re.search(r"[,;:—–] ", sentence[15:])
+    if not m or len(sentence) - (15 + m.end()) < 12:
+        return [sentence]
+    cut = 15 + m.end()
+    return [sentence[:cut].strip(), sentence[cut:].strip()]
+
+
 def _words(text: str) -> set:
     return {w for w in re.findall(r"[a-z']+", (text or "").lower()) if len(w) > 1}
 
@@ -287,12 +302,18 @@ class VoiceEngine:
         interrupt_thread = threading.Thread(target=self._listen_for_interrupt, daemon=True)
         interrupt_thread.start()
 
-        for sentence in sentences:
+        def chunks():
+            first = True
+            for sentence in sentences:
+                sentence = normalize_for_tts(sentence or "").strip()
+                if not sentence:
+                    continue
+                yield from (first_chunks(sentence) if first else [sentence])
+                first = False
+
+        for sentence in chunks():
             if self._interrupted:
                 break
-            sentence = normalize_for_tts(sentence or "").strip()
-            if not sentence:
-                continue
             self._spoken_words.update(_words(sentence))
             tone = TONES[sentence_tone(sentence)]
             audio_np, sr = self._synthesize(sentence, speed=self._speed * tone["speed"])

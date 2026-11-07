@@ -90,3 +90,12 @@ def test_language_is_detected():
     stt.silence_duration, stt.sample_rate = 1.2, 16000
     assert stt.listen() == "hallo zusammen"
     assert stt.last_language == ("de", 0.93)
+
+
+def test_a_long_first_sentence_starts_at_its_first_clause():
+    from Engines.voice_engine import first_chunks
+    assert first_chunks("Planes don't crash from the weight of clouds, because clouds are made of tiny droplets.") == [
+        "Planes don't crash from the weight of clouds,", "because clouds are made of tiny droplets."]
+    assert first_chunks("Done, milk's on the list.") == ["Done, milk's on the list."]           # short: as is
+    assert first_chunks("A sentence without any comma that is long enough to matter here for sure.") == [
+        "A sentence without any comma that is long enough to matter here for sure."]

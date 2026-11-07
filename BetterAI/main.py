@@ -679,7 +679,8 @@ class Aria:
         color" with no LED strip attached, because the prompt listed desk LEDs regardless."""
         missing = []
         prompt = BASE_PROMPT
-        if not getattr(self, "arduino", None):
+        arduino = getattr(self, "arduino", None)
+        if not arduino or not getattr(arduino, "is_connected", True):   # the controller exists even unplugged
             prompt, missing = prompt.replace("desk LEDs, ", ""), missing + ["desk lights / LEDs"]
         if not getattr(self, "spotify", None):
             prompt, missing = prompt.replace("music, ", "", 1), missing + ["music / Spotify"]
