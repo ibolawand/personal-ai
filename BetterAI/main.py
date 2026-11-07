@@ -111,6 +111,8 @@ REVIEW_DONE_RE = re.compile(r"\b(done|did it|did that|finished|completed|already
 SLEEP_PHRASES = ["go to sleep", "sleep", "goodbye", "see you later", "that's all", "shut up"]
 SHUTDOWN_PHRASES = ["exit", "quit", "shutdown"]
 SLEEP_TIMEOUT = 60
+MOOD_CHECK = os.environ.get("ARIA_MOOD_CHECK", "0") == "1"
+MOOD_STALE_S = 180
 INITIATIVE_TIMEOUT = 120   # when Aria started the conversation, give Lala longer to answer
 CHAT_TIMEOUT = 120         # same after Aria asked a question
 MUSIC_TOOLS = {"play_song", "play_artist", "play_playlist", "play_genre"}
@@ -134,6 +136,11 @@ OFFER_RE = re.compile(
     r"put|open|take|see)|some|a |an |any)|want (?:some|a |an |any )|"
     r"if you(?:'d)? (?:want|like)(?: to| me to)?,? i (?:can|could)|i (?:can|could) (?:also )?.{0,80}\bif you(?:'d)? "
     r"(?:want|like)|let me know if you(?:'d)? (?:want|like)|or i (?:can|could) .{0,80}\?)", re.I)
+# "Let me find a calm song for you" with nothing played (seen in real use): a promise of an action. If a tool runs,
+# what she says after it ("Playing …") covers it; if none runs, it's untrue. Dropped like the offers above.
+PROMISE_RE = re.compile(
+    r"^\W*(?:(?:oh|okay|ok|sure|alright|hmm)\b[,!.]?\s*)*(?:let me|lemme|i'?ll|i will|i'?m going to)\s+(?:just\s+|quickly\s+)?"
+    r"(?:find|play|put on|pull up|queue|look up|search|light up|dim|pick|grab|get you|throw on)\b", re.I)
 # Stock assistant phrases: dropped from speech and replies; a reply that was only that gets rewritten
 ROBOTIC_RE = re.compile(
     r"i'?m (?:just )?(?:here|always here)(?: and ready)? to (?:help|assist)|ready to (?:help|assist)|"
@@ -240,6 +247,8 @@ class SentenceStreamer:
             return
         if self.count and OFFER_RE.search(sentence) and not self.keep_offers():
             return
+        if self.count and PROMISE_RE.search(sentence):
+            return
         if self.previous is not None:
             so_far = _norm_reply(" ".join(self.held + [sentence]))
             if any(p.startswith(so_far) for p in self.previous):
@@ -272,7 +281,7 @@ def _norm_reply(text: str) -> str:
 def drop_offers(text: str) -> str:
     """Remove "want me to…?" offers, unless that's all the reply is."""
     sentences = re.split(r"(?<=[.!?])\s+", text.strip())
-    kept = [x for x in sentences if not OFFER_RE.search(x)]
+    kept = [x for x in sentences if not OFFER_RE.search(x) and not PROMISE_RE.search(x)]
     return " ".join(kept).strip() if kept else text.strip()
 
 
@@ -754,10 +763,13 @@ class Aria:
             self.voice.set_mood(mood)
 
         prompt = user_input
-        if check_state:
-            # The mood check costs an extra model call (2–6 s), so it runs in the background
-            # after each turn and its result is used on the next one.
+        if check_state and MOOD_CHECK:
+            # Off by default (ARIA_MOOD_CHECK=1): it's a second model call on every turn, competing with the reply
+            # for the GPU, and its result can only be used on the NEXT message. In real use a stale flag made her
+            # answer "pitch" with "Just breathe — you don't have to do this alone". The persona handles moods anyway.
             state, self._pending_state = self._pending_state, None
+            if state is not None and time.time() - getattr(state, "at", 0) > MOOD_STALE_S:
+                state = None                         # from a while ago (or an earlier session): no longer about now
             if state is not None and state.should_ask:
                 prompt += (f"\n[Note: the user seems {state.reason}. After answering normally, "
                            f"briefly and casually ask something like: \"{state.suggested_question}\"]")
@@ -1018,7 +1030,9 @@ class Aria:
 
     def _check_state_bg(self, user_input):
         try:
-            self._pending_state = self.state_engine.check(user_input)
+            state = self.state_engine.check(user_input)
+            state.at = time.time()
+            self._pending_state = state
         except Exception as e:
             print(f"[UserState] check failed: {e}")
 

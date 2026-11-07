@@ -67,10 +67,11 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
     real fact ("asked to play a song", "is bored", "has a meeting tomorrow"), and forget it after your yes.
     She offers this once by herself.
 - **Context:** current date and time (HH:MM), who is at the desk, and saved facts are added to every prompt (`ContextBuilder.py`).
-- **Mood check-ins** (`Engines/UserStateEngine.py`): if you sound stressed or tired, Aria briefly checks in, at most once
-  every 5 minutes. The check runs in the background after each reply, so it never slows down answers. Its result is used
-  on your next message. Set `MOOD_USE_CAMERA=1` to include the camera; it's off by default because the vision model pushes
-  the chat model out of graphics-card memory.
+- **Mood check-ins** (`Engines/UserStateEngine.py`), **off by default** (`ARIA_MOOD_CHECK=1` turns them on): a second
+  model call after each message decides whether to check in on how you are, and the result is used on your *next*
+  message (only within 3 minutes). It was switched off because in real use a stale result made Aria answer "pitch" with
+  "Just breathe — you don't have to do this alone", and the extra call competes with replies for the GPU. Her persona
+  already reacts to how you sound. `MOOD_USE_CAMERA=1` adds the camera.
 - **Clean replies:** filler like "Let me know if you need anything else!" and leftover markdown are removed.
 - **No tacked-on offers:** "Want me to…?", "Should I…?" and "I can also… if you want" at the end of a reply are cut in code (spoken and written). They stay only when the offer is the whole reply, or while she is asking you to confirm something.
 - **No parroting:** if a reply comes out word-for-word like one of her last two (small models do that after "no"

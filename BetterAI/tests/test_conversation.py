@@ -383,3 +383,33 @@ def test_weekly_review_ends_with_a_recap(aria, notion, memory):
 def test_pronunciation(text, spoken):
     from Engines.voice_engine import normalize_for_tts
     assert normalize_for_tts(text) == spoken
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Oh, I can! Let me find a calm song to help you relax.", "Oh, I can!"),
+    ("Aww, boredom is tricky. I'll put on something chill.", "Aww, boredom is tricky."),
+    ("Got it, I'll remind you at 6.", "Got it, I'll remind you at 6."),          # a done action, kept
+    ("Let me find a calm song.", "Let me find a calm song."),                    # nothing else to say: kept
+])
+def test_promises_without_action_are_dropped(text, expected):
+    assert tidy_reply(text) == expected
+
+
+def test_a_stale_mood_flag_is_not_used(aria, monkeypatch):
+    import types as t
+    monkeypatch.setattr(main, "MOOD_CHECK", True)
+    aria.state_engine = t.SimpleNamespace(check=lambda text: t.SimpleNamespace(should_ask=False))
+    aria._pending_state = t.SimpleNamespace(should_ask=True, reason="down", suggested_question="you okay?",
+                                            at=time.time() - 3600)
+    aria.llm.replies = [("Ha, rude.", [])]
+    aria.handle_turn("pitch")
+    assert "seems down" not in aria.llm.prompts[0]
+
+
+def test_mood_check_is_off_by_default(aria):
+    called = []
+    aria.state_engine = types.SimpleNamespace(check=lambda text: called.append(text))
+    aria.llm.replies = [("Hey!", [])]
+    aria.handle_turn("hi")
+    time.sleep(0.05)
+    assert called == [] and main.MOOD_CHECK is False
