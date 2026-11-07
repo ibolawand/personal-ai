@@ -187,3 +187,11 @@ def test_backups_are_never_written(notion, monkeypatch):
     notion.restore_note("gym plan")
     backups = [p for p in opened if "/backups/" in p]
     assert backups and all(p.startswith("file:") and p.endswith("?mode=ro") for p in backups)
+
+
+def test_formulas_are_read_as_latex():
+    from Engines.NotionEngine import html_to_text
+    note = ('<p>Energy: <span data-latex="E = mc^2" data-type="inline-math"></span> is famous.</p>'
+            '<div data-latex="x = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}" data-type="block-math"></div><p>done</p>')
+    assert html_to_text(note) == ("Energy: $E = mc^2$ is famous.\n$$x = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}$$\n"
+                                  "done")

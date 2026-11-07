@@ -34,9 +34,12 @@ class WakeWordDetector:
         download_models()  # once at init, not at import time
         model, self.phrase = wake_model_path()
         self.model = Model(wakeword_models=[model], inference_framework="onnx")
-        default = 0.5 if self.phrase == "hey Aria" else 0.7
-        self.threshold = float(os.environ.get("WAKE_THRESHOLD", threshold or default))
         self.verify = verify if self.phrase == "hey Aria" else None     # Whisper checks for "Aria", not "Jarvis"
+        # Measured on 4 voices it never trained on: every "hey Aria" scores above 0.98; ordinary sentences fire it
+        # 4 in 120 times at 0.5 and 2 in 120 at 0.9. With Whisper confirming, the lower bar is safer for a real voice
+        # (the model only heard synthetic ones); without it, the stricter one.
+        default = (0.5 if self.verify else 0.9) if self.phrase == "hey Aria" else 0.7
+        self.threshold = float(os.environ.get("WAKE_THRESHOLD", threshold or default))
         self.p = pyaudio.PyAudio()
         self.chunk_size = 1280      # 80 ms at 16 kHz
         self.sample_rate = 16000

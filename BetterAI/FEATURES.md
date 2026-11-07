@@ -125,7 +125,10 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
   laptop from synthetic voices (`tools/train_wakeword.py`, the model is `models/hey_aria.onnx`). When it fires,
   Whisper checks the last 2.5 seconds and only a real "Aria" wakes her, so TV and YouTube don't. Rejected ones show
   up in `./aria.sh --report` as "wake word model fired, Whisper heard something else". `WAKE_THRESHOLD` changes how
-  easily it fires (default 0.5); `WAKE_WORD=jarvis` goes back to the built-in "hey Jarvis".
+  easily it fires (default 0.5 with Whisper checking, 0.9 without); `WAKE_WORD=jarvis` goes back to "hey Jarvis".
+  Measured on 4 voices it never trained on: it caught every "hey Aria"; ordinary sentences set it off 4 in 120 times
+  and near misses like "the area" or "hey Aaron" more often, which is what the Whisper check is for. It has only
+  heard synthetic voices, so tell me how it does with yours.
 - **Hears you right** (`speech_to_text.py`):
   - voice activity detection cuts silence and noise before transcribing, so no more phantom "Thanks for watching!"
     (tested: silence, room noise and louder noise used to give "Thank you very much.", "You", "Thanks for watching!"; now nothing)
@@ -360,6 +363,7 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
 - **Save status:** a dot with "Saved", "Saving…" or "Couldn't save".
 - **Calendar:** gets the full width (the notes list steps aside), overlapping events sit side by side so clashes are
   visible, and event titles can use two lines.
+- **Formulas:** Aria reads them as LaTeX (`$E = mc^2$`), so she can search, read and quiz you on maths notes.
 - **Older versions** (Aria): "restore my C# note from yesterday" brings back that day's version from MyNotion's
   daily backups (`~/.config/MyNotion/backups/`, only ever read), and "bring back the note I deleted" restores a
   deleted one. She asks first and says how many words it has now and then; "undo that" works afterwards.

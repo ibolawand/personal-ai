@@ -115,7 +115,8 @@ SHUTDOWN_PHRASES = ["exit", "quit", "shutdown"]
 SLEEP_TIMEOUT = 60
 ASK_NAME_EVERY_S = 6 * 3600
 # what Whisper may write for "hey Aria" (its word list already leans towards "Aria")
-WAKE_HEARD_RE = re.compile(r"\b(?:aria|arya|ariya|ariah|ahria|area|ari[ae]h?|aaria)\b", re.I)    # "what's your name?" to an unknown face at most this often
+# "area" only right after hey/hi/okay: the model also fires on "the area", which must not wake her
+WAKE_HEARD_RE = re.compile(r"\b(?:aria|arya|ariya|ariah|ahria|aaria)\b|\b(?:hey|hi|okay|ok)\W+(?:area|ari|aria)\b", re.I)    # "what's your name?" to an unknown face at most this often
 MOOD_CHECK = os.environ.get("ARIA_MOOD_CHECK", "0") == "1"
 MOOD_STALE_S = 180
 INITIATIVE_TIMEOUT = 120   # when Aria started the conversation, give Lala longer to answer

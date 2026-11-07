@@ -105,8 +105,9 @@ def test_whisper_falls_back_to_the_cpu(monkeypatch):
 
 
 @pytest.mark.parametrize("heard,ok", [("Hey Aria.", True), ("Hey, Arya!", True), ("hey area", True),
+                                      ("Aria, what's the time?", True), ("in the area", False),
                                       ("Hey Maria, how are you", False), ("Thanks for watching!", False),
-                                      ("the aria from the opera", True), ("Hey Jarvis", False), ("", False)])
+                                      ("Hey Aaron", False), ("Hey Jarvis", False), ("", False)])
 def test_wake_confirmation(heard, ok):
     assert bool(main.WAKE_HEARD_RE.search(heard)) is ok
 

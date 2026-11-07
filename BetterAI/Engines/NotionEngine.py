@@ -48,8 +48,19 @@ MONTHS = ["january", "february", "march", "april", "may", "june", "july", "augus
 
 # ── Text <-> TipTap HTML ──────────────────────────────────────────────────────
 
+MATH_RE = re.compile(r'<(span|div)[^>]*data-type="(inline|block)-math"[^>]*>.*?</\1>', re.I | re.S)
+
+
+def _math_text(m):
+    """A formula from MyNotion (stored only in data-latex) as $…$ / $$…$$, so it can be read and searched."""
+    latex = re.search(r'data-latex="([^"]*)"', m.group(0))
+    tex = html.unescape(latex.group(1)) if latex else ""
+    return f" ${tex}$ " if m.group(2).lower() == "inline" else f"\n$${tex}$$\n"
+
+
 def html_to_text(content: str) -> str:
     s = content or ""
+    s = MATH_RE.sub(_math_text, s)
     s = re.sub(r"<li[^>]*data-checked=\"true\"[^>]*>", "\n☑ ", s, flags=re.I)
     s = re.sub(r"<li[^>]*data-checked=\"false\"[^>]*>", "\n☐ ", s, flags=re.I)
     s = re.sub(r"<li[^>]*>", "\n• ", s, flags=re.I)
