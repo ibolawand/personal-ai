@@ -70,6 +70,8 @@ class STTEngine:
         self.on_level = None         # optional fn(volume: float) for UI meters
         self.vocabulary = lambda: [] # optional fn() -> extra words (names Aria knows), set by Aria
         self.last_confidence = 1.0
+        self.last_level = 0.0              # loudness of the last speech (see _record)
+        self.last_language = None          # (language, probability) of the last speech
         self.vad = _load_vad()
 
     @staticmethod
@@ -105,6 +107,7 @@ class STTEngine:
         recent = np.zeros(0, dtype=np.float32)     # rolling audio for the detector
         frames, waited, voiced, silent = [], 0, 0, 0
         speaking = False
+        levels = []                                 # loudness of the blocks that are speech
 
         with sd.InputStream(samplerate=rate, channels=1, dtype='float32', blocksize=block) as stream:
             while True:
@@ -116,6 +119,8 @@ class STTEngine:
                 prob = self._speech_prob(recent)
                 frames.append(data)
 
+                if prob >= SPEECH_ON:
+                    levels.append(float(np.abs(data).mean()))
                 if not speaking:
                     voiced = voiced + 1 if prob >= SPEECH_ON else 0
                     if voiced >= SPEECH_START_BLOCKS:
@@ -138,6 +143,8 @@ class STTEngine:
                 if len(frames) >= max_blocks:
                     break
 
+        # how loud the speech was: someone right at the mic is much louder than a person across the room or a video
+        self.last_level = float(np.median(levels)) if levels else 0.0
         return np.concatenate(frames)
 
     def _prompt(self) -> str:
@@ -183,6 +190,13 @@ class STTEngine:
         print("[STT] Transcribing...")
         t = time.time()
         text, self.last_confidence = self.transcribe(audio)
+        self.last_language = None
+        if text:
+            try:                            # which language it really was (the transcript is forced to English)
+                lang, prob, _ = self.model.detect_language(audio)
+                self.last_language = (lang, float(prob))
+            except Exception:
+                pass
         self.last_timing = {"transcribe": time.time() - t, "silence_wait": self.silence_duration,
                             "audio_s": len(audio) / self.sample_rate}
         print(f"[STT] Heard: {text!r} (confidence {self.last_confidence:.2f})")

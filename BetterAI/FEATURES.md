@@ -141,6 +141,10 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
     she's waiting for an answer, if it's a command ("play some music") while she's awake, or if you start talking
     within 30 s of her waking or answering (45 s after she asked a question), while you're at the desk (camera saw your face, or keyboard/mouse used, in the last 20 s). Someone
     else talking or a video later on is ignored (logged as `ignored_speech`); "Aria, …" always gets through.
+  - also ignored: speech Whisper is sure isn't English (a conversation in the room), and speech much quieter than
+    you usually are at the mic (under 40% of your usual level, learned from what she accepted)
+  - going to sleep: any short "go to sleep" works ("just go to sleep", "I said shut up", "good night", "be quiet"),
+    not only the exact phrase; "remind me to go to sleep at 11" doesn't count
   - a word list with Aria, MyNotion, app names and the names in her memory and note titles: "MyNotion" was heard as
     "Minotian" and "Lina" as "Lena"; both come out right now
   - when she isn't sure what she heard, she asks "Sorry, did you say: …?". "Yes" acts on it, "no" makes her ask

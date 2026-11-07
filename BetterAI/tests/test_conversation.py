@@ -477,3 +477,21 @@ def test_no_clingy_lines():
     assert tidy_reply("Hey Lawand! It's been a while, I missed you! How was your day?") == "Hey Lawand! How was your day?"
     assert tidy_reply("I've been waiting for you. What's up?") == "What's up?"
     assert tidy_reply("Did you miss the bus?") == "Did you miss the bus?"
+
+
+@pytest.mark.parametrize("text", ["Just go to sleep.", "I said shut up.", "good night aria", "okay bye",
+                                  "you can go to sleep now", "be quiet", "stop listening", "that's all, thanks",
+                                  "go to sleep", "goodbye"])
+def test_short_goodbyes_put_her_to_sleep(text):
+    assert main.wants_sleep(text)
+
+
+@pytest.mark.parametrize("text", ["remind me to go to sleep at 11", "how much sleep do I need",
+                                  "set a timer so I go to sleep in 20 minutes", "I couldn't sleep last night at all",
+                                  "my friend said shut up to me today and I was really annoyed by it"])
+def test_other_sleep_words_dont(text):
+    assert not main.wants_sleep(text)
+
+
+def test_did_you_miss_me_is_dropped():
+    assert tidy_reply("Hey there! Did you miss me? How was your day?") == "Hey there! How was your day?"

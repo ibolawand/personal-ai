@@ -72,3 +72,21 @@ def test_her_own_voice_and_unsure_guesses_dont_interrupt():
     v._spoken_words = _words("I didn't miss you either, I've been glowing right here.")
     assert v._is_echo("i didn't miss you either. i've been glowing right here.")
     assert not v._is_echo("aria stop")
+
+
+def test_speech_level_is_measured(monkeypatch):
+    stt = make_stt(monkeypatch, [(1, 0.01, False), (2, 0.12, True)])
+    stt._record(start_timeout=3)
+    assert abs(stt.last_level - 0.12) < 0.02          # only the speech counts, not the quiet before it
+
+
+def test_language_is_detected():
+    stt = S.STTEngine.__new__(S.STTEngine)
+    stt.vocabulary = lambda: []
+    seg = types.SimpleNamespace(text=" hallo zusammen", compression_ratio=1.1, avg_logprob=-0.2, no_speech_prob=0.1)
+    stt.model = types.SimpleNamespace(transcribe=lambda *a, **k: ([seg], None),
+                                      detect_language=lambda audio, **k: ("de", 0.93, []))
+    stt._record = lambda *a, **k: np.zeros(16000, np.float32)
+    stt.silence_duration, stt.sample_rate = 1.2, 16000
+    assert stt.listen() == "hallo zusammen"
+    assert stt.last_language == ("de", 0.93)

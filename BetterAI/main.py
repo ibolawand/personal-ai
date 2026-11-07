@@ -172,7 +172,7 @@ ROBOTIC_RE = re.compile(
     r"(?:chat|talk) or (?:help|assist)|"
     # clingy: "I missed you!", "I've been waiting for you", "I was so lonely"
     r"\bi (?:really |so |kinda )?(?:missed|miss) you\b|\bi'?ve (?:really |so )?missed you\b|"
-    r"\bi'?ve been waiting for you\b|\bi was (?:so |getting )?lonely\b", re.I)
+    r"\bi'?ve been waiting for you\b|\bi was (?:so |getting )?lonely\b|\bdid you miss me\b", re.I)
 # a reply that says she can't do something (without having tried a tool) -> retry with every tool
 CANT_RE = re.compile(r"\b(can'?t|cannot|can not|don'?t have (?:a |the )?(?:tool|way|ability|access)|unable to|"
                      r"not able to|no (?:tool|way) to|isn'?t something i can)\b", re.I)
@@ -336,6 +336,23 @@ def tidy_reply(text: str, keep_offers: bool = False) -> str:
     text = re.sub(r"(?<!`)`([^`\n]+)`(?!`)", r"\1", text)   # `inline code`
     text = re.sub(r"^\s*[-*•]\s+", "", text, flags=re.M)    # bullet markers
     return text
+
+
+# a short message that says "go to sleep" in any normal way ("just go to sleep", "I said shut up", "good night")
+SLEEP_RE = re.compile(r"\b(?:(?:go|going|get|head) (?:back )?to sleep|sleep now|good ?night|good ?bye|bye|"
+                      r"shut up|be quiet|stop (?:talking|listening)|leave me alone|that'?s all|that'?s it for now|"
+                      r"see you(?: later)?)\b", re.I)
+SLEEP_NOT_RE = re.compile(r"\b(?:remind|reminder|timer|alarm|at \d|in \d+|how much|how long|couldn'?t|can'?t|"
+                          r"didn'?t|last night)\b", re.I)
+SLEEP_MAX_WORDS = 7
+
+
+def wants_sleep(text: str) -> bool:
+    """Lala wants Aria to stop and sleep: the exact phrases, or a short message that clearly says so."""
+    if matches_phrase(SLEEP_PHRASES, text):
+        return True
+    words = re.sub(r"[^a-z' ]", " ", (text or "").lower()).split()
+    return len(words) <= SLEEP_MAX_WORDS and bool(SLEEP_RE.search(text or "")) and not SLEEP_NOT_RE.search(text or "")
 
 
 def matches_phrase(phrases, text):
@@ -1381,8 +1398,11 @@ class Aria:
 
     def _not_for_me(self, text: str, since_s: float, asked: bool) -> str | None:
         """Voice mode: why what was heard isn't for Aria (someone else talking, a video), or None. See Addressee.py."""
+        if wants_sleep(text):
+            return None                    # "go to sleep" always counts, whenever it's said
         expecting = bool(self.confirm.pending or self._review or getattr(self, "_unsure_heard", None)
-                         or getattr(self.quiz, "active", None) or self._dictating()
+                         or getattr(getattr(self, "quiz", None), "active", None)
+                         or self._dictating()
                          or (self._initiative_active and not self._initiative_active.get("answered")))
         v = self.vision
         face_age = None
@@ -1392,8 +1412,21 @@ class Aria:
             idle = idle_seconds()
         except Exception:
             idle = None
+        # how loud this was next to how loud Lala usually is (learned from what she accepted; needs a few first)
+        levels = getattr(self, "_voice_levels", None)
+        level = getattr(self.stt, "last_level", 0.0) or 0.0
+        ratio = level / sorted(levels)[len(levels) // 2] if levels and len(levels) >= 5 and level else None
         return not_for_aria(text, since_s, asked=asked, expecting=expecting, face_age_s=face_age, idle_s=idle,
-                            command=bool(ACTION_RE.search(text)))
+                            command=bool(ACTION_RE.search(text)), language=getattr(self.stt, "last_language", None),
+                            level_ratio=ratio)
+
+    def _learn_voice_level(self):
+        """Something Lala said to Aria: remember how loud it was, for telling her apart from the room."""
+        level = getattr(self.stt, "last_level", 0.0) or 0.0
+        if level:
+            if not hasattr(self, "_voice_levels"):
+                self._voice_levels = deque(maxlen=30)
+            self._voice_levels.append(level)
 
     def _check_heard(self, text: str, confidence: float):
         """Voice input she isn't sure about gets a 'did you say …?' instead of being acted on.
@@ -1406,7 +1439,7 @@ class Aria:
                 self.speak("Okay, say it again?")
                 return None
             return text                            # they just said something new
-        if confidence < LOW_CONFIDENCE and not matches_phrase(SLEEP_PHRASES + SHUTDOWN_PHRASES, text):
+        if confidence < LOW_CONFIDENCE and not (wants_sleep(text) or matches_phrase(SHUTDOWN_PHRASES, text)):
             Diagnostics.problem("misheard", f"{text} ({confidence:.2f})")
             self._unsure_heard = text
             self.speak(f"Sorry, did you say: {text}?")
@@ -1527,6 +1560,7 @@ class Aria:
                             print(f"[Heard] ignored ({why}): {user_input!r}")
                             Diagnostics.problem("ignored_speech", f"{why}: {user_input[:100]}")
                             continue
+                        self._learn_voice_level()
                         user_input = self._check_heard(user_input, self.stt.last_confidence)
                         if user_input is None:
                             last_interaction = time.time()
@@ -1557,7 +1591,7 @@ class Aria:
                 # while dictating, "that's all" / "sleep" / "exit" are words to write down or the end of the
                 # dictation; only a clear "go to sleep" / "goodbye" ends the conversation
                 dictating = self._dictating()
-                if matches_phrase(["go to sleep", "goodbye"] if dictating else SLEEP_PHRASES, user_input):
+                if (matches_phrase(["go to sleep", "goodbye"], user_input) if dictating else wants_sleep(user_input)):
                     self._go_to_sleep("Alright, going to sleep.")
                     break
 
