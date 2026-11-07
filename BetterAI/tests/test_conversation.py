@@ -413,3 +413,11 @@ def test_mood_check_is_off_by_default(aria):
     aria.handle_turn("hi")
     time.sleep(0.05)
     assert called == [] and main.MOOD_CHECK is False
+
+
+def test_open_todays_note_goes_to_mynotion(aria, _never_launch_anything, monkeypatch):
+    import Engines.NotionEngine as N
+    monkeypatch.setattr(N.os.path, "exists", lambda p: True)
+    reply, used = aria.handle_turn("open today's note", check_state=False)
+    assert reply == "Opening today's note in MyNotion." and used[0][0] == "open_mynotion"
+    assert aria.notion._daily_note(create=False) is not None

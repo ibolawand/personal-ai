@@ -35,6 +35,8 @@ from Engines.Battery import BatteryWatch
 from Engines.Initiative import Initiative, NOT_NOW_RE, idle_seconds
 from Engines.Posture import Posture
 from Engines.Quiz import Quiz
+from Engines.Typos import fix_typos
+from Engines.NotionEngine import DAILY_RE
 from Engines import Diagnostics
 from Engines.Reminders import Reminders
 from Engines.ScreenEngine import ScreenEngine
@@ -111,7 +113,9 @@ REVIEW_DONE_RE = re.compile(r"\b(done|did it|did that|finished|completed|already
 SLEEP_PHRASES = ["go to sleep", "sleep", "goodbye", "see you later", "that's all", "shut up"]
 SHUTDOWN_PHRASES = ["exit", "quit", "shutdown"]
 SLEEP_TIMEOUT = 60
-ASK_NAME_EVERY_S = 6 * 3600    # "what's your name?" to an unknown face at most this often
+ASK_NAME_EVERY_S = 6 * 3600
+# what Whisper may write for "hey Aria" (its word list already leans towards "Aria")
+WAKE_HEARD_RE = re.compile(r"\b(?:aria|arya|ariya|ariah|ahria|area|ari[ae]h?|aaria)\b", re.I)    # "what's your name?" to an unknown face at most this often
 MOOD_CHECK = os.environ.get("ARIA_MOOD_CHECK", "0") == "1"
 MOOD_STALE_S = 180
 INITIATIVE_TIMEOUT = 120   # when Aria started the conversation, give Lala longer to answer
@@ -381,7 +385,9 @@ class Aria:
         self.stt = STTEngine()
         self.stt.on_level = self.ui.mic_level
         self.emotions = EmotionEngine()
-        self.wake = WakeWordDetector() if option == 2 else None
+        # Whisper confirms each wake word detection, when it's on the GPU (0.2 s; on the CPU it would take 2–3 s)
+        verify = self._verify_wake if getattr(self.stt, "device", "") == "gpu" else None
+        self.wake = WakeWordDetector(verify=verify) if option == 2 else None
         self.is_user_known = False
         self._wake_event = threading.Event()
         self._slept_at = None      # when Aria last went to sleep (None = since startup)
@@ -585,6 +591,11 @@ class Aria:
             print(f"[Vision] Unknown person handling failed: {e}")
         finally:
             self._unknown_in_progress = False
+
+    def _verify_wake(self, audio):
+        """(really said 'Aria'?, what Whisper heard) for the wake word detector."""
+        text, _ = self.stt.transcribe(audio)
+        return bool(WAKE_HEARD_RE.search(text or "")), text
 
     def _known_user_name(self):
         """The user's name from memory ('User's name is Lala'), or None."""
@@ -1002,7 +1013,8 @@ class Aria:
             return None
         what = m.group(1).strip()
         if re.search(r"\b(calendar|schedule|agenda)\b", what, re.I) or \
-                re.fullmatch(r"(my\s*)?notion|mynotion|notes", what, re.I) or self.notion.has_note(what):
+                re.fullmatch(r"(my\s*)?notion|mynotion|notes", what, re.I) or self.notion.has_note(what) or \
+                DAILY_RE.match(what):
             return self.notion.open_mynotion(what)
         return None
 
@@ -1354,14 +1366,14 @@ class Aria:
                 if pending_input:
                     user_input, pending_input = pending_input, None
                 elif not self.text_inputs.empty():
-                    user_input = self.text_inputs.get()
+                    user_input = fix_typos(self.text_inputs.get())     # typed: 'ope n notes' -> 'open notes'
                 elif self.option == 1:
                     if not prompted and HAS_TERMINAL:
                         print("You > ", end="", flush=True)
                         prompted = True
                     if not stdin_ready(0.25):
                         continue  # re-check the sleep timeout
-                    user_input = read_stdin_line()
+                    user_input = fix_typos(read_stdin_line() or "")
                     prompted = False
                 else:
                     # short windows so typed input and sleep requests are noticed quickly

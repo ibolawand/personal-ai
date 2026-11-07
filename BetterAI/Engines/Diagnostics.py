@@ -27,6 +27,7 @@ MAX_LINES = 5000
 PROBLEM_NAMES = {
     "misheard": "unsure what you said (asked 'did you say…?')",
     "woke_for_nothing": "woke up but nobody said anything",
+    "wake_unconfirmed": "wake word model fired, Whisper heard something else (stayed asleep)",
     "corrected": "you corrected her",
     "claimed_no_tool": "said she did something without doing it (retried)",
     "missing_tool": "said she can't, retried with all tools",

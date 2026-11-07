@@ -102,3 +102,25 @@ def test_whisper_falls_back_to_the_cpu(monkeypatch):
     monkeypatch.setattr(S, "WhisperModel", fake_model)
     model, device = S.STTEngine._load("medium", "auto")
     assert device == "cpu" and made == [("cpu", "int8")]
+
+
+@pytest.mark.parametrize("heard,ok", [("Hey Aria.", True), ("Hey, Arya!", True), ("hey area", True),
+                                      ("Hey Maria, how are you", False), ("Thanks for watching!", False),
+                                      ("the aria from the opera", True), ("Hey Jarvis", False), ("", False)])
+def test_wake_confirmation(heard, ok):
+    assert bool(main.WAKE_HEARD_RE.search(heard)) is ok
+
+
+def test_wake_detector_asks_whisper(monkeypatch):
+    import types
+    import wakeworddetector as W
+    d = W.WakeWordDetector.__new__(W.WakeWordDetector)
+    d._recent = __import__("collections").deque([b"\x00\x00" * 1280] * 3)
+    d.verify = lambda audio: (False, "Hey Maria")
+    logged = []
+    monkeypatch.setattr(D, "problem", lambda kind, detail="": logged.append((kind, detail)))
+    assert d._confirmed(0.8) is False and logged == [("wake_unconfirmed", "0.80: Hey Maria")]
+    d.verify = lambda audio: (True, "Hey Aria")
+    assert d._confirmed(0.8) is True
+    d.verify = None
+    assert d._confirmed(0.8) is True

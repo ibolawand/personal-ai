@@ -793,6 +793,9 @@ class NotionEngine:
             target, said = "home", "MyNotion"
         elif any(k in w for k in ("calendar", "schedule", "agenda", "week", "events")):
             target, said = "calendar", "your calendar"
+        elif DAILY_RE.match(what or ""):
+            n = self._daily_note()                     # made from the template if it isn't there yet
+            target, said = f"note:{n['id']}", "today's note"
         else:
             n = self._find_note(what)
             if not n:

@@ -121,6 +121,11 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 ## Voice — `speech_to_text.py`, `wakeworddetector.py`, `Engines/voice_engine.py`
 
 - Wake word, speech-to-text with live mic level shown on the orb, text-to-speech with the voice level driving the orb.
+- **"Hey Aria"** (voice mode: `ARIA_ARGS=--voice` in `Engines/.env`): a small openWakeWord model trained on this
+  laptop from synthetic voices (`tools/train_wakeword.py`, the model is `models/hey_aria.onnx`). When it fires,
+  Whisper checks the last 2.5 seconds and only a real "Aria" wakes her, so TV and YouTube don't. Rejected ones show
+  up in `./aria.sh --report` as "wake word model fired, Whisper heard something else". `WAKE_THRESHOLD` changes how
+  easily it fires (default 0.5); `WAKE_WORD=jarvis` goes back to the built-in "hey Jarvis".
 - **Hears you right** (`speech_to_text.py`):
   - voice activity detection cuts silence and noise before transcribing, so no more phantom "Thanks for watching!"
     (tested: silence, room noise and louder noise used to give "Thank you very much.", "You", "Thanks for watching!"; now nothing)
