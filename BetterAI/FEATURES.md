@@ -360,6 +360,9 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
 - **Save status:** a dot with "Saved", "Saving…" or "Couldn't save".
 - **Calendar:** gets the full width (the notes list steps aside), overlapping events sit side by side so clashes are
   visible, and event titles can use two lines.
+- **Older versions** (Aria): "restore my C# note from yesterday" brings back that day's version from MyNotion's
+  daily backups (`~/.config/MyNotion/backups/`, only ever read), and "bring back the note I deleted" restores a
+  deleted one. She asks first and says how many words it has now and then; "undo that" works afterwards.
 - **Today's note:** Ctrl+D (or the first row of the search) opens a note called e.g. "Saturday, 7 November 2026",
   made with a small Plan / Notes template the first time each day. Aria uses the same note: "add call the bank to
   today's note", "what's in today's note?".

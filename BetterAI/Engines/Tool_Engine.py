@@ -81,7 +81,7 @@ class ToolEngine:
     }
 
     # Changes "undo that" can take back (Engines/Undo.py)
-    UNDOABLE = {"add_note", "save_as_note", "add_to_list", "remove_from_list", "check_off", "add_event",
+    UNDOABLE = {"restore_note", "add_note", "save_as_note", "add_to_list", "remove_from_list", "check_off", "add_event",
                 "set_reminder", "set_timer"}
 
     # ── Tool routing ──────────────────────────────────────────────────────────
@@ -112,10 +112,11 @@ class ToolEngine:
         "notion": (r"\b(notes?|lists?|calendar|events?|schedule|meeting|appointment|to-?do|tasks?|tick|check(?:ed)? off|"
                    r"bought|got the|done with|briefing|plan|plans|agenda|week|weekend|tomorrow|today|tonight|"
                    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|birthday|inbox|remove|clear|move|"
-                   r"delete|cancel|shopping|packing|mynotion|notion|save that|day like)\b",
+                   r"delete|cancel|shopping|packing|mynotion|notion|save that|day like|restore|older version|"
+                   r"old version|bring back|undelete|recover|backup)\b",
                    {"add_note", "save_as_note", "read_note", "search_notes", "list_notes", "add_to_list",
                     "remove_from_list", "check_off", "clear_list", "get_events", "add_event", "move_event",
-                    "delete_event", "open_mynotion", "daily_briefing"}),
+                    "delete_event", "open_mynotion", "daily_briefing", "restore_note"}),
         "screen": (r"\b(screen|see|look|looking|copied|clipboard|this error|error|camera|who'?s|who is|in front)\b",
                    {"look_at_screen", "look", "read_clipboard", "copy_to_clipboard"}),
         "quiz": (r"\b(quiz|test me|ask me (?:some )?questions|revise|revision|flash ?cards?|study with me)\b",
@@ -363,6 +364,12 @@ class ToolEngine:
                       nt.save_as_note, optional=("text",),
                       title=("string", "short title for the note"),
                       text=("string", "leave empty to save your previous answer exactly")),
+                _tool("restore_note",
+                      "Bring back an older version of a MyNotion note, or a deleted note, from the daily backups "
+                      "('restore my C# note from yesterday', 'bring back the note I deleted'). Asks Lala first.",
+                      nt.restore_note, optional=("day",),
+                      title=("string", "the note's title"),
+                      day=("string", "which day's version: 'yesterday' (default), 'monday', '5 november'…")),
                 _tool("read_note", "Read one MyNotion note or list ALOUD, e.g. 'what's on my shopping list', 'read my packing list'. "
                       "If Lala says OPEN / show / pull up a note, use open_mynotion instead.", nt.read_note,
                       title=("string", "note or list name, e.g. 'shopping list'")),

@@ -131,3 +131,59 @@ def test_todays_note_matches_mynotion_and_takes_additions(notion):
     n = notion._find_note(daily_title())
     assert n["content"].count("<h2>Notes</h2>") == 1 and n["content"].endswith("<p>call the bank</p><p>buy stamps</p>")
     assert "call the bank" in notion.read_note("my daily note")
+
+
+# ── older versions from MyNotion's daily backups ──
+
+def _backup(notion, day):
+    import os
+    import shutil
+    folder = os.path.join(os.path.dirname(notion.db_path), "backups")
+    os.makedirs(folder, exist_ok=True)
+    shutil.copy(notion.db_path, os.path.join(folder, f"noted-{day.isoformat()}.db"))
+
+
+def test_restore_an_older_version(notion):
+    today = dt.date.today()
+    notion._create_note("C# delegates", "<p>A delegate holds a reference to a method. Events wrap delegates.</p>")
+    _backup(notion, today - dt.timedelta(days=1))
+    n = notion._find_note("C# delegates")
+    notion._set_content(n["id"], "<p>oops</p>")
+    ask = notion.restore_note("c# delegates")
+    assert ask.startswith("NEEDS CONFIRMATION") and "(1 words now)" in ask and "(11 words)" in ask
+    assert notion._find_note("C# delegates")["content"] == "<p>oops</p>"            # nothing changed yet
+    assert notion.confirm.resolve("yes").startswith("Restored 'C# delegates' to how it was on")
+    assert "reference to a method" in notion._find_note("C# delegates")["content"]
+
+
+def test_bring_back_a_deleted_note(notion):
+    notion._create_note("Trip ideas", "<p>Hallstatt, Graz</p>")
+    _backup(notion, dt.date.today())
+    with notion._conn() as c:
+        c.execute("DELETE FROM notes WHERE title = 'Trip ideas'")
+    assert "bring back the deleted note 'Trip ideas'" in notion.restore_note("trip ideas", "today")
+    assert notion.confirm.resolve("yes").startswith("Brought back 'Trip ideas'")
+    assert notion._find_note("Trip ideas")["content"] == "<p>Hallstatt, Graz</p>"
+
+
+def test_restore_when_nothing_changed_or_no_backups(notion):
+    assert notion.restore_note("anything") == "There are no backups yet (MyNotion makes one a day when it's open)."
+    notion._create_note("Gym plan", "<p>legs</p>")
+    _backup(notion, dt.date.today() - dt.timedelta(days=1))
+    assert notion.restore_note("gym plan").startswith("I couldn't find an older version of 'Gym plan'")
+
+
+def test_backups_are_never_written(notion, monkeypatch):
+    import sqlite3
+    opened = []
+    real = sqlite3.connect
+
+    def spy(path, *a, **kw):
+        opened.append(str(path))
+        return real(path, *a, **kw)
+    notion._create_note("Gym plan", "<p>legs</p>")
+    _backup(notion, dt.date.today() - dt.timedelta(days=1))
+    monkeypatch.setattr(sqlite3, "connect", spy)
+    notion.restore_note("gym plan")
+    backups = [p for p in opened if "/backups/" in p]
+    assert backups and all(p.startswith("file:") and p.endswith("?mode=ro") for p in backups)

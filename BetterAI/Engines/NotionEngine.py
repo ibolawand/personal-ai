@@ -806,6 +806,81 @@ class NotionEngine:
                          stderr=subprocess.DEVNULL, start_new_session=True)
         return "Opening MyNotion." if target == "home" else f"Opening {said} in MyNotion."
 
+    # ── older versions from MyNotion's daily backups ──
+    # MyNotion copies its database once a day to backups/noted-YYYY-MM-DD.db (made when the app starts). These are
+    # only ever opened read-only; a restore goes through the yes/no confirmation (and "undo that" works after it).
+
+    def _backups(self):
+        folder = os.path.join(os.path.dirname(self.db_path), "backups")
+        out = []
+        try:
+            for name in os.listdir(folder):
+                m = re.fullmatch(r"noted-(\d{4}-\d{2}-\d{2})\.db", name)
+                if m:
+                    out.append((dt.date.fromisoformat(m.group(1)), os.path.join(folder, name)))
+        except OSError:
+            pass
+        return sorted(out, reverse=True)                                   # newest first
+
+    @staticmethod
+    def _backup_notes(path):
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            return [dict(r) for r in conn.execute("SELECT id, title, content, userID FROM notes")]
+        except sqlite3.Error:
+            return []
+        finally:
+            conn.close()
+
+    def _old_version(self, title, current, before: dt.date):
+        """The newest backup taken on or before `before` that has this note (by id, else by title) with different
+        text. Returns (backup date, note) or None."""
+        for day, path in self._backups():
+            if day > before:
+                continue
+            notes = [n for n in self._backup_notes(path) if n["userID"] in (self.user_id, 0)]
+            old = next((n for n in notes if current and n["id"] == current["id"]), None)
+            if not old:
+                best, score = None, 0
+                for n in notes:
+                    sc = _match_score(title, n["title"])
+                    if sc > score:
+                        best, score = n, sc
+                old = best if score >= 60 else None
+            if old and (not current or (old["content"] or "") != (current["content"] or "")):
+                return day, old
+        return None
+
+    def restore_note(self, title: str, day: str = "yesterday"):
+        """Tool: bring back an older version of a note (or a deleted note) from MyNotion's daily backups."""
+        if not self._backups():
+            return "There are no backups yet (MyNotion makes one a day when it's open)."
+        before = parse_day(day or "yesterday") or dt.date.today() - dt.timedelta(days=1)
+        if before > dt.date.today():
+            before = dt.date.today()
+        current = self._find_note(title)
+        if current and _match_score(title, current["title"]) < 60:
+            current = None
+        found = self._old_version(title, current, before)
+        if not found:
+            what = f"'{current['title']}'" if current else f"a note called '{title}'"
+            return f"I couldn't find an older version of {what} in the backups (up to {fmt_day(before)})."
+        when, old = found
+        words = lambda html_: len(html_to_text(html_ or "").split())
+        if current:
+            def do():
+                self._set_content(current["id"], old["content"] or "")
+                return f"Restored '{current['title']}' to how it was on {fmt_day(when)}."
+            ask = (f"replace '{current['title']}' ({words(current['content'])} words now) with the version from "
+                   f"{fmt_day(when)} ({words(old['content'])} words)")
+        else:
+            def do():
+                self._create_note(old["title"], old["content"] or "")
+                return f"Brought back '{old['title']}' from {fmt_day(when)}."
+            ask = f"bring back the deleted note '{old['title']}' from {fmt_day(when)} ({words(old['content'])} words)"
+        return self.confirm.request(ask, do) if self.confirm else do()
+
     # ── reminders for events ──
 
     def sync_event_reminders(self, reminders):
