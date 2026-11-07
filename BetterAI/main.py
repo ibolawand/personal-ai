@@ -126,12 +126,18 @@ CLIPBOARD_RE = re.compile(r"\b(copied|clipboard|i just copied|what i copied)\b",
 # tends to read the list aloud instead, especially right after talking about it)
 OPEN_IN_NOTION_RE = re.compile(r"^\s*(?:aria,?\s*)?(?:please\s+)?(?:open|show(?: me)?|pull up|bring up)\s+"
                                r"(?:up\s+)?(?:my|the)?\s*(.+?)(?:\s+in\s+(?:my\s*)?notion|\s+in\s+mynotion)?\s*[.!?]?\s*$", re.I)
+# "this is my good posture": the model often answered "I remember how you're sitting!" without calling the tool (1 in 3
+# in the real-model checks), so this is decided in code
+POSTURE_REF_RE = re.compile(r"\b(?:this is|that'?s|here'?s) (?:my|a) (?:good|right|proper|correct) (?:posture|sitting)\b|"
+                            r"\bremember (?:this|my|how i'?m) (?:posture|sitting|position)\b|"
+                            r"\bremember how i'?m sitting\b|\b(?:set|save) my (?:good )?posture\b", re.I)
 CODE_BLOCK_RE = re.compile(r"```[\w+-]*\n?(.*?)```", re.S)
 # customer-service tails the model likes to add; Aria is spoken, so the closing sentence goes
 FILLER_RE = re.compile(
     r"anything else|let me know if|feel free to|don'?t hesitate|how can i (?:help|assist)|"
     r"hope (?:this|that) helps|happy to help|is there something else|what'?s on your mind|"
-    r"i'?m (?:just )?here (?:if|to (?:chat|help)|whenever)|just let me know|if you (?:ever )?need (?:help|anything)", re.I)
+    r"i'?m (?:just )?here (?:if|to (?:chat|help)|whenever)|just let me know|if you (?:ever )?need (?:help|anything)|"
+    r"need (?:any )?help with anything|anything (?:specific|in particular) (?:you|i)\b|help with anything specific", re.I)
 # "Want me to…?" / "Should I…?" tacked onto a reply: the model does it on almost every turn, which turns every
 # exchange into a yes/no. Dropped when the reply has something else in it (kept while a confirmation is pending).
 OFFER_RE = re.compile(
@@ -140,12 +146,20 @@ OFFER_RE = re.compile(
     r"would you like (?:me |to |some|a |an |any|help)|do you want (?:to (?:hear|try|listen|start|set|add|play|"
     r"put|open|take|see)|some|a |an |any)|want (?:some|a |an |any )|"
     r"if you(?:'d)? (?:want|like)(?: to| me to)?,? i (?:can|could)|i (?:can|could) (?:also )?.{0,80}\bif you(?:'d)? "
-    r"(?:want|like)|let me know if you(?:'d)? (?:want|like)|or i (?:can|could) .{0,80}\?)", re.I)
+    r"(?:want|like)|let me know if you(?:'d)? (?:want|like)|or i (?:can|could) .{0,80}\?|"
+    # from the real log: "Maybe a calm song to help you relax?", "Or maybe I can find a cool song for you later?"
+    r"(?<=maybe )(?:a|an|some) [^.!?]{1,60}\?$|how about (?:a|an|some) [^.!?]{1,60}\?$|i (?:can|could) [^.!?]{1,80}\?$)",
+    re.I)
+# a question that only made sense with the offer before it: "…maybe I can find a cool song. What do you think?"
+DANGLING_RE = re.compile(r"^\W*(?:what do you (?:think|say)|sounds? good|how about (?:it|that)|interested|deal|"
+                         r"yes or no|up for it|want to)\W*$", re.I)
 # "Let me find a calm song for you" with nothing played (seen in real use): a promise of an action. If a tool runs,
 # what she says after it ("Playing …") covers it; if none runs, it's untrue. Dropped like the offers above.
 PROMISE_RE = re.compile(
     r"^\W*(?:(?:oh|okay|ok|sure|alright|hmm)\b[,!.]?\s*)*(?:let me|lemme|i'?ll|i will|i'?m going to)\s+(?:just\s+|quickly\s+)?"
-    r"(?:find|play|put on|pull up|queue|look up|search|light up|dim|pick|grab|get you|throw on)\b", re.I)
+    r"(?:find|play|put on|pull up|queue|look up|search|light up|dim|pick|grab|get you|throw on)\b|"
+    # mid-sentence: "Let me try something different — maybe I can find a cool song or a fun fact…"
+    r"\bmaybe i (?:can|could) (?:find|play|put on|pull up|light up|dim|get you)\b", re.I)
 # Stock assistant phrases: dropped from speech and replies; a reply that was only that gets rewritten
 ROBOTIC_RE = re.compile(
     r"i'?m (?:just )?(?:here|always here)(?: and ready)? to (?:help|assist)|ready to (?:help|assist)|"
@@ -251,8 +265,12 @@ class SentenceStreamer:
                 or ROBOTIC_RE.search(sentence):
             return
         if self.count and OFFER_RE.search(sentence) and not self.keep_offers():
+            self._dropped_offer = True
             return
         if self.count and PROMISE_RE.search(sentence):
+            self._dropped_offer = True
+            return
+        if getattr(self, "_dropped_offer", False) and DANGLING_RE.search(sentence):
             return
         if self.previous is not None:
             so_far = _norm_reply(" ".join(self.held + [sentence]))
@@ -286,7 +304,12 @@ def _norm_reply(text: str) -> str:
 def drop_offers(text: str) -> str:
     """Remove "want me to…?" offers, unless that's all the reply is."""
     sentences = re.split(r"(?<=[.!?])\s+", text.strip())
-    kept = [x for x in sentences if not OFFER_RE.search(x) and not PROMISE_RE.search(x)]
+    kept, dropped = [], False
+    for x in sentences:
+        if OFFER_RE.search(x) or PROMISE_RE.search(x) or (dropped and DANGLING_RE.search(x)):
+            dropped = True
+            continue
+        kept.append(x)
     return " ".join(kept).strip() if kept else text.strip()
 
 
@@ -592,6 +615,22 @@ class Aria:
         finally:
             self._unknown_in_progress = False
 
+    def _base_prompt(self) -> str:
+        """BASE_PROMPT, listing only what's connected. In real use she offered to "light up the desk in your favorite
+        color" with no LED strip attached, because the prompt listed desk LEDs regardless."""
+        missing = []
+        prompt = BASE_PROMPT
+        if not getattr(self, "arduino", None):
+            prompt, missing = prompt.replace("desk LEDs, ", ""), missing + ["desk lights / LEDs"]
+        if not getattr(self, "spotify", None):
+            prompt, missing = prompt.replace("music, ", "", 1), missing + ["music / Spotify"]
+        if getattr(getattr(self, "vision", None), "_camera_index", 0) is None:
+            prompt, missing = prompt.replace(" the camera,", ""), missing + ["a camera"]
+        if missing:
+            prompt += ("\n\nNot connected right now, so never offer or mention them as something you can do: "
+                       + ", ".join(missing) + ".")
+        return prompt
+
     def _verify_wake(self, audio):
         """(really said 'Aria'?, what Whisper heard) for the wake word detector."""
         text, _ = self.stt.transcribe(audio)
@@ -730,7 +769,7 @@ class Aria:
                   f"(an idea, a thought, a link) -> add_note without a title. Then reply with a short confirmation "
                   f"of at most eight words.")
         try:
-            reply, used = self.llm.chat_with_tools(prompt, [], BASE_PROMPT, schemas, self.tools.execute)
+            reply, used = self.llm.chat_with_tools(prompt, [], self._base_prompt(), schemas, self.tools.execute)
         except Exception as e:
             print(f"[Capture] {e}")
             reply, used = "", []
@@ -805,6 +844,12 @@ class Aria:
                 self._recent.append([{"role": "user", "content": user_input},
                                      {"role": "assistant", "content": handled}])
                 return handled, [("quiz", handled)]
+        posture = getattr(self, "posture", None)
+        if posture and POSTURE_REF_RE.search(user_input):
+            said = posture.set_reference()
+            self._save_turn(user_input, said)
+            self._recent.append([{"role": "user", "content": user_input}, {"role": "assistant", "content": said}])
+            return said, [("remember_good_posture", said)]
         opened = self._open_in_notion(user_input)
         if opened:
             self._save_turn(user_input, opened)
@@ -843,7 +888,7 @@ class Aria:
             prompt += (f"\n[Weekly review: you just asked about the to-do '{review_item[1]}' (on the list "
                        f"'{review_item[0]}'). If they want a reminder for it, call set_reminder; if they want it "
                        f"on the calendar, call add_event. Answer in one short sentence and don't ask about other to-dos.]")
-        system_prompt = self.context.build_system_prompt(BASE_PROMPT)
+        system_prompt = self.context.build_system_prompt(self._base_prompt())
         if self._session_hint:
             system_prompt += "\n\n[This conversation] " + self._session_hint
         routed = hasattr(self.tools, "schemas_for")
@@ -1247,7 +1292,7 @@ class Aria:
     def _open_initiative(self, init: dict):
         """Aria starts the conversation: an event check-in, the weekly review, or a casual chat."""
         self.ui.set_state("thinking")
-        system_prompt = self.context.build_system_prompt(BASE_PROMPT)
+        system_prompt = self.context.build_system_prompt(self._base_prompt())
         opening = tidy_reply(self.llm.chat(init["prompt"], [], system_prompt, temperature=0.9)).strip().strip('"')
         if not opening:
             return
@@ -1334,7 +1379,7 @@ class Aria:
                     self._open_initiative(init)
                     timeout = INITIATIVE_TIMEOUT
                 else:
-                    opening = self.llm.chat(self._greeting_prompt(), [], BASE_PROMPT)
+                    opening = self.llm.chat(self._greeting_prompt(), [], self._base_prompt())
                     print(f"Aria: {opening}")
                     self.speak(opening)
 

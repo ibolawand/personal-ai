@@ -39,6 +39,7 @@ def real_aria(aria, memory, tmp_path):
     aria.context = ContextBuilder.ContextBuilder(memory)
     aria.reminders = Reminders(memory, on_due=lambda r: None)
     aria.notion.add_to_list("shopping", "eggs, milk")
+    aria.posture = s                                   # "this is my good posture" is handled in code
     aria.tools = ToolEngine(spotify=s, vision=s, reminders=aria.reminders, focus=s, screen=s, laptop=s,
                             files=FilesEngine(aria.confirm, roots=[str(tmp_path)]), notion=aria.notion,
                             initiative=s, memory_note=s, activity=s, weather=s, recall=s, health=s, posture=s, quiz=s, face_learner=lambda name='': 'Okay, look at the camera.')

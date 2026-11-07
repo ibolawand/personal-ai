@@ -421,3 +421,42 @@ def test_open_todays_note_goes_to_mynotion(aria, _never_launch_anything, monkeyp
     reply, used = aria.handle_turn("open today's note", check_state=False)
     assert reply == "Opening today's note in MyNotion." and used[0][0] == "open_mynotion"
     assert aria.notion._daily_note(create=False) is not None
+
+
+@pytest.mark.parametrize("text,expected", [   # replies from the real log
+    ("VS Code is open. Need help with anything specific?", "VS Code is open."),
+    ("Aww, boredom is a tricky one. Want to try something new? Maybe a calm song to help you relax?",
+     "Aww, boredom is a tricky one. Want to try something new?"),
+    ("Aww, you're too quick! But don't worry, I'm here if you change your mind. Or maybe I can find a cool song for "
+     "you later?", "Aww, you're too quick!"),
+    ("Aww, that's a bit of a bummer. Let me try something different — maybe I can find a cool song or a fun fact to "
+     "keep things interesting. What do you think?", "Aww, that's a bit of a bummer."),
+    ("Oh nice! A new job?", "Oh nice! A new job?"),                                   # a real question stays
+    ("Wait, really? What do you think?", "Wait, really? What do you think?"),
+])
+def test_real_log_offers(text, expected):
+    assert tidy_reply(text) == expected
+
+
+def test_streamer_drops_the_dangling_question_too():
+    out, _ = stream("Bummer. Maybe I can find a cool song for you. What do you think?")
+    assert out == ["Bummer."]
+
+
+def test_prompt_lists_only_connected_things(aria):
+    aria.arduino, aria.spotify = None, object()
+    aria.vision = types.SimpleNamespace(_camera_index=0)
+    p = aria._base_prompt()
+    assert "desk LEDs" not in p and "music, " in p
+    assert p.endswith("Not connected right now, so never offer or mention them as something you can do: "
+                      "desk lights / LEDs.")
+    aria.arduino = object()
+    assert aria._base_prompt() == main.BASE_PROMPT
+
+
+@pytest.mark.parametrize("text", ["this is my good posture", "remember how I'm sitting", "that's my correct posture",
+                                  "remember my posture"])
+def test_good_posture_is_handled_in_code(aria, text):
+    aria.posture = types.SimpleNamespace(set_reference=lambda: "Got it, that's your good posture.")
+    reply, used = aria.handle_turn(text, check_state=False)
+    assert used == [("remember_good_posture", reply)] and aria.llm.prompts == []
