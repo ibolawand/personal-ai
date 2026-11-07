@@ -45,7 +45,7 @@ class ToolEngine:
     def __init__(self, spotify=None, arduino=None, vision=None, ha=None,
                  reminders=None, focus=None, screen=None, laptop=None, files=None, notion=None,
                  owner_check=None, initiative=None, memory_note=None, activity=None, weather=None, undo=None,
-                 recall=None, health=None, posture=None, quiz=None):
+                 recall=None, health=None, posture=None, quiz=None, face_learner=None):
         self.spotify = spotify
         self.arduino = arduino
         self.vision = vision
@@ -66,6 +66,7 @@ class ToolEngine:
         self.health = health
         self.posture = posture
         self.quiz = quiz
+        self.face_learner = face_learner
         self._registry = {t["schema"]["function"]["name"]: t for t in self._build()}
 
     # Tools that touch the laptop, files, clipboard/screen or phone — gated by owner_check
@@ -119,6 +120,7 @@ class ToolEngine:
                    {"look_at_screen", "look", "read_clipboard", "copy_to_clipboard"}),
         "quiz": (r"\b(quiz|test me|ask me (?:some )?questions|revise|revision|flash ?cards?|study with me)\b",
                  {"start_quiz"}),
+        "faces": (r"\b(face|faces|recogni[sz]e me|who am i)\b", {"learn_my_face"}),
         "posture": (r"\b(posture|slouch\w*|sitting|sit (?:up|straight|like this)|how i'?m sitting)\b",
                     {"remember_good_posture"}),
         "focus": (r"\b(focus|pomodoro|study|studying|deep work|concentrat\w*|how long|screen time|break|rounds?)\b",
@@ -246,6 +248,13 @@ class ToolEngine:
                             topic=("string", "the note or document title or subject, or 'mistakes' to retry missed "
                                              "questions"),
                             count=("integer", "how many questions, default 5"))]
+
+        if self.face_learner:
+            tools += [_tool("learn_my_face",
+                            "Learn Lala's face from the camera so you can greet them by name ('learn my face', "
+                            "'remember my face'). Takes about ten seconds.",
+                            self.face_learner, optional=("name",),
+                            name=("string", "the person's name, only if they say it"))]
 
         if self.posture:
             tools += [_tool("remember_good_posture",

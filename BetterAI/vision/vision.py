@@ -82,6 +82,8 @@ class AriaVision:
         self._frame          = None          # latest frame from the loop, shared with snapshot()
         self._frame_lock     = threading.Lock()
         self._camera_index   = None
+        self._last_face_at   = 0.0
+        self._unknown_fired  = False
         self.on_face_sample  = None          # fn(width_share, centre_y_share) per frame with a face (posture)
 
         os.makedirs(FACES_DIR, exist_ok=True)
@@ -134,7 +136,10 @@ class AriaVision:
 
     # ── Learning ──────────────────────────────────────────────────────────────
 
-    def learn_face(self, name: str, samples: int = 40):
+    def learn_face(self, name: str, samples: int = 40, show_window: bool = False, timeout: float = 45):
+        """Takes `samples` face pictures and trains the recogniser. Returns how many were taken.
+        show_window: an OpenCV preview, only for vision/setupface.py — inside Aria it would mix OpenCV's Qt with
+        the overlay's Qt. Gives up after `timeout` seconds (nobody in front of the camera)."""
         print(f"\n[Vision] Learning face for '{name}'")
 
         existing = self.memory.get_face_profile_by_name(name)
@@ -159,10 +164,11 @@ class AriaVision:
             print("[Vision] ⚠  No working camera found — can't learn a face")
             if was_running:
                 self.start()
-            return
+            return 0
         count = 0
+        started = time.time()
 
-        while count < samples:
+        while count < samples and time.time() - started < timeout:
             ret, frame = cap.read()
             if not ret:
                 time.sleep(0.1)
@@ -175,14 +181,16 @@ class AriaVision:
                 gray, scaleFactor=1.03, minNeighbors=2, minSize=(30, 30)
             )
 
-            for (x, y, w, h) in dets:
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            cv2.putText(frame, f"Samples: {count}/{samples}", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            cv2.imshow("Learning face - press Q to cancel", frame)
-
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            if show_window:
+                for (x, y, w, h) in dets:
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                cv2.putText(frame, f"Samples: {count}/{samples}", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                cv2.imshow("Learning face - press Q to cancel", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+            if len(dets) > 1:
+                dets = [max(dets, key=lambda d: d[2])]      # only the person at the desk, not someone behind
 
             for (x, y, w, h) in dets:
                 face     = cv2.resize(gray[y:y + h, x:x + w], (200, 200))
@@ -196,13 +204,20 @@ class AriaVision:
             time.sleep(0.05)
 
         cap.release()
-        cv2.destroyAllWindows()
+        if show_window:
+            cv2.destroyAllWindows()
+        if count < 10:
+            print(f"[Vision] Only {count} face samples, not saving '{name}'")
+            if was_running:
+                self.start()
+            return count
         self.memory.save_face_profile(name, label_id, sample_dir)
         self._label_map[label_id] = name
         self._load_model()
         print(f"\n[Vision] ✅ Face '{name}' saved with {count} samples")
         if was_running:
             self.start()
+        return count
 
     def forget_face(self, name: str):
         profile = self.memory.delete_face_profile(name)
@@ -248,7 +263,6 @@ class AriaVision:
 
         consecutive_full    = 0
         CONFIRM_PRESENT     = 4
-        last_face_at        = time.time()
 
         # Rolling buffer of recent recognition results for stability
         recent_results = []
@@ -279,7 +293,7 @@ class AriaVision:
             )
 
             if len(dets) > 0:
-                last_face_at       = time.time()
+                self._last_face_at = time.time()   # any face counts as still here (looking down loses it)
                 if self.on_face_sample:
                     fx, fy, fw, fh = max(dets, key=lambda d: d[2])     # the biggest face is the one at the desk
                     try:
@@ -289,6 +303,7 @@ class AriaVision:
                 consecutive_full  += 1
 
                 if consecutive_full >= CONFIRM_PRESENT:
+                    self._face_seen(time.time())
                     x, y, w, h = dets[0]
                     face = cv2.resize(gray[y:y + h, x:x + w], (200, 200))
                     name = self._recognise(face)
@@ -305,44 +320,55 @@ class AriaVision:
 
                         # Need 75% agreement to be confident
                         if top_count >= RECOGNITION_CONFIRM_FRAMES * 0.75:
-                            # A known person doesn't turn into a stranger mid-session just
-                            # because one recognition was shaky — only after they've left.
-                            if self._current_user and top_name is None:
-                                pass
-                            elif top_name != self._current_user:
-                                self._current_user = top_name
-                                self._present      = True
-
-                                if top_name:
-                                    label_id = self._get_label_id(top_name)
-                                    if label_id:
-                                        self.memory.record_face_seen(label_id)
-                                        self.memory.forget_like("User's name is%")
-                                        self.memory.save_memory(f"User's name is {top_name}")
-                                    if self.on_known_user:
-                                        self.on_known_user(top_name)
-                                else:
-                                    # Unknown — only fire if we haven't already
-                                    # fired for this presence event
-                                    if self._present is not True or self._current_user is not None:
-                                        if self.on_unknown_user:
-                                            self.on_unknown_user()
+                            self._recognised(top_name)
 
             else:
                 consecutive_full   = 0
                 recent_results.clear()  # reset buffer when face disappears
-
-                if time.time() - last_face_at >= GONE_AFTER_SECONDS and self._present:
-                    self._present      = False
-                    self._current_user = None
-                    if self.on_user_gone:
-                        self.on_user_gone()
+                self._no_face(time.time())
 
             time.sleep(0.2)
 
         cap.release()
         with self._frame_lock:
             self._frame = None
+
+    # ── presence and recognition (kept apart: someone can be here without being recognised) ──
+    # Before, presence was only set when a NAME was recognised, so with no face learned the camera never reported
+    # anyone: Aria never started conversations, focus never paused, and "what's your name?" never came.
+
+    def _face_seen(self, now):
+        """A face has been in view for a moment: someone is at the desk."""
+        self._last_face_at = now
+        if not self._present:
+            self._present = True
+            self._unknown_fired = False
+
+    def _recognised(self, top_name):
+        """The last frames agree on who it is (a name) or that it's nobody known (None)."""
+        if top_name:
+            if top_name != self._current_user:
+                self._current_user = top_name
+                label_id = self._get_label_id(top_name)
+                if label_id:
+                    self.memory.record_face_seen(label_id)
+                    self.memory.forget_like("User's name is%")
+                    self.memory.save_memory(f"User's name is {top_name}")
+                if self.on_known_user:
+                    self.on_known_user(top_name)
+        # A known person doesn't turn into a stranger because one recognition was shaky; and a stranger is
+        # announced once per visit, not on every frame.
+        elif self._current_user is None and not self._unknown_fired:
+            self._unknown_fired = True
+            if self.on_unknown_user:
+                self.on_unknown_user()
+
+    def _no_face(self, now):
+        if self._present and now - self._last_face_at >= GONE_AFTER_SECONDS:
+            self._present = False
+            self._current_user = None
+            if self.on_user_gone:
+                self.on_user_gone()
 
     def snapshot(self):
         """Latest camera frame (BGR) or None. Reuses the running loop's camera instead of

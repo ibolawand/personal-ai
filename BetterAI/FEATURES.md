@@ -388,7 +388,13 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
 
 - Notices when someone sits down or leaves, and greets known faces by name.
 - "What do you see?" describes the camera view. Uses the same vision model as screen reading.
-- When an unknown face shows up, Aria asks for the person's name and learns their face (40 samples). You can also use `vision/setupface.py`.
+- **"Learn my face"** (or "remember my face, I'm Sam"): she takes about 40 pictures in ten seconds and says when she's
+  done; after that she greets you by name. If she can't see you well (fewer than 10 pictures), nothing is saved.
+  `vision/setupface.py` does the same with a preview window.
+- When someone she doesn't know sits down: if no face has been learnt yet and she knows your name, she suggests
+  "learn my face" once; otherwise she asks the person's name and learns their face. At most once every 6 hours.
+- Someone at the desk counts as present even before they're recognised. (Before, with no face learnt, nobody was
+  ever "present": she never started conversations and focus never paused.)
 - **Picks the camera automatically:** uses the first device that actually gives a picture, because on Linux `/dev/video1` is
   usually only a metadata node. Set `CAMERA_INDEX` to force one.
 - One shared camera connection: snapshots reuse the running camera instead of opening it a second time, which fails on Linux.

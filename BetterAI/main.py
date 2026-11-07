@@ -41,7 +41,7 @@ from Engines.ScreenEngine import ScreenEngine
 from Engines.Tool_Engine import ToolEngine
 from Engines.UserStateEngine import UserStateEngine
 from Engines.voice_engine import VoiceEngine
-from llm_engine import LLMEngine
+from llm_engine import FINAL_PREFIX, LLMEngine
 from Engines.Confirm import NO_RE, YES_RE
 from speech_to_text import LOW_CONFIDENCE, STTEngine
 from vision.tray import AriaTray
@@ -111,6 +111,7 @@ REVIEW_DONE_RE = re.compile(r"\b(done|did it|did that|finished|completed|already
 SLEEP_PHRASES = ["go to sleep", "sleep", "goodbye", "see you later", "that's all", "shut up"]
 SHUTDOWN_PHRASES = ["exit", "quit", "shutdown"]
 SLEEP_TIMEOUT = 60
+ASK_NAME_EVERY_S = 6 * 3600    # "what's your name?" to an unknown face at most this often
 MOOD_CHECK = os.environ.get("ARIA_MOOD_CHECK", "0") == "1"
 MOOD_STALE_S = 180
 INITIATIVE_TIMEOUT = 120   # when Aria started the conversation, give Lala longer to answer
@@ -473,6 +474,7 @@ class Aria:
             health=Health(self),
             posture=self.posture,
             quiz=self.quiz,
+            face_learner=self.learn_my_face,
         )
         print(f"[Tools] {len(self.tools.schemas)} tools available")
 
@@ -536,6 +538,16 @@ class Aria:
         self._focus_back()      # recognition is shaky in bad light; any face at the desk counts as back
         if self._unknown_in_progress or not self._presence_may_wake():
             return
+        if time.time() - getattr(self, "_asked_name_at", 0) < ASK_NAME_EVERY_S:
+            return              # asked recently (and they didn't answer, or it's someone just passing by)
+        self._asked_name_at = time.time()
+        owner = self._known_user_name()
+        if owner and not self.memory.get_face_profiles():
+            # It's almost certainly Lala, whose face just hasn't been learnt yet: suggest it, don't interrogate.
+            print("[Vision] Someone's here; no face learnt yet")
+            self._announce(f"Hey {owner}! I can't recognise faces yet. Say 'learn my face' when you've got "
+                           f"ten seconds to look at the camera.")
+            return
         print("[Vision] Unknown person detected")
         self._vision_user = None
         self.is_user_known = False
@@ -561,8 +573,10 @@ class Aria:
                 self.speak("Sorry, I didn't get a clear name. We can try again later.")
                 return
 
-            self.speak(f"Nice to meet you, {name}. Give me a moment to remember your face.")
-            self.vision.learn_face(name, samples=40)
+            self.speak(f"Nice to meet you, {name}. Look at the camera for a few seconds, I'm remembering your face.")
+            if self.vision.learn_face(name, samples=40) < 10:
+                self.speak("I couldn't see you well enough. Say 'learn my face' later and we'll try again.")
+                return
             self.is_user_known = True
             self._vision_user = name
             self.speak(f"Got it, {name}. I'll remember you next time.")
@@ -571,6 +585,36 @@ class Aria:
             print(f"[Vision] Unknown person handling failed: {e}")
         finally:
             self._unknown_in_progress = False
+
+    def _known_user_name(self):
+        """The user's name from memory ('User's name is Lala'), or None."""
+        try:
+            for fact in self.memory.get_memories(80):
+                m = re.match(r"User'?s name is (\w[\w' -]{0,29})", fact)
+                if m:
+                    return m.group(1).strip()
+        except Exception:
+            pass
+        return None
+
+    def learn_my_face(self, name: str = ""):
+        """Tool: 'learn my face'. Takes ~40 pictures in the background (about 10 seconds), then says how it went."""
+        name = (name or "").strip() or self._known_user_name()
+        if not name:
+            return "Tell me your name with it, like: learn my face, I'm Sam."
+        if getattr(self.vision, "_camera_index", None) is None and not getattr(self.vision, "_running", False):
+            return "I don't have a camera to learn your face with."
+
+        def run():
+            count = self.vision.learn_face(name, samples=40)
+            if count >= 10:
+                self._vision_user, self.is_user_known = name, True
+                self._announce(f"Done, {name}. I'll recognise you from now on.")
+            else:
+                self._announce("I couldn't see your face well enough. Try again facing the camera, with some light.")
+        threading.Thread(target=run, daemon=True).start()
+        return (FINAL_PREFIX + f"Okay {name}, look at the camera for about ten seconds. "
+                "Turn your head a little left and right while I take pictures.")
 
     def _ask_name(self):
         if self.option == 2:

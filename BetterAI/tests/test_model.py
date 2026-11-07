@@ -41,7 +41,7 @@ def real_aria(aria, memory, tmp_path):
     aria.notion.add_to_list("shopping", "eggs, milk")
     aria.tools = ToolEngine(spotify=s, vision=s, reminders=aria.reminders, focus=s, screen=s, laptop=s,
                             files=FilesEngine(aria.confirm, roots=[str(tmp_path)]), notion=aria.notion,
-                            initiative=s, memory_note=s, activity=s, weather=s, recall=s, health=s, posture=s, quiz=s)
+                            initiative=s, memory_note=s, activity=s, weather=s, recall=s, health=s, posture=s, quiz=s, face_learner=lambda name='': 'Okay, look at the camera.')
     return aria
 
 
@@ -56,7 +56,7 @@ COMMANDS = [
     ("how many miles is 42 km", "convert_units"), ("how much battery do I have", "laptop_status"),
     ("is wifi on?", "network_status"), ("quiz me on my databases note", "start_quiz"),
     ("test me on the gear trains pdf", "start_quiz"), ("this is my good posture", "remember_good_posture"),
-    ("add call the bank to today's note", "add_note"),
+    ("add call the bank to today's note", "add_note"), ("learn my face", "learn_my_face"),
 ]
 
 
