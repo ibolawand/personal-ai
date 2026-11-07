@@ -21,6 +21,8 @@ from pathlib import Path
 import time
 from contextlib import contextmanager
 
+from Engines.DueDates import (EVENING_HOUR, SOON_DAYS, say_due, split_due, strip_by_phrase, with_due)
+
 EVENT_REMINDER_MIN = 15          # announce events this many minutes before they start
 DAY_AHEAD_HOUR = 9               # birthdays & co: heads-up at this hour the day before
 YEARLY_RE = re.compile(r"\b(birthday|bday|anniversary|name ?day)\b", re.I)
@@ -515,7 +517,7 @@ class NotionEngine:
         for item in split_items(items):
             for li in re.findall(r"<li[^>]*>.*?</li>", content, flags=re.S | re.I):
                 text = li_text(li)
-                if _match_score(item, text) >= 60:
+                if _match_score(item, split_due(text)[0]) >= 60:
                     content = content.replace(li, "", 1)
                     removed.append(text)
                     break
@@ -556,7 +558,7 @@ class NotionEngine:
             best = None
             for n in pool:
                 for li in re.findall(r'<li[^>]*data-type="taskItem"[^>]*>.*?</li>', n["content"] or "", flags=re.S | re.I):
-                    score = _match_score(item, li_text(li))
+                    score = _match_score(item, split_due(li_text(li))[0])
                     if score >= 60 and (not best or score > best[0]):
                         best = (score, n, li)
             if not best:
@@ -564,7 +566,7 @@ class NotionEngine:
                 words = {w for w in _stem(_norm(item)).split() if len(w) > 3 and w not in _FILLER_WORDS}
                 hits = [(n, li) for n in pool
                         for li in re.findall(r'<li[^>]*data-type="taskItem"[^>]*>.*?</li>', n["content"] or "", flags=re.S | re.I)
-                        if words & set(_stem(_norm(li_text(li))).split())]
+                        if words & set(_stem(_norm(split_due(li_text(li))[0])).split())]
                 if len(hits) == 1:
                     best = (50, *hits[0])
             if best:
@@ -580,8 +582,115 @@ class NotionEngine:
         return f"Ticked off {names}." if done else f"Unticked {names}."
 
     def _open_todos(self):
-        """Unticked items on to-do/task lists (not the shopping list etc.)."""
-        return [text for _, text in self.open_todo_items()]
+        """Unticked items on to-do/task lists (not the shopping list etc.) that have no due date."""
+        return [text for _, text in self.open_todo_items() if not split_due(text)[1]]
+
+    # ── to-dos with due dates (Engines/DueDates.py) ──
+
+    TASK_LI = r'<li[^>]*data-type="taskItem"[^>]*>.*?</li>'
+
+    def due_items(self, include_done=False):
+        """[{note, li, text, day, done}] for every checklist item with a due date, soonest first."""
+        out = []
+        for n in self._notes():
+            for li in re.findall(self.TASK_LI, n["content"] or "", flags=re.S | re.I):
+                done = 'data-checked="true"' in li[:li.find(">")].lower()
+                if done and not include_done:
+                    continue
+                text, day = split_due(li_text(li))
+                if day:
+                    out.append({"note": n, "li": li, "text": text, "day": day, "done": done})
+        return sorted(out, key=lambda x: x["day"])
+
+    def _find_task(self, item: str, open_only=True):
+        """(note, li) of the checklist item that best matches item, or (None, None)."""
+        best = (0, None, None)
+        for n in self._notes():
+            for li in re.findall(self.TASK_LI, n["content"] or "", flags=re.S | re.I):
+                if open_only and 'data-checked="true"' in li[:li.find(">")].lower():
+                    continue
+                score = _match_score(item, split_due(li_text(li))[0])
+                if score > best[0]:
+                    best = (score, n, li)
+        return (best[1], best[2]) if best[0] >= 60 else (None, None)
+
+    def add_todo(self, task: str, due: str = "", list_name: str = ""):
+        """One to-do, optionally with a due date. Not split at 'and' (unlike add_to_list): 'call mum and dad'."""
+        task = (task or "").strip().strip(".")
+        if not due:
+            task, due = strip_by_phrase(task)          # the model sometimes leaves "by friday" in the task
+        task = re.sub(r"^(?:to\s+|that i (?:have|need) to\s+|i (?:have|need) to\s+)", "", task, flags=re.I).strip()
+        if not task:
+            return "What's the to-do?"
+        day = None
+        if due and str(due).strip().lower() not in ("none", "no", ""):
+            day = parse_day(due)
+            if not day:
+                return f"I didn't get the date '{due}'. Say it like 'friday' or '20 november'."
+        task = task[:1].upper() + task[1:]
+        n, li = self._find_task(task)
+        if n and _match_score(task, split_due(li_text(li))[0]) >= 90:
+            if not day:
+                return f"'{split_due(li_text(li))[0]}' is already on your {n['title']}."
+            return self.set_due(task, due)
+        n = self._list_note(list_name or "to-do", create=True)
+        content = n["content"] or ""
+        addition = task_item(with_due(task, day))
+        start = content.lower().rfind('<ul data-type="tasklist"')
+        idx = content.lower().find("</ul>", start) if start >= 0 else -1
+        content = content[:idx] + addition + content[idx:] if idx >= 0 else content + f'<ul data-type="taskList">{addition}</ul>'
+        self._set_content(n["id"], content)
+        self.show_list_card({**n, "content": content})
+        if day:
+            return f"Added '{task}' to your {n['title']}, due {say_due(day)}."
+        return f"Added '{task}' to your {n['title']}."
+
+    def set_due(self, item: str, due: str = ""):
+        """Give a to-do a due date, move it ('the essay is due monday now'), or remove it (due = 'none')."""
+        n, li = self._find_task(item)
+        if not n:
+            return f"I couldn't find an open to-do like '{item}'."
+        text = li_text(li)
+        clear = str(due or "").strip().lower() in ("", "none", "no", "remove", "no date", "never")
+        day = None if clear else parse_day(due)
+        if not clear and not day:
+            return f"I didn't get the date '{due}'."
+        new = task_item(with_due(text, day), False)
+        content = n["content"].replace(li, new, 1)
+        self._set_content(n["id"], content)
+        self.show_list_card({**n, "content": content})
+        base = split_due(text)[0]
+        return f"'{base}' has no due date now." if clear else f"'{base}' is due {say_due(day)} now."
+
+    def get_due(self, when: str = "this week"):
+        """What's due: overdue items always, plus everything up to the end of `when`."""
+        today = dt.date.today()
+        w = (when or "this week").strip().lower()
+        if w in ("all", "everything", "anything", "ever"):
+            end = dt.date.max
+        elif "next week" in w:
+            end = today + dt.timedelta(days=13 - today.weekday())
+        elif "week" in w:
+            end = today + dt.timedelta(days=6)
+        elif "month" in w:
+            end = today + dt.timedelta(days=31)
+        else:
+            end = parse_day(w) or today + dt.timedelta(days=6)
+        items = [x for x in self.due_items() if x["day"] <= end]
+        if not items:
+            return "Nothing's due " + ("at all." if end == dt.date.max else "then.") + \
+                (" Your open to-dos have no dates." if self._open_todos() else "")
+        late = [x for x in items if x["day"] < today]
+        rest = [x for x in items if x["day"] >= today]
+        parts = []
+        if late:
+            parts.append("Overdue: " + "; ".join(f"{x['text']} (was due {say_due(x['day'])})" for x in late))
+        if rest:
+            parts.append("Due: " + "; ".join(f"{x['text']} {say_due(x['day'])}" for x in rest))
+        notes = {x["note"]["id"]: x["note"] for x in items}
+        if len(notes) == 1:
+            self.show_list_card(next(iter(notes.values())))
+        return ". ".join(parts) + "."
 
     def open_todo_items(self):
         """[(list title, item text)] for unticked items on to-do/task lists."""
@@ -916,6 +1025,23 @@ class NotionEngine:
             if (title, k) not in have:
                 reminders.add(title, "event", due)
         self._sync_day_ahead(reminders, now, today)
+        self._sync_due(reminders, now, today)
+
+    def _sync_due(self, reminders, now, today):
+        """Open to-dos due tomorrow: a heads-up at EVENING_HOUR today. Gone when ticked off or moved."""
+        wanted = {}
+        tomorrow = today + dt.timedelta(days=1)
+        evening = dt.datetime.combine(today, dt.time(EVENING_HOUR)).timestamp()
+        for x in self.due_items():
+            if x["day"] == tomorrow and evening > now:
+                wanted[(x["text"], round(evening))] = evening
+        have = {(r["text"], round(r["due"])): r for r in reminders.pending(("due",))}
+        for key, r in have.items():
+            if key not in wanted:
+                reminders.cancel_id(r["id"])
+        for (text, k), due in wanted.items():
+            if (text, k) not in have:
+                reminders.add(text, "due", due)
 
     @staticmethod
     def _is_special(e) -> bool:
@@ -972,6 +1098,17 @@ class NotionEngine:
             if rem:
                 parts.append("Reminders today: " + "; ".join(
                     f"{r['text']} at {dt.datetime.fromtimestamp(r['due']).strftime('%H:%M')}" for r in rem) + ".")
+
+        due = self.due_items()
+        late = [x for x in due if x["day"] < today]
+        now_due = [x for x in due if x["day"] == today]
+        soon = [x for x in due if today < x["day"] <= today + dt.timedelta(days=SOON_DAYS)]
+        if late:
+            parts.append("Overdue: " + "; ".join(f"{x['text']} (was due {say_due(x['day'], today)})" for x in late[:3]) + ".")
+        if now_due:
+            parts.append("Due today: " + "; ".join(x["text"] for x in now_due[:3]) + ".")
+        if soon:
+            parts.append("Due soon: " + "; ".join(f"{x['text']} {say_due(x['day'], today)}" for x in soon[:3]) + ".")
 
         todos = self._open_todos()
         if todos:

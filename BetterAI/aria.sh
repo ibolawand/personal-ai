@@ -23,7 +23,7 @@ case "$1" in
                    "$PY" -m ui.instance "${1#--}" || echo "Aria isn't running."; exit 0 ;;
 esac
 
-ARGS="$(grep -E '^ARIA_ARGS=' Engines/.env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"')"
+ARGS=""   # ARIA_ARGS from Engines/.env is read by main.py itself
 # keep the log from growing forever
 [ -f "$LOG" ] && [ "$(stat -c %s "$LOG")" -gt 5000000 ] && mv "$LOG" "$LOG.old"
 echo "=== Aria started $(date '+%F %T') args: $ARGS ===" >> "$LOG"

@@ -14,7 +14,7 @@ class Any:
 def tools():
     a = Any()
     return ToolEngine(spotify=a, arduino=a, vision=a, ha=a, reminders=a, focus=a, screen=a, laptop=a, files=a,
-                      notion=a, initiative=a, memory_note=a, activity=a, weather=a, undo=a, recall=a, health=a, posture=a, quiz=a, face_learner=lambda name='': 'ok')
+                      notion=a, initiative=a, memory_note=a, activity=a, weather=a, undo=a, recall=a, health=a, posture=a, quiz=a, face_learner=lambda name='': 'ok', mail=a)
 
 
 def names(tools, text, recent=()):
@@ -31,6 +31,11 @@ def names(tools, text, recent=()):
     ("split the bill between 3", "split_bill"), ("are your systems okay?", "system_check"),
     ("remind me at 6 to call mum", "set_reminder"), ("do I need a jacket tomorrow?", "get_weather"),
     ("dim the lights", "set_led_brightness"), ("I live in Vienna", "set_home_city"),
+    ("any new emails?", "check_mail"), ("read the one from Mr Huber", "read_mail"),
+    ("what did Sara write about friday", "search_mail"), ("reply that I'll be there at 3", "draft_reply"),
+    ("write an email to Mr Huber saying I'm sick", "draft_mail"), ("archive that email", "archive_mail"),
+    ("mark the mail from Sara as read", "mark_mail_read"), ("remind me to answer that email tomorrow", "mail_todo"),
+    ("turn that email into an event", "mail_to_event"), ("always tell me when Sara emails", "mark_sender_important"),
 ])
 def test_the_needed_tool_is_offered(tools, text, needed):
     assert needed in names(tools, text)

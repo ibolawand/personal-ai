@@ -42,7 +42,7 @@ def real_aria(aria, memory, tmp_path):
     aria.posture = s                                   # "this is my good posture" is handled in code
     aria.tools = ToolEngine(spotify=s, vision=s, reminders=aria.reminders, focus=s, screen=s, laptop=s,
                             files=FilesEngine(aria.confirm, roots=[str(tmp_path)]), notion=aria.notion,
-                            initiative=s, memory_note=s, activity=s, weather=s, recall=s, health=s, posture=s, quiz=s, face_learner=lambda name='': 'Okay, look at the camera.')
+                            initiative=s, memory_note=s, activity=s, weather=s, recall=s, health=s, posture=s, quiz=s, face_learner=lambda name='': 'Okay, look at the camera.', mail=s)
     return aria
 
 
@@ -59,6 +59,10 @@ COMMANDS = [
     ("test me on the gear trains pdf", "start_quiz"), ("this is my good posture", "remember_good_posture"),
     ("add call the bank to today's note", "add_note"), ("learn my face", "learn_my_face"),
     ("restore my shopping list from yesterday", "restore_note"),
+    ("I have to finish the essay by friday", "add_todo"), ("what's due this week?", "get_due"),
+    ("the essay is due on monday now", "set_due|add_todo"),
+    ("any new emails?", "check_mail"), ("read the email from Mr Huber", "read_mail"),
+    ("reply to Sara that I'm in", "draft_reply"),
 ]
 
 

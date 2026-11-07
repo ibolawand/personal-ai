@@ -460,3 +460,20 @@ def test_good_posture_is_handled_in_code(aria, text):
     aria.posture = types.SimpleNamespace(set_reference=lambda: "Got it, that's your good posture.")
     reply, used = aria.handle_turn(text, check_state=False)
     assert used == [("remember_good_posture", reply)] and aria.llm.prompts == []
+
+
+def test_copied_speaker_label_is_never_spoken():
+    out = []
+    s = main.SentenceStreamer(out.append)
+    for chunk in ["Ar", "ia: Pretty", " good! How ", "was school?"]:
+        s.feed(chunk)
+    s.flush()
+    assert out == ["Pretty good!", "How was school?"]
+    assert main.tidy_reply("**Aria:** Done, milk's on the list.") == "Done, milk's on the list."
+    assert main.tidy_reply("Aria said hi.") == "Aria said hi."
+
+
+def test_no_clingy_lines():
+    assert tidy_reply("Hey Lawand! It's been a while, I missed you! How was your day?") == "Hey Lawand! How was your day?"
+    assert tidy_reply("I've been waiting for you. What's up?") == "What's up?"
+    assert tidy_reply("Did you miss the bus?") == "Did you miss the bus?"

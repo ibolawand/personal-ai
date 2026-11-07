@@ -20,7 +20,7 @@ Keep this file updated whenever a feature is added or changed.
 - **Ctrl+Alt+Space from any app:** opens the text box, or hides it if it's open. If Aria isn't running, it starts her.
 
 `./aria.sh --quit` stops Aria. `./aria.sh --chat`, `--review` or `--event` makes her start that kind of conversation right now, to try it out. `./install_desktop.sh --remove` undoes the setup. Logs go to `~/.cache/aria/aria.log`.
-To launch in voice mode, put `ARIA_ARGS=--voice` in `Engines/.env`. For another hotkey, run `ARIA_HOTKEY='<Super>j' ./install_desktop.sh`.
+Voice mode is on: `ARIA_ARGS=--voice` in `Engines/.env` (main.py reads it however she's started; remove the line to go back to typing). For another hotkey, run `ARIA_HOTKEY='<Super>j' ./install_desktop.sh`.
 
 Only one Aria runs at a time (`ui/instance.py`): launching her again just opens the text box of the running one.
 That way two copies never fight over the camera and mic.
@@ -132,6 +132,15 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 - **Hears you right** (`speech_to_text.py`):
   - voice activity detection cuts silence and noise before transcribing, so no more phantom "Thanks for watching!"
     (tested: silence, room noise and louder noise used to give "Thank you very much.", "You", "Thanks for watching!"; now nothing)
+  - wake word check: when the model is fairly sure (0.6+) and Whisper makes out no words at all, she wakes; Whisper
+    hearing other words (a video) still blocks it. The check transcribes the short clip without the noise filter.
+  - a voice detector (not loudness) decides when you start and stop talking, so a fan, music or a video no longer
+    keeps the recording going for 30 s and gets written out as if you said it; Whisper loops ("who said… who said…")
+    and repeated sentences are dropped; the "are you interrupting me?" listener never overlaps the next normal listen
+  - **only what's said to her** (`Engines/Addressee.py`): while she's awake, speech counts if it has her name in it, if
+    she's waiting for an answer, if it's a command ("play some music") while she's awake, or if you start talking
+    within 30 s of her waking or answering (45 s after she asked a question), while you're at the desk (camera saw your face, or keyboard/mouse used, in the last 20 s). Someone
+    else talking or a video later on is ignored (logged as `ignored_speech`); "Aria, …" always gets through.
   - a word list with Aria, MyNotion, app names and the names in her memory and note titles: "MyNotion" was heard as
     "Minotian" and "Lina" as "Lena"; both come out right now
   - when she isn't sure what she heard, she asks "Sorry, did you say: …?". "Yes" acts on it, "no" makes her ask
@@ -282,6 +291,21 @@ To try one right now: `./aria.sh --chat`, `--followup`, `--break`, `--review` or
   "stop" to end. You get your score at the end.
 - Missed questions are kept: "quiz me on my mistakes" asks them again, and the ones you get right are dropped.
 
+## Dictation — `Engines/Dictation.py`
+
+- "Dictate into my trip note", "start dictating", "take dictation". Without a note name it goes into today's note.
+- While it's on, Aria writes down everything you say (or type) instead of answering, and stays quiet. A card next
+  to the orb shows the text so far, with **Save** and **Cancel** buttons.
+- Say, on its own: **"stop"** / "done" / "that's it" to save, **"scratch that"** to take back the last thing you said,
+  **"new paragraph"** (also mid-sentence), **"read it back"** to hear what you have, **"cancel dictation"** to throw it
+  away (she asks first).
+- On save the model adds punctuation and capitals and removes "um", stutters and false starts. It's told not to
+  reword or summarise, and if its version has noticeably more or fewer words than you said, your own words are
+  kept (only lightly tidied). "Undo that" takes the dictation back out of the note.
+- Pauses of up to 3 minutes are fine; a sentence only ends after 2.2 s of quiet (normally 1.2 s). If she falls asleep,
+  or you say "go to sleep", what you dictated is saved first. "That's all", "sleep" or "exit" on their own are
+  treated as dictation (or its end), not as commands.
+
 ## Files & school work — `Engines/FilesEngine.py`
 
 - "Find my plsql pdf", "find powerpoints from this week". Results are numbered, newest first.
@@ -331,6 +355,14 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
 - **Open things in MyNotion:** "open my calendar", "show me my shopping list", "open the birthdays note", "open MyNotion".
   Aria starts MyNotion or brings it to the front on that page. "What's on my shopping list?" reads it aloud instead.
   "Open/show <calendar or an existing note>" is handled in code, so it's instant and reliable; anything else ("open vs code") goes to the model as usual.
+- **To-dos with due dates** (`Engines/DueDates.py`): "I have to finish the essay by friday", "hand in the report
+  on 20 november" adds one to-do (never split at "and") to your To-do list as `Finish the essay · due Fri 13 Nov`.
+  - "What's due this week?", "anything overdue?", "the essay is due monday now", "no deadline for the bank call".
+  - The morning briefing lists what's overdue, due today and due in the next week; to-dos without a date stay
+    under "open to-dos".
+  - At 19:00 the evening before, Aria says "Heads up: Finish the essay is due tomorrow." Ticking it off or moving
+    the date cancels that.
+  - The date is plain text at the end of the item, so you can type it in MyNotion too (see below).
 - **Birthdays & special days:** "Lina's birthday is on 3 March" becomes a yearly all-day event automatically
   (also anniversaries). You get a heads-up at 09:00 the day before ("tomorrow is Lina's birthday"), and the morning
   briefing counts down special days in the next two weeks.
@@ -342,7 +374,34 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
   version from before Aria's change.
 - Note, list and calendar reading tools are protected by the optional `ARIA_OWNER` face lock.
 
+## Email — `Engines/MailEngine.py` (with MyNotion's Inbox)
+
+Your Gmail, without a Google Cloud project: MyNotion's Inbox syncs it over IMAP with an **app password**
+(myaccount.google.com/apppasswords, needs 2-step verification), kept only in the system keyring. Aria reads the same
+mail from `noted.db` and talks to Gmail herself to send, archive and check when MyNotion hasn't synced lately.
+
+- **Only real mail:** just Gmail's Primary tab (no Promotions/Social/Updates, Spam is never read), plus a second
+  filter for newsletters and ads that slip in (unsubscribe header, bulk mail, no-reply senders). "Not junk" in
+  MyNotion's Filtered view always shows that sender from then on. Same rules in both apps (`MailFilter.py` /
+  `filter.ts`, shared test cases).
+- "Any new emails?" → "Two new: one from Sara K about friday?, one from Mr Huber about Project deadline."
+- "Read the one from Mr Huber" / "read the latest": long ones get a short summary first ("Want all of it?").
+  Two people with that name → she asks which. Reading marks it read in Gmail too.
+- "What did Sara write about friday?" searches your mail.
+- "Reply that I'll be there at 3" / "email Mr Huber that I'm sick": she writes it in your voice, reads it back and
+  asks "Send it?". Only a yes sends, and it waits 10 s first: "undo" / "don't send it" stops it. Recipients are
+  people who emailed you before, or a full address. A failed send is said out loud.
+- "Archive that" (stays in All Mail; she never deletes mail), "mark it as read".
+- "Remind me to answer that tomorrow" → a to-do "Answer Mr Huber about Project · due …".
+- "Turn that into an event" → date and time from the email into the calendar, after a yes.
+- "Always tell me when Sara emails" → she says it when Sara's mail arrives, only while you're at the desk.
+- The morning briefing mentions new mail ("2 new emails: from Sara K and Mr Huber.").
+
 ## MyNotion app (`../MyNotion`)
+
+- **Inbox:** Gmail inside MyNotion (see Email above): Inbox and Filtered views, search, reading (HTML in a locked-down
+  view, tracking images off until "Show images"), reply/new email with attachments, Archive, Remind me, Make event,
+  an Outbox so nothing is lost offline or sent twice. First time: Inbox → connect with the address + app password.
 
 - A real desktop app in the Mint menu: `./build_app.sh` builds it, and `./install_desktop.sh` adds the menu entry.
 - **No login:** it's a local app for one person, so it opens straight to your notes.
@@ -367,6 +426,10 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
 - **Older versions** (Aria): "restore my C# note from yesterday" brings back that day's version from MyNotion's
   daily backups (`~/.config/MyNotion/backups/`, only ever read), and "bring back the note I deleted" restores a
   deleted one. She asks first and says how many words it has now and then; "undo that" works afterwards.
+- **Due dates:** a to-do ending in `due 13 Nov` (or `due 13.11.`, `due 2026-11-13`) shows the date as a chip:
+  red when overdue, green when due today, blue for the next two days. Typing `due friday ` / `due tomorrow ` /
+  `due in 3 days ` in a to-do turns it into the date as you type. Open to-dos also show in the calendar's all-day
+  row on the day they're due; click one to open its note.
 - **Today's note:** Ctrl+D (or the first row of the search) opens a note called e.g. "Saturday, 7 November 2026",
   made with a small Plan / Notes template the first time each day. Aria uses the same note: "add call the bank to
   today's note", "what's in today's note?".
@@ -429,7 +492,7 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
 
 ## Tests — `tests/`
 
-- About 100 tests, run in about 7 seconds: `.venv/bin/python -m pytest` (install once with `pip install -r requirements-dev.txt`).
+- About 440 tests (plus 31 opt-in checks with the real model), and MyNotion's mail tests (`cd ../MyNotion/note && npm test`): `.venv/bin/python -m pytest` (install once with `pip install -r requirements-dev.txt`).
 - They cover reminders and repeats, follow-up timing, the memory note sync, lists and the calendar, the weekly review,
   the reply filters (stock lines, repeats, "what?"), conversation-starter rules, app matching, file search and web search parsing.
 - No model, camera, microphone or network needed. They only use temporary databases: opening the real

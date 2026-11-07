@@ -8,6 +8,11 @@ Against mishearing and phantom text:
   - known Whisper hallucinations are dropped when that's all that was "heard"
   - a confidence score per result (self.last_confidence, 0..1): main.py asks "did you say …?" when it's low
 
+Knowing when you talk (_record): Silero voice detection (the one faster-whisper ships) decides when speech starts and
+ends, not loudness. With a loudness threshold, a fan, music or a video kept the recording going for up to 30 s and
+Whisper then wrote all of it out as if you'd said it. A third of a second before speech starts is kept, so the first
+word isn't clipped. If the detector can't load, it falls back to loudness.
+
 Speed (measured on the RTX 4070, Whisper medium): 0.2 s per sentence on the GPU against 2.6 s on the CPU, same text.
 It runs on the GPU when it can (about 1.1 GB next to the chat model's 5.6 GB) and falls back to the CPU.
 STT_DEVICE=cpu forces the CPU. The end of a sentence is SILENCE_S of quiet (it was 2 s: dead time on every turn).
@@ -32,6 +37,24 @@ HALLUCINATIONS = re.compile(
     r"subtitles by.*|amara\.org.*|www\..*|alright, have a great (week|day))\W*$", re.I)
 LOW_CONFIDENCE = 0.45
 SILENCE_S = 1.2           # seconds of quiet that end what you said (a short pause mid-sentence is fine)
+SPEECH_ON = 0.5           # voice detector probability that counts as speech
+SPEECH_OFF = 0.3          # ...and below this it's a pause (in between: keeps the current state)
+SPEECH_START_BLOCKS = 2   # this many blocks in a row (~130 ms) before it counts as you starting to talk
+PRE_ROLL_S = 0.35         # kept from before speech started, so the first word isn't cut off
+VAD_WINDOW = 8192         # samples the detector looks at each block (0.5 s of context)
+MAX_COMPRESSION = 2.4     # a segment that repeats itself this much is a Whisper loop, not speech
+MIN_LOGPROB = -1.0        # a segment Whisper is this unsure about is dropped
+
+
+def _load_vad():
+    try:
+        from faster_whisper.vad import get_vad_model
+        model = get_vad_model()
+        model(np.zeros(VAD_WINDOW, dtype=np.float32))
+        return model
+    except Exception as e:
+        print(f"[STT] Voice detector unavailable ({str(e)[:80]}), using loudness")
+        return None
 
 
 class STTEngine:
@@ -47,6 +70,7 @@ class STTEngine:
         self.on_level = None         # optional fn(volume: float) for UI meters
         self.vocabulary = lambda: [] # optional fn() -> extra words (names Aria knows), set by Aria
         self.last_confidence = 1.0
+        self.vad = _load_vad()
 
     @staticmethod
     def _load(model_size, device):
@@ -58,41 +82,63 @@ class STTEngine:
                 print(f"[STT] GPU not usable ({str(e)[:80]}), using the CPU")
         return WhisperModel(model_size, device="cpu", compute_type="int8"), "cpu"
 
-    def _record(self, start_timeout=None):
-        """Records until silence. Returns None if nobody starts speaking within start_timeout seconds."""
+    def _speech_prob(self, recent: np.ndarray) -> float:
+        """How likely the newest block is speech (0..1). Without the detector: loudness."""
+        if self.vad is None:
+            return 1.0 if np.abs(recent[-1024:]).mean() > self.silence_threshold else 0.0
+        window = recent[-VAD_WINDOW:]
+        if len(window) < VAD_WINDOW:
+            window = np.concatenate([np.zeros(VAD_WINDOW - len(window), dtype=np.float32), window])
+        out = np.asarray(self.vad(window)).ravel()
+        return float(out[-2:].max())         # the last two 32 ms frames = this block
+
+    def _record(self, start_timeout=None, max_duration=None, stop=None):
+        """Records one utterance: from when speech starts until silence_duration without speech.
+        Returns None if nobody starts speaking within start_timeout seconds, or `stop()` turns true before that."""
         print("[STT] Listening...")
-        frames = []
-        silent_frames = 0
+        block = 1024
+        rate = self.sample_rate
+        silence_limit = int(self.silence_duration * rate / block)
+        start_limit = int(start_timeout * rate / block) if start_timeout else None
+        max_blocks = int((max_duration or self.max_duration) * rate / block)
+        pre_roll = max(1, int(PRE_ROLL_S * rate / block))
+        recent = np.zeros(0, dtype=np.float32)     # rolling audio for the detector
+        frames, waited, voiced, silent = [], 0, 0, 0
         speaking = False
-        frames_per_buffer = 1024
-        silence_limit = int(self.silence_duration * self.sample_rate / frames_per_buffer)
-        start_limit = int(start_timeout * self.sample_rate / frames_per_buffer) if start_timeout else None
 
-        with sd.InputStream(samplerate=self.sample_rate, channels=1,
-                           dtype='float32', blocksize=frames_per_buffer) as stream:
+        with sd.InputStream(samplerate=rate, channels=1, dtype='float32', blocksize=block) as stream:
             while True:
-                data, _ = stream.read(frames_per_buffer)
-                frames.append(data.copy())
-                volume = np.abs(data).mean()
+                data, _ = stream.read(block)
+                data = data[:, 0].copy()
                 if self.on_level:
-                    self.on_level(float(volume))
+                    self.on_level(float(np.abs(data).mean()))
+                recent = np.concatenate([recent, data])[-VAD_WINDOW:]
+                prob = self._speech_prob(recent)
+                frames.append(data)
 
-                if volume > self.silence_threshold:
-                    speaking = True
-                    silent_frames = 0
-                elif speaking:
-                    silent_frames += 1
-                    if silent_frames >= silence_limit:
+                if not speaking:
+                    voiced = voiced + 1 if prob >= SPEECH_ON else 0
+                    if voiced >= SPEECH_START_BLOCKS:
+                        speaking = True
+                        frames = frames[-(pre_roll + voiced):]
+                        silent = 0
+                        continue
+                    frames = frames[-(pre_roll + SPEECH_START_BLOCKS):]
+                    waited += 1
+                    if (start_limit and waited >= start_limit) or (stop and not voiced and stop()):
+                        return None
+                    continue
+
+                if prob < SPEECH_OFF:
+                    silent += 1
+                    if silent >= silence_limit:
                         break
-
-                if not speaking and start_limit and len(frames) >= start_limit:
-                    return None
-
-                # Hard cap
-                if len(frames) > int(self.max_duration * self.sample_rate / frames_per_buffer):
+                elif prob >= SPEECH_ON:
+                    silent = 0
+                if len(frames) >= max_blocks:
                     break
 
-        return np.concatenate(frames, axis=0).flatten()
+        return np.concatenate(frames)
 
     def _prompt(self) -> str:
         try:
@@ -111,6 +157,10 @@ class STTEngine:
         for seg in segments:
             if seg.no_speech_prob > 0.6 and seg.avg_logprob < -0.8:
                 continue                          # Whisper itself thinks nobody spoke
+            if seg.compression_ratio > MAX_COMPRESSION or seg.avg_logprob < MIN_LOGPROB:
+                continue                          # a repeating loop, or a guess
+            if any(seg.text.strip().lower() == k.strip().lower() for k in kept):
+                continue                          # the same sentence again
             kept.append(seg.text)
             probs.append(math.exp(seg.avg_logprob))
         text = " ".join(t.strip() for t in kept).strip()
@@ -118,8 +168,16 @@ class STTEngine:
             return "", 0.0
         return text, min(probs) if probs else 0.0
 
-    def listen(self, start_timeout=None):
-        audio = self._record(start_timeout)
+    def transcribe_short(self, audio) -> str:
+        """A 2-3 s clip (the wake word check): no noise filter or confidence cut-offs, which can drop a short
+        "hey Aria" entirely. Only the known phantom phrases are removed."""
+        segments, _ = self.model.transcribe(audio, language="en", vad_filter=False, initial_prompt="Hey Aria.",
+                                            condition_on_previous_text=False)
+        text = " ".join(seg.text.strip() for seg in segments).strip()
+        return "" if HALLUCINATIONS.match(text) else text
+
+    def listen(self, start_timeout=None, max_duration=None, stop=None):
+        audio = self._record(start_timeout, max_duration, stop)
         if audio is None:
             return None
         print("[STT] Transcribing...")
@@ -130,30 +188,10 @@ class STTEngine:
         print(f"[STT] Heard: {text!r} (confidence {self.last_confidence:.2f})")
         return text or None
 
-    def listen_short(self, timeout=0.5):
-        """
-        Quick listen — returns immediately if no speech detected within timeout.
-        Used for interruption detection while Aria is speaking.
-        """
-        frames = []
-        spoke = False
-        frames_per_buffer = 1024
-        max_frames = int(timeout * self.sample_rate / frames_per_buffer)
-
+    def listen_short(self, timeout=0.5, stop=None):
+        """While Aria is speaking: waits up to `timeout` for speech, then records it (at most 10 s).
+        `stop()` ends the wait early (she finished talking), but never cuts off someone mid-sentence."""
         try:
-            with sd.InputStream(samplerate=self.sample_rate, channels=1,
-                                dtype='float32', blocksize=frames_per_buffer) as stream:
-                for _ in range(max_frames):
-                    data, _ = stream.read(frames_per_buffer)
-                    frames.append(data.copy())
-                    if np.abs(data).mean() > self.silence_threshold:
-                        spoke = True
-                        break
-
-            if not spoke:
-                return None
-
-            # Capture the rest of what they're saying
-            return self.listen()
+            return self.listen(start_timeout=timeout, max_duration=10.0, stop=stop)
         except Exception:
             return None

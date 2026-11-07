@@ -93,4 +93,5 @@ class ContextBuilder:
         return f"""It's {time_of_day} and {time_apart}.{extra}
     {user_context}
     Greet them as Aria, the warm friend on their desk: one or two natural sentences, like a friend seeing them come back.
-    If it's been a while, you can say you missed them or ask how their day went. No "how can I help"."""
+    If it's been a while, you can ask how their day went. Don't say you missed them or were waiting for them,
+    and don't make a big deal of them being back. No "how can I help"."""
