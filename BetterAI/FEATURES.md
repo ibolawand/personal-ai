@@ -81,7 +81,7 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 - **Only working devices are offered:** Home Assistant (phone/TV), the LEDs and RVC voice conversion are skipped when
   they aren't set up (`HA_TOKEN`, a connected Arduino, `RVC_ENABLED=1`). That means fewer tools for the model to choose from,
   faster prompts and no startup warnings. The LED tools appear only while the board is actually plugged in, and show
-  up by themselves once it connects.
+  up by themselves once it connects. Focus mode only says "lights dimmed" when they really were.
 - **Snappier wake-up:** no greeting is generated when you wake Aria by typing a question or a reminder wakes her.
   In text mode she dozes off silently after a minute of quiet.
 
@@ -123,6 +123,19 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 
 - A long first sentence starts playing after its first clause (the voice is made on the CPU, ~1 s for a long
   sentence), so she starts talking sooner.
+- **The model re-reads less:** her instructions now start the same every turn. The clock and "you last talked…" come
+  after your message, and the tools every message gets always come first, in the same order. Ollama then reuses what it
+  already read: measured, the first word after 0.1 s instead of 1.2 s. (Putting her whole day and mood after the message
+  too made her pick the wrong email tool, so those stay in the instructions; they change a few times a day.)
+- **The chat model stays fully on the graphics card:** the picture model (screen, camera) now leaves memory right after
+  answering. Before, the chat model was loaded back next to it, ended up partly on the CPU and stayed that way until a
+  restart: 31 instead of 46 tokens per second.
+- **Graphics card memory:** the chat model (6.2 GB) and Whisper (up to ~1.9 GB while transcribing) don't both fit on
+  the 8 GB card, and Ollama can't see Whisper's peak, so once it loaded fully and Whisper crashed Aria with "CUDA out of
+  memory". Now a full card makes that sentence transcribe on the CPU instead. The real fix is three Ollama settings
+  (a smaller KV cache: 5.6 GB fully on the GPU at the same 46 tokens/s, and all 33 real-model checks pass; plus 1.3 GB
+  kept free for Whisper), set once with sudo:
+  `sudo mkdir -p /etc/systemd/system/ollama.service.d && printf '[Service]\nEnvironment="OLLAMA_FLASH_ATTENTION=1"\nEnvironment="OLLAMA_KV_CACHE_TYPE=q8_0"\nEnvironment="OLLAMA_GPU_OVERHEAD=1300000000"\n' | sudo tee /etc/systemd/system/ollama.service.d/aria.conf && sudo systemctl daemon-reload && sudo systemctl restart ollama`
 
 - Wake word, speech-to-text with live mic level shown on the orb, text-to-speech with the voice level driving the orb.
 - **"Hey Aria"** (voice mode: `ARIA_ARGS=--voice` in `Engines/.env`): a small openWakeWord model trained on this
@@ -138,6 +151,11 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
     (tested: silence, room noise and louder noise used to give "Thank you very much.", "You", "Thanks for watching!"; now nothing)
   - wake word check: when the model is fairly sure (0.6+) and Whisper makes out no words at all, she wakes; Whisper
     hearing other words (a video) still blocks it. The check transcribes the short clip without the noise filter.
+  - a clip with no voice in it never wakes her, not even through that fallback. Whisper, hinted with "Hey Aria.",
+    writes exactly that for plain static (10 of 10 noise clips), and in real use she woke about every 90 seconds with
+    nobody there. Tested: every real "hey Aria" still passes, even at a tenth of the volume; no static, hum or clicks do.
+  - Whisper reading its own word hint back ("aria, mynotion, spotify, pycharm, …") no longer counts as you talking;
+    it once interrupted her that way. Real sentences with those names still come through.
   - a voice detector (not loudness) decides when you start and stop talking, so a fan, music or a video no longer
     keeps the recording going for 30 s and gets written out as if you said it; Whisper loops ("who said… who said…")
     and repeated sentences are dropped; the "are you interrupting me?" listener never overlaps the next normal listen
@@ -408,6 +426,35 @@ mail from `noted.db` and talks to Gmail herself to send, archive and check when 
   problems are said in plain words ("Gmail didn't accept the app password…"). Replies go to the Reply-To address
   when there is one. Archiving while offline is finished on the next sync instead of coming back.
 
+## School — `Engines/Untis.py` (WebUntis, HTL Leonding)
+
+- **Set up once:** `./aria.sh --untis` asks for your normal WebUntis username and password, checks them with
+  WebUntis, and keeps them only in the system keyring (service "Aria WebUntis"). Restart Aria afterwards. Another
+  school: `UNTIS_SERVER` / `UNTIS_SCHOOL` in `Engines/.env` (default `htl-leonding.webuntis.com`, `htl-leonding`).
+- **"What lessons do I have tomorrow?" / "when does school end?" / "is English cancelled?"** (`school_day`): the day's
+  hours, what changed first (cancelled, room changes, substitutions), then the lessons; double lessons count as one.
+- **"What homework do I have?"** (`school_homework`): open homework for the next 3 weeks, with when it's due.
+- **"Any tests coming up?"** (`school_exams`): tests and Schularbeiten for the next 3 weeks.
+- **Calendar answers for one day include school:** "what do I have tomorrow?" adds "School tomorrow: 8:00 to 15:10
+  (E at 9:55 is cancelled)".
+- **Morning briefing:** today's school hours and changes, homework due today, tests in the next 7 days.
+- Read-only, cached for 15 minutes, and only for you (like your notes and email). When WebUntis can't be reached she
+  says so instead of guessing; the error text (which could hold the login) is never spoken or logged.
+
+## Texting from the phone — `Engines/Telegram.py` (a private Telegram bot)
+
+- **Set up once:** `./aria.sh --telegram`: make a bot with @BotFather, paste its token, then send the bot any message
+  and confirm it's you. The token and your chat are kept only in the system keyring ("Aria Telegram"). Restart Aria.
+- **Text her like you'd talk to her:** "add milk to my shopping list", "remind me at 6 to call mum", "what do I have
+  tomorrow?", "any new emails?", "reply to Sara that I'm in" (she asks first and waits for your "yes").
+- **Only you, only the safe tools:** messages from any other chat get no answer. From the phone she uses notes, lists,
+  reminders, calendar, mail, school and plain answers (web search, maths, weather), never the laptop, screen, camera,
+  files or music; a call to anything else is refused in code, not just left out of the prompt. Her own chat counts
+  as you, so the camera check for private tools doesn't apply.
+- **Reminders come to the phone** when nobody is at the desk, like the Home Assistant notification.
+- One turn at a time: the desk and the phone share the conversation and pending yes/no questions. Offline, she keeps
+  trying (up to every 5 minutes); Telegram's error texts contain the token, so it's cut out before anything is logged.
+
 ## MyNotion app (`../MyNotion`)
 
 - **Inbox:** Gmail inside MyNotion (see Email above): Inbox and Filtered views, search, reading (HTML in a locked-down
@@ -503,7 +550,7 @@ mail from `noted.db` and talks to Gmail herself to send, archive and check when 
 
 ## Tests — `tests/`
 
-- About 480 tests (plus 31 opt-in checks with the real model), and MyNotion's mail tests (`cd ../MyNotion/note && npm test`): `.venv/bin/python -m pytest` (install once with `pip install -r requirements-dev.txt`).
+- About 515 tests (plus 31 opt-in checks with the real model), and MyNotion's mail tests (`cd ../MyNotion/note && npm test`): `.venv/bin/python -m pytest` (install once with `pip install -r requirements-dev.txt`).
 - They cover reminders and repeats, follow-up timing, the memory note sync, lists and the calendar, the weekly review,
   the reply filters (stock lines, repeats, "what?"), conversation-starter rules, app matching, file search and web search parsing.
 - No model, camera, microphone or network needed. They only use temporary databases: opening the real

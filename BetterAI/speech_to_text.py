@@ -28,6 +28,7 @@ import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
 
+HINT_COPY = 0.6     # a segment this much made of hint words (and 4+ words long) is the hint read back
 BASE_WORDS = ["Aria", "MyNotion", "Spotify", "PyCharm", "VS Code", "Packet Tracer", "Discord", "Chrome", "to-do list",
               "shopping list", "calendar", "remind me", "focus session", "Lina", "Sara"]
 # what Whisper "hears" in silence or noise (from its YouTube-subtitle training data)
@@ -60,6 +61,7 @@ def _load_vad():
 class STTEngine:
     def __init__(self, model_size="medium", device=None):
         print("[STT] Loading Whisper model...")
+        self.model_size = model_size
         self.model, self.device = self._load(model_size, device or os.environ.get("STT_DEVICE", "auto"))
         print(f"[STT] Whisper {model_size} on the {self.device.upper()}")
         self.sample_rate = 16000
@@ -73,6 +75,24 @@ class STTEngine:
         self.last_level = 0.0              # loudness of the last speech (see _record)
         self.last_language = None          # (language, probability) of the last speech
         self.vad = _load_vad()
+
+    def _on_any_device(self, work):
+        """work(model) on the GPU model; when the graphics card is full ("CUDA failed with error out of memory",
+        which used to shut Aria down), the same on a CPU copy: slower, but she still hears you."""
+        try:
+            return work(self.model)
+        except RuntimeError as e:
+            if "out of memory" not in str(e).lower():
+                raise
+            print("[STT] graphics card full, transcribing on the CPU this time")
+            try:
+                from Engines import Diagnostics
+                Diagnostics.problem("stt_gpu_full")
+            except Exception:
+                pass
+            if getattr(self, "_cpu_model", None) is None:
+                self._cpu_model = WhisperModel(getattr(self, "model_size", "medium"), device="cpu", compute_type="int8")
+            return work(self._cpu_model)
 
     @staticmethod
     def _load(model_size, device):
@@ -93,6 +113,14 @@ class STTEngine:
             window = np.concatenate([np.zeros(VAD_WINDOW - len(window), dtype=np.float32), window])
         out = np.asarray(self.vad(window)).ravel()
         return float(out[-2:].max())         # the last two 32 ms frames = this block
+
+    def has_voice(self, audio) -> bool:
+        """Is anyone speaking anywhere in this clip? Real "hey Aria"s score 0.98+, static, hum and clicks at most 0.36."""
+        if self.vad is None:
+            return True
+        audio = np.asarray(audio, dtype=np.float32)
+        audio = np.concatenate([audio, np.zeros((-len(audio)) % 512, dtype=np.float32)])
+        return float(np.max(np.asarray(self.vad(audio)))) >= SPEECH_ON
 
     def _record(self, start_timeout=None, max_duration=None, stop=None):
         """Records one utterance: from when speech starts until silence_duration without speech.
@@ -155,13 +183,26 @@ class STTEngine:
         words = list(dict.fromkeys(BASE_WORDS + extra))[:60]
         return "Talking to Aria, my desk assistant. Words: " + ", ".join(words) + "."
 
+    @staticmethod
+    def _words(text) -> list:
+        return re.findall(r"[a-z0-9#+']+", (text or "").lower())
+
+    def _reads_back(self, text, hint_words) -> bool:
+        """Is this segment Whisper copying the word hint ("aria, mynotion, spotify, pycharm, …") instead of speech?"""
+        words = self._words(text)
+        return len(words) >= 4 and sum(w in hint_words for w in words) >= HINT_COPY * len(words)
+
     def transcribe(self, audio) -> tuple[str, float]:
         """(text, confidence 0..1). Empty text when only silence, noise or a known hallucination was heard."""
-        segments, _ = self.model.transcribe(
+        prompt = self._prompt()
+        hint_words = set(self._words(prompt.split("Words:", 1)[-1]))
+        segments = self._on_any_device(lambda model: list(model.transcribe(
             audio, language="en", vad_filter=True, vad_parameters={"min_silence_duration_ms": 500},
-            initial_prompt=self._prompt(), condition_on_previous_text=False)
+            initial_prompt=prompt, condition_on_previous_text=False)[0]))
         kept, probs = [], []
         for seg in segments:
+            if self._reads_back(seg.text, hint_words):
+                continue                          # the word hint read back, nobody said it
             if seg.no_speech_prob > 0.6 and seg.avg_logprob < -0.8:
                 continue                          # Whisper itself thinks nobody spoke
             if seg.compression_ratio > MAX_COMPRESSION or seg.avg_logprob < MIN_LOGPROB:
@@ -178,8 +219,8 @@ class STTEngine:
     def transcribe_short(self, audio) -> str:
         """A 2-3 s clip (the wake word check): no noise filter or confidence cut-offs, which can drop a short
         "hey Aria" entirely. Only the known phantom phrases are removed."""
-        segments, _ = self.model.transcribe(audio, language="en", vad_filter=False, initial_prompt="Hey Aria.",
-                                            condition_on_previous_text=False)
+        segments = self._on_any_device(lambda model: list(model.transcribe(
+            audio, language="en", vad_filter=False, initial_prompt="Hey Aria.", condition_on_previous_text=False)[0]))
         text = " ".join(seg.text.strip() for seg in segments).strip()
         return "" if HALLUCINATIONS.match(text) else text
 
@@ -193,7 +234,7 @@ class STTEngine:
         self.last_language = None
         if text:
             try:                            # which language it really was (the transcript is forced to English)
-                lang, prob, _ = self.model.detect_language(audio)
+                lang, prob, _ = self._on_any_device(lambda model: model.detect_language(audio))
                 self.last_language = (lang, float(prob))
             except Exception:
                 pass

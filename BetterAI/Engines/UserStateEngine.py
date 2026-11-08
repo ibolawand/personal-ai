@@ -21,6 +21,7 @@ import time
 import base64
 import cv2
 import ollama
+from llm_engine import vision_chat
 from Engines.ScreenEngine import VISION_MODEL
 from llm_engine import KEEP_ALIVE, chat_options
 from dataclasses import dataclass
@@ -66,9 +67,9 @@ class UserStateEngine:
     def _analyze_visual(self, img_b64: str) -> str:
         """Ask the vision model to describe the person's apparent emotional/physical state."""
         try:
-            response = ollama.chat(
-                model=VISION_MODEL,
-                messages=[{
+            response = vision_chat(
+                VISION_MODEL,
+                [{
                     "role": "user",
                     "content": (
                         "Look at this person's face and posture. In one short phrase, "

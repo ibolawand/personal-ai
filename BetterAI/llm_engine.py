@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 
 import ollama
 from types import SimpleNamespace
@@ -21,6 +22,35 @@ KEEP_ALIVE = int(os.environ.get("ARIA_KEEP_ALIVE", -1))     # seconds; -1 = keep
 def chat_options(**extra) -> dict:
     """Options for any call to the chat model (temperature etc. on top)."""
     return {"num_ctx": NUM_CTX, **extra}
+
+
+# The chat model has to sit fully on the graphics card: squeezed partly onto the CPU it wrote 31 instead of 46
+# tokens/s. That happened when it was loaded back while the picture model (screen, camera) was still in memory,
+# which by default stays 5 minutes; and once split it stays split, since the chat model is kept loaded forever.
+# Whisper needs ~1.9 GB at its peak next to it, which Ollama can't know about: see "Graphics card memory" in
+# FEATURES.md for the Ollama settings (smaller KV cache, memory kept free) that make both fit.
+
+
+def _in_background(fn):
+    threading.Thread(target=fn, daemon=True).start()
+
+
+def load_chat_model():
+    """Load the chat model now (in the background), so the next reply doesn't wait for it."""
+    def load():
+        try:
+            ollama.generate(model=LLM_MODEL_DEFAULT, prompt="", options=chat_options(), keep_alive=KEEP_ALIVE)
+        except Exception as e:
+            print(f"[LLM] chat model preload failed: {e}")
+    _in_background(load)
+
+
+def vision_chat(model, messages):
+    """A call to the picture model. It leaves memory right after answering, then the chat model is loaded back."""
+    try:
+        return ollama.chat(model=model, messages=messages, think=False, keep_alive=0)
+    finally:
+        load_chat_model()
 
 
 class LLMEngine:

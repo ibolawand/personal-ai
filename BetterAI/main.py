@@ -38,6 +38,8 @@ from Engines.Quiz import Quiz
 from Engines.Dictation import Dictation
 from Engines.Addressee import AT_DESK_S, not_for_aria
 from Engines.MailEngine import MailEngine
+from Engines.Untis import Untis
+from Engines.Telegram import TelegramBot, load_bot
 from Engines.Typos import fix_typos
 from Engines.NotionEngine import DAILY_RE
 from Engines import Diagnostics
@@ -508,6 +510,7 @@ class Aria:
         if self.mail:
             self.mail.on_announce = self._announce               # "Couldn't send the email to …"
             self.mail.sender_name = self._known_user_name() or "Lala"
+        self.untis = self._try("WebUntis", Untis)      # timetable, homework, tests; asks nothing until used
         self.dictation = Dictation(self._save_dictation, confirm=self.confirm, model=LLM_MODEL,
                                    on_card=self.ui.show_card)
         self.activity = Activity(menu=self.laptop.menu)
@@ -538,8 +541,14 @@ class Aria:
             quiz=self.quiz,
             face_learner=self.learn_my_face,
             mail=self.mail,
+            untis=self.untis,
         )
         print(f"[Tools] {len(self.tools.schemas)} tools available")
+        # texting from the phone (./aria.sh --telegram once); nothing runs without it
+        bot = load_bot()
+        self.telegram = TelegramBot(*bot, answer=self.answer_phone).start() if bot else None
+        if self.telegram:
+            print("[Telegram] listening for your messages")
 
         self.session_id = self.memory.start_session()
         self.session_msgs = 0
@@ -692,7 +701,10 @@ class Aria:
         return prompt
 
     def _verify_wake(self, audio):
-        """(really said 'Aria'?, what Whisper heard) for the wake word detector."""
+        """(really said 'Aria'?, what Whisper heard) for the wake word detector. heard is None when there's no voice
+        in the clip at all: Whisper, hinted with "Hey Aria.", writes exactly that for plain static."""
+        if not self.stt.has_voice(audio):
+            return False, None
         text = self.stt.transcribe_short(audio)
         return bool(WAKE_HEARD_RE.search(text or "")), text
 
@@ -761,6 +773,8 @@ class Aria:
             self.arduino.startup_animation()
         if self.ha and not self.vision.is_present:
             self.ha.notify_phone(text, title="Aria")
+        if getattr(self, "telegram", None) and not self.vision.is_present:
+            self.telegram.send(text)          # not at the desk: the reminder goes to the phone too
         if r["kind"] in ("reminder", "timer", "event", "dayahead", "due"):
             title = {"timer": "Timer", "event": "Coming up", "dayahead": "Tomorrow",
                      "due": "Due tomorrow"}.get(r["kind"], "Reminder")
@@ -874,7 +888,25 @@ class Aria:
             self.arduino.stop_talking()
         return interrupted_text
 
+    def answer_phone(self, text: str) -> str:
+        """A message from Lala's Telegram chat: a normal turn, but only phone tools, no voice, no camera check."""
+        with self._turn_lock():
+            with self.tools.phone():
+                reply, _ = self.handle_turn(text, check_state=False)
+            self.ui.set_state("listening" if getattr(self, "awake", False) else "sleeping")
+        return tidy_reply(reply) or reply
+
+    def _turn_lock(self):
+        """One turn at a time: the desk and the phone share history and pending yes/no questions."""
+        if getattr(self, "_turn_rlock", None) is None:
+            self._turn_rlock = threading.RLock()
+        return self._turn_rlock
+
     def handle_turn(self, user_input: str, check_state: bool = True, on_text=None):
+        with self._turn_lock():
+            return self._handle_turn(user_input, check_state, on_text)
+
+    def _handle_turn(self, user_input: str, check_state: bool = True, on_text=None):
         """One full turn: mood → state check → LLM with tools → save. Returns (reply, tools_used)."""
         self.ui.set_state("thinking")
 
@@ -963,7 +995,11 @@ class Aria:
             prompt += (f"\n[Weekly review: you just asked about the to-do '{review_item[1]}' (on the list "
                        f"'{review_item[0]}'). If they want a reminder for it, call set_reminder; if they want it "
                        f"on the calendar, call add_event. Answer in one short sentence and don't ask about other to-dos.]")
-        system_prompt = self.context.build_system_prompt(self._base_prompt())
+        # everything that changes each turn goes after the message, so the prompt starts the same every turn
+        system_prompt = self.context.build_system_prompt(self._base_prompt(), moment=False)
+        moment = self.context.moment()
+        if moment:
+            prompt += f"\n[Right now: {moment}]"
         if self._session_hint:
             system_prompt += "\n\n[This conversation] " + self._session_hint
         routed = hasattr(self.tools, "schemas_for")
@@ -1323,6 +1359,8 @@ class Aria:
         try:
             self.memory.end_session(self.session_id, self.session_msgs)
             self.reminders.stop()
+            if getattr(self, "telegram", None):
+                self.telegram.stop()
             self.vision.stop()
             if self.tray:
                 self.tray.stop()
@@ -1337,6 +1375,17 @@ class Aria:
             os._exit(0)
 
     # ── Main loop ─────────────────────────────────────────────────────────────
+
+    def _briefing_extras(self) -> str:
+        """Weather, new email and today's school for the morning briefing."""
+        parts = [self.weather.brief()]
+        for source in (getattr(self, "mail", None), getattr(self, "untis", None)):
+            if source:
+                try:
+                    parts.append(source.briefing_line())
+                except Exception as e:
+                    print(f"[Briefing] {type(e).__name__}: {e}")
+        return " ".join(p for p in parts if p)
 
     def _greeting_prompt(self) -> str:
         """Normal short greeting — plus the daily briefing the first time Aria greets Lala each day."""
@@ -1355,12 +1404,9 @@ class Aria:
             return prompt
         try:
             facts = self.notion.daily_briefing(self.reminders)
-            weather = self.weather.brief()
-            if weather:
-                facts += " " + weather
-            mail = self.mail.briefing_line() if getattr(self, "mail", None) else ""
-            if mail:
-                facts += " " + mail
+            extras = self._briefing_extras()
+            if extras:
+                facts += " " + extras
         except Exception as e:
             print(f"[MyNotion] briefing failed: {e}")
             return prompt

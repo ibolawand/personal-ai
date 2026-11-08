@@ -99,3 +99,65 @@ def test_a_long_first_sentence_starts_at_its_first_clause():
     assert first_chunks("Done, milk's on the list.") == ["Done, milk's on the list."]           # short: as is
     assert first_chunks("A sentence without any comma that is long enough to matter here for sure.") == [
         "A sentence without any comma that is long enough to matter here for sure."]
+
+
+def test_a_clip_without_a_voice_is_noticed():
+    stt = S.STTEngine.__new__(S.STTEngine)
+    stt.vad = lambda audio: np.where(np.asarray(audio)[::512][:len(audio) // 512] < 0, 0.9, 0.05)
+    hum = np.full(40000, 0.05, np.float32)
+    assert not stt.has_voice(hum)
+    voice = hum.copy()
+    voice[20000:24000] = -0.05
+    assert stt.has_voice(voice)
+    stt.vad = None                              # no detector installed: never block a wake on it
+    assert stt.has_voice(hum)
+
+
+def _detector(verify):
+    import wakeworddetector as W
+    d = W.WakeWordDetector.__new__(W.WakeWordDetector)
+    d.verify, d.sample_rate, d._recent = verify, 16000, [b"\0\0" * 1280]
+    return d
+
+
+def test_static_is_not_a_wake_word_even_though_whisper_says_hey_aria():
+    """With its "Hey Aria." hint Whisper writes "Hey Aria." for plain static (10 of 10 noise clips), so in real use
+    she woke every ~90 s with nobody there. A clip with no voice in it is a no, also for the heard-nothing fallback."""
+    assert _detector(lambda audio: (False, None))._confirmed(0.95) is False
+    assert _detector(lambda audio: (False, ""))._confirmed(0.95) is True      # a voice, just no clear words
+
+
+def test_wake_check_needs_a_voice(aria):
+    aria.stt = types.SimpleNamespace(has_voice=lambda a: False, transcribe_short=lambda a: "Hey Aria.")
+    assert aria._verify_wake(np.zeros(16000, np.float32)) == (False, None)
+    aria.stt.has_voice = lambda a: True
+    assert aria._verify_wake(np.zeros(16000, np.float32)) == (True, "Hey Aria.")
+
+
+def test_the_word_hint_read_back_is_not_speech():
+    """Whisper read its own word list back while she talked: "______ ______ aria, mynotion, spotify, pycharm, vs code,
+    packet tracer, discord, chrome, aria, lawand…" and that counted as Lala interrupting her."""
+    stt = S.STTEngine.__new__(S.STTEngine)
+    stt.vocabulary = lambda: ["Lawand", "Lina", "Sara"]
+    seg = lambda text: types.SimpleNamespace(text=text, compression_ratio=1.3, avg_logprob=-0.3, no_speech_prob=0.1)
+    stt.model = types.SimpleNamespace(transcribe=lambda *a, **k: ([seg(
+        " ______ ______ aria, mynotion, spotify, pycharm, vs code, packet tracer, discord, chrome, aria, lawand, lina")], None))
+    assert stt.transcribe(np.zeros(16000, np.float32)) == ("", 0.0)
+    for said in [" Open MyNotion and Spotify.", " Aria, open Discord.", " Tell Sara and Lina I'm late."]:
+        stt.model = types.SimpleNamespace(transcribe=lambda *a, said=said, **k: ([seg(said)], None))
+        assert stt.transcribe(np.zeros(16000, np.float32))[0] == said.strip()
+
+
+def test_a_full_graphics_card_falls_back_to_the_cpu_instead_of_crashing():
+    """"CUDA failed with error out of memory" during transcription shut Aria down."""
+    stt = S.STTEngine.__new__(S.STTEngine)
+    stt.vocabulary = lambda: []
+    seg = types.SimpleNamespace(text=" open my notes", compression_ratio=1.2, avg_logprob=-0.2, no_speech_prob=0.1)
+
+    def oom():
+        raise RuntimeError("CUDA failed with error out of memory")
+        yield
+    stt.model = types.SimpleNamespace(transcribe=lambda *a, **k: (oom(), None))
+    stt._cpu_model = types.SimpleNamespace(transcribe=lambda *a, **k: ([seg], None))
+    assert stt.transcribe(np.zeros(16000, np.float32))[0] == "open my notes"
+    assert stt.transcribe_short(np.zeros(16000, np.float32)) == "open my notes"

@@ -58,24 +58,12 @@ class ScreenEngine:
                   "Answer Lala directly, in one to three short spoken sentences, like a friend looking over their "
                   "shoulder. Quote exact error messages or text when that's what they ask about. No markdown.")
         try:
-            response = ollama.chat(model=self.model, think=False,
-                                   messages=[{"role": "user", "content": prompt, "images": [b64]}])
+            from llm_engine import vision_chat
+            response = vision_chat(self.model, [{"role": "user", "content": prompt, "images": [b64]}])
             answer = response["message"]["content"].strip()
         except Exception as e:
             return f"Screen analysis failed: {e}"
-        self.reload_chat_model()
         return FINAL_PREFIX + answer
-
-    @staticmethod
-    def reload_chat_model():
-        """Load the chat model again in the background, so Aria's next reply doesn't wait for it."""
-        def load():
-            try:
-                from llm_engine import KEEP_ALIVE, LLM_MODEL_DEFAULT, chat_options
-                ollama.generate(model=LLM_MODEL_DEFAULT, prompt="", options=chat_options(), keep_alive=KEEP_ALIVE)
-            except Exception as e:
-                print(f"[Screen] chat model preload failed: {e}")
-        threading.Thread(target=load, daemon=True).start()
 
     def read_clipboard(self):
         try:

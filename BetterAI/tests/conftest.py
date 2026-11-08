@@ -128,6 +128,7 @@ class FakeLLM:
 
     def chat_with_tools(self, prompt, history, system_prompt, tools, execute, on_text=None, **_):
         self.prompts.append(prompt)
+        self.systems = getattr(self, "systems", []) + [system_prompt]
         text, used = self.replies.pop(0) if self.replies else ("", [])
         if on_text and text:
             on_text(text)
@@ -165,7 +166,7 @@ def aria(notion):
     a.last_talked = 0
     a.awake = False
     a.screen = types.SimpleNamespace(read_clipboard=lambda: "", copy_to_clipboard=lambda t: "Copied.")
-    a.context = types.SimpleNamespace(build_system_prompt=lambda base: base)
+    a.context = types.SimpleNamespace(build_system_prompt=lambda base, moment=True: base, moment=lambda: "")
     a.llm = FakeLLM()
     a.notion = notion
     a.tools = types.SimpleNamespace(schemas=[], execute=lambda n, args: "")

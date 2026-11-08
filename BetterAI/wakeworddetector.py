@@ -59,7 +59,15 @@ class WakeWordDetector:
         except Exception as e:
             print(f"[Wake] verification failed ({e}), waking anyway")
             return True
-        if not ok and not (heard or "").strip() and score >= HEARD_NOTHING_WAKE:
+        if not ok and heard is None:
+            print(f"[Wake] {score:.2f} but there's no voice in it: not waking")
+            try:
+                from Engines import Diagnostics
+                Diagnostics.problem("wake_unconfirmed", f"{score:.2f}: (no voice, just noise)")
+            except Exception:
+                pass
+            return False
+        if not ok and not heard.strip() and score >= HEARD_NOTHING_WAKE:
             print(f"[Wake] {score:.2f}, Whisper heard nothing clear: waking")
             return True
         if not ok:

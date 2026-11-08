@@ -6,6 +6,7 @@ when its backend (Spotify, Arduino, Home Assistant, ...) is actually
 available, so the model can't pick a tool that doesn't exist.
 """
 
+import contextlib
 import os
 from pathlib import Path
 
@@ -45,7 +46,7 @@ class ToolEngine:
     def __init__(self, spotify=None, arduino=None, vision=None, ha=None,
                  reminders=None, focus=None, screen=None, laptop=None, files=None, notion=None,
                  owner_check=None, initiative=None, memory_note=None, activity=None, weather=None, undo=None,
-                 recall=None, health=None, posture=None, quiz=None, face_learner=None, mail=None):
+                 recall=None, health=None, posture=None, quiz=None, face_learner=None, mail=None, untis=None):
         self.spotify = spotify
         self.arduino = arduino
         self.vision = vision
@@ -68,6 +69,7 @@ class ToolEngine:
         self.quiz = quiz
         self.face_learner = face_learner
         self.mail = mail
+        self.untis = untis
         self._registry = {t["schema"]["function"]["name"]: t for t in self._build()}
 
     # Tools that touch the laptop, files, clipboard/screen or phone — gated by owner_check
@@ -81,6 +83,7 @@ class ToolEngine:
         "recall_conversation", "search_conversations",
         "check_mail", "read_mail", "search_mail", "draft_reply", "draft_mail", "archive_mail", "mark_mail_read",
         "mail_todo", "mail_to_event", "mark_sender_important",
+        "school_day", "school_homework", "school_exams",
     }
 
     # Changes "undo that" can take back (Engines/Undo.py)
@@ -92,6 +95,7 @@ class ToolEngine:
     # All ~75 tool descriptions take ~5,500 of the model's 8,192 context tokens. So each turn gets the core set plus
     # only the groups the message is about (and groups used in the last turns, for follow-ups). Tools that are in
     # no group are always offered. If the model then says it can't do something, main.py retries with all tools.
+    _phone = False      # True while a message from Lala's Telegram chat is handled: phone tools only
     CORE = {"calculate", "web_search", "set_timer", "set_reminder", "list_reminders", "cancel_reminder",
             "snooze_reminder", "add_note", "add_to_list", "add_todo", "get_events", "search_notes", "undo_last", "get_weather"}
     GROUPS = {
@@ -127,6 +131,10 @@ class ToolEngine:
         "quiz": (r"\b(quiz|test me|ask me (?:some )?questions|revise|revision|flash ?cards?|study with me)\b",
                  {"start_quiz"}),
         "faces": (r"\b(face|faces|recogni[sz]e me|who am i)\b", {"learn_my_face"}),
+        "school": (r"\b(school|class(?:es)?|lessons?|timetable|stundenplan|homework|hausübung\w*|hausaufgabe\w*|"
+                   r"tests?|exams?|schularbeit\w*|teachers?|rooms?|cancell?ed|subjects?|supplier\w*|periods?|untis|"
+                   r"webuntis)\b",
+                   {"school_day", "school_homework", "school_exams"}),
         "mail": (r"\b(e-?mails?|mails?|inbox|wrote|written|write|replied|reply|answer(?:ed)?|sent me|message from|"
                  r"gmail|archive|the (?:one|thing) from|from (?:mr|mrs|ms|dr|prof)\.?)\b",
                  {"check_mail", "read_mail", "search_mail", "draft_reply", "draft_mail", "archive_mail",
@@ -157,8 +165,15 @@ class ToolEngine:
             if re.search(pattern, text or "", re.I) or names & recent:
                 wanted |= names
         hidden = self._unplugged()
-        return [s for n, s in ((t["schema"]["function"]["name"], t["schema"]) for t in self._registry.values())
-                if (n in wanted or n not in grouped) and n not in hidden]
+        if self._phone:
+            from Engines.Telegram import PHONE_TOOLS
+            hidden = hidden | (set(self._registry) - PHONE_TOOLS)
+        picked = [(n, s) for n, s in ((t["schema"]["function"]["name"], t["schema"]) for t in self._registry.values())
+                  if (n in wanted or n not in grouped) and n not in hidden]
+        # the tools every message gets come first, always in the same order, so the prompt starts the same each turn
+        # and Ollama can reuse what it already read; the message's extra groups follow
+        always = lambda n: n in self.CORE or n not in grouped
+        return [s for n, s in picked if always(n)] + [s for n, s in picked if not always(n)]
 
     LED_TOOLS = {"set_led_color", "set_led_effect", "set_led_brightness", "led_off"}
 
@@ -173,11 +188,24 @@ class ToolEngine:
     def schemas(self) -> list:
         return [t["schema"] for t in self._registry.values()]
 
+    @contextlib.contextmanager
+    def phone(self):
+        """While a message from Lala's phone is handled: only PHONE_TOOLS, and no camera check."""
+        self._phone = True
+        try:
+            yield
+        finally:
+            self._phone = False
+
     def execute(self, name: str, args: dict) -> str:
         tool = self._registry.get(name)
         if not tool:
             return f"Unknown tool '{name}'."
-        if name in self.PROTECTED and not self.owner_check():
+        if self._phone:
+            from Engines.Telegram import PHONE_TOOLS
+            if name not in PHONE_TOOLS:
+                return "Refused: that only works at the desk, not from the phone."
+        elif name in self.PROTECTED and not self.owner_check():     # from the phone, her own chat proves it's Lala
             return "Refused: only Lala can use that, and I don't recognise who's at the desk."
         try:
             if self.undo and name in self.UNDOABLE:
@@ -255,6 +283,19 @@ class ToolEngine:
                 _tool("focus_status", "How much time is left in the focus session or break.", fm.status),
                 _tool("focus_stats", "How much Lala focused ('how much did I focus this week/today?').",
                       fm.stats, optional=("period",), period=("string", "'today', 'week' or 'month'")),
+            ]
+
+        if self.untis:
+            u = self.untis
+            tools += [
+                _tool("school_day", "Lala's school timetable from WebUntis for one day: lessons, times, rooms, and "
+                      "what changed (cancelled, room changes, substitutions). Use for 'what lessons do I have "
+                      "tomorrow', 'when does school end', 'is English cancelled'.",
+                      u.school_day, optional=("when",),
+                      when=("string", "'today', 'tomorrow', 'friday', '12.11.'. Default: today")),
+                _tool("school_homework", "Lala's open homework from WebUntis, with when it's due.", u.school_homework),
+                _tool("school_exams", "Lala's upcoming tests and Schularbeiten from WebUntis (next 3 weeks).",
+                      u.school_exams),
             ]
 
         if self.mail:
@@ -463,7 +504,8 @@ class ToolEngine:
                 _tool("clear_list", "Remove everything from a list (asks to confirm).", nt.clear_list,
                       list_name=("string", "which list")),
                 # calendar (MyNotion)
-                _tool("get_events", "Read Lala's MyNotion calendar.", nt.get_events, optional=("when",),
+                _tool("get_events", "Read Lala's MyNotion calendar (and school hours that day, from WebUntis).",
+                      self._events_with_school, optional=("when",),
                       when=("string", "'today', 'tomorrow', 'friday', '12.11.', 'this week', 'next week', "
                                       "'weekend' or 'this month'. Default: this week")),
                 _tool("add_event", "Add an event to Lala's MyNotion calendar. Leave time empty for all-day events. "
@@ -610,6 +652,12 @@ class ToolEngine:
                 self._conversation_starters, enabled=("boolean", "true to allow, false to stop")))
 
         return tools
+
+    def _events_with_school(self, when: str = "this week"):
+        """The calendar, plus the school hours for a single day ("what do I have tomorrow?")."""
+        events = self.notion.get_events(when)
+        school = self.untis.day_line(when) if self.untis else ""
+        return f"{events} {school}" if school else events
 
     def _search_notes(self, query: str):
         """Notes first; if nothing's there, documents that mention it (people say 'document' for both)."""

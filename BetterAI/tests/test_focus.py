@@ -156,3 +156,14 @@ def test_breaks_are_not_paused(focus):
     _away(focus, 5)
     focus.check_away()
     assert not focus.paused and focus._block(("focusbreak",))
+
+
+def test_lights_are_only_mentioned_when_the_strip_is_plugged_in(focus, fake_gsettings):
+    """She said "lights dimmed" with no LED strip connected (the controller exists even unplugged)."""
+    led = []
+    focus.arduino = types.SimpleNamespace(is_connected=False, set_rgb=lambda *a: led.append(a),
+                                          set_effect=lambda e: led.append(e), set_brightness=lambda v: led.append(v))
+    assert "lights" not in focus.start(25)
+    focus.stop()
+    focus.arduino.is_connected = True
+    assert "lights dimmed" in focus.start(25)
