@@ -102,7 +102,7 @@ def phone_tools():
             return lambda *a, **k: f"{name} done"
     a = Any()
     return ToolEngine(spotify=a, arduino=a, vision=a, ha=a, reminders=a, focus=a, screen=a, laptop=a, files=a, notion=a,
-                      initiative=a, memory_note=a, activity=a, weather=a, undo=a, recall=a, health=a, posture=a, quiz=a,
+                      memory_note=a, activity=a, weather=a, undo=a, recall=a, health=a, posture=a, quiz=a,
                       face_learner=lambda name='': 'ok', mail=a, untis=a, owner_check=lambda: False)
 
 

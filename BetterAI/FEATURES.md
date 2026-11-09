@@ -19,14 +19,14 @@ Keep this file updated whenever a feature is added or changed.
 - **Start on login** (8 seconds after you log in)
 - **Ctrl+Alt+Space from any app:** opens the text box, or hides it if it's open. If Aria isn't running, it starts her.
 
-`./aria.sh --quit` stops Aria. `./aria.sh --chat`, `--review` or `--event` makes her start that kind of conversation right now, to try it out. `./install_desktop.sh --remove` undoes the setup. Logs go to `~/.cache/aria/aria.log`.
+`./aria.sh --quit` stops Aria. `./install_desktop.sh --remove` undoes the setup. Logs go to `~/.cache/aria/aria.log`.
 Voice mode is on: `ARIA_ARGS=--voice` in `Engines/.env` (main.py reads it however she's started; remove the line to go back to typing). For another hotkey, run `ARIA_HOTKEY='<Super>j' ./install_desktop.sh`.
 
 Only one Aria runs at a time (`ui/instance.py`): launching her again just opens the text box of the running one.
 That way two copies never fight over the camera and mic.
 
 Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWNER`, `FILE_ROOTS`,
-`CAMERA_INDEX`, `VISION_MODEL`, `LLM_NUM_CTX`, and the conversation settings below (`ARIA_INITIATIVE`, `ARIA_QUIET`, …).
+`CAMERA_INDEX`, `VISION_MODEL`, `LLM_NUM_CTX`, and the conversation settings below (`ARIA_QUIET`, …).
 
 ---
 
@@ -206,40 +206,15 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 - Saved in SQLite, so they survive a restart. When one is due: the orb flashes, the LEDs animate, Aria speaks it,
   and your phone gets a notification if you're not at the desk.
 
-## Aria starts conversations — `Engines/Initiative.py`
+## She doesn't start conversations
 
-While she's asleep, Aria sometimes speaks up first:
-- **Follow-ups:** mention something coming up ("I have my math exam tomorrow", "Lina's visiting this weekend") and she
-  asks about it afterwards: "So, how did the math exam go?" It's picked up when she saves facts after a conversation,
-  asked from 17:00 that day (or the next morning for late things), either in her greeting or as a conversation she starts.
-  Unasked ones are dropped after 3 days, and timed calendar events are left to the event check-in below.
-- **Breaks:** after 90 minutes at the laptop without a 5-minute break, a warm "you've been coding for ages, stretch
-  for a minute?". If you keep going, she asks again an hour later at most.
-- **After an event:** shortly after a calendar event ends, "How did the dentist go?". If you tell her something
-  worth keeping ("come back in 3 weeks"), it goes into a "Dentist notes" note. Repeating events (gym, classes) are skipped.
-- **Weekly review**, Sunday from 18:00: she goes through your open to-dos one at a time. Answer "done" (ticks it off),
-  "keep", "drop it" (removes it), "remind me Monday at 10" or "later" (a reminder), or "stop". These answers are
-  handled in code, so a tick-off really happens. At the end she sums up your week's focus time ("1 h 20 min of
-  focus in 2 blocks, mostly C#") and mentions what's coming up.
-- **Morning:** after the daily briefing she asks what you want to get done today. What you name goes on your to-do list.
-- **Casual chats:** now and then a normal conversation, not about tasks: what you're up to ("how's the coding
-  going?" after a while in PyCharm), something she knows about you, your day, the day of the week, or a fun question.
-  She picks a different topic each time.
-  During these chats she only uses tools when you clearly ask ("can you…", "remind me…", "look at my screen"),
-  so she won't look at your screen or save small talk into notes on her own.
+Aria only talks when you wake her ("Hey Aria", typing, the orb), or to say something you set up: reminders, timers,
+event heads-ups, the morning briefing when you first wake her, and short posture nudges. She used to start
+conversations on her own (casual chats, "how did the exam go?", break nudges, after-event check-ins, a Sunday to-do
+review, "what do you want to get done today?"); that was removed on purpose.
 
-**When she won't:** if nobody is at the desk (camera, or no keyboard/mouse use for 5 minutes when there's no camera),
-in the first 10 minutes after you sit down, within 20 minutes of you talking to her, during quiet hours, in a focus
-session, while muted, when the screen is locked, when something is fullscreen (films, games), while you're watching
-something (YouTube, Netflix, VLC…), or when another app is using the microphone (calls). There's at least half an hour between two openers.
-
-**Backing off:** "not now", "later" or "I'm busy" snoozes her for 3 hours. A short "ok" or "fine" to a casual chat,
-or no answer at all, means she waits twice as long before the next one. Turn it off with the right-click menu or
-"stop starting conversations".
-
-Settings in `Engines/.env`: `ARIA_INITIATIVE=0` (off), `ARIA_QUIET=22:30-08:30`, `ARIA_CHAT_EVERY_MIN=45`,
-`ARIA_CHATS_PER_DAY=6`, `ARIA_REVIEW_DAY=6` (0 = Monday), `ARIA_REVIEW_HOUR=18`, `ARIA_BREAK_MIN=90`.
-To try one right now: `./aria.sh --chat`, `--followup`, `--break`, `--review` or `--event`. Her bookkeeping lives in `~/.cache/aria/initiative.json`.
+Quiet hours (`ARIA_QUIET=22:30-08:30` in `Engines/.env`) still keep posture nudges quiet. `Engines/Desk.py` has the
+checks for that: quiet hours, a locked screen, something fullscreen, another app using the microphone.
 
 ## What you're doing — `Engines/Activity.py`
 
@@ -257,7 +232,7 @@ To try one right now: `./aria.sh --chat`, `--followup`, `--break`, `--review` or
   - lo-fi on Spotify, plus amber LEDs and phone Do-Not-Disturb when those are set up
   - a countdown ring around the orb: orange for work, green for breaks
 - **Pomodoro:** "4 rounds of pomodoro on C#" gives 25 minutes of work and 5 of break, repeating on its own.
-  Music pauses during breaks, and she calls you back when a break is over. She may chat during breaks, never during work.
+  Music pauses during breaks, and she calls you back when a break is over.
 - **Distraction nudge:** if Discord, YouTube, a game or another video is in front for 2+ minutes during a work block,
   she reminds you once per round: "Psst, it's still focus time — Discord can wait 12 more minutes."
 - **Stats:** every finished block is logged. "How much did I focus this week?" gives the total, the number of blocks and
@@ -401,6 +376,49 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
   version from before Aria's change.
 - Note, list and calendar reading tools are protected by the optional `ARIA_OWNER` face lock.
 
+### Writing and reworking notes — `Engines/NoteWriter.py`
+
+Aria writes notes with MyNotion's own formatting: headings, lists, to-dos, tables, formulas, callout boxes and
+toggles. The model works in Markdown; the code turns that into MyNotion's blocks and back. Pictures, highlights,
+coloured text and x² reach the model as markers like `{{3}}wichtig{{/3}}`, which it has to keep, and come back
+exactly as they were. All existing notes survive the trip to Markdown and back unchanged (checked on the real
+database: text, formulas, pictures, highlights).
+
+- **Write a note:** "write a study sheet on the French Revolution", "make a note with the circle formulas",
+  "write that up as a note" (from her last answer). Self-test questions become toggles with the answer hidden.
+  If a note with that title exists, the new part goes at its end.
+- **"This note":** MyNotion tells Aria which note is open (the `app_state` table in the shared database), so
+  "organise this note", "read this note", "add … to this note" work without naming it. When MyNotion is closed,
+  nothing counts as open.
+- **Organise a note:** "organise this note", "tidy up my biology note". She groups lines, adds a few short
+  headings, makes lists, to-dos and tables. **Nothing gets lost:** before saving, the code checks the version
+  exactly as MyNotion will get it:
+  - every word is still there, including exercise numbers like "5.2" (as whole tokens, so other 5s and 2s can't
+    stand in), every formula, every picture and highlight on the same words, and every box, toggle and
+    dividing line
+  - two words written as one ("licht energie" → "Lichtenergie") or text turned into a formula
+    ("6CO2" → $6CO_2$) is fine
+  - no sentences turned into headings, no box that never closes
+  - if something is wrong, the model gets one more try with what exactly was wrong; after that the part stays as
+    it was. Long notes go in parts of about 4,500 characters (cut at headings), each checked on its own.
+- **Change one part:** "add a section about mitosis to my biology note" (or "… after the Zellen part"), "put a
+  summary at the top" (a Summary box; asking again replaces it), "fix the spelling in this note" (only small
+  corrections are accepted: formulas and pictures unchanged, ≥ 80% the same), "translate this note into English"
+  (formulas and pictures must all still be there), "make the intro shorter" / "turn the dates into a table"
+  (rewrites only that part; a version that keeps the old lines next to the new ones gets one more try, then is
+  refused).
+- **Safe while you type:** while she works, MyNotion shows "Aria is editing this note…" and the page can't be
+  typed in; it shows her version as soon as she's done. Before reading the note she waits a moment, so what you
+  just typed is saved first. She only saves if the note is still what she read; otherwise she says it changed and
+  leaves it. A lock older than 3 minutes is ignored (if she stopped half-way).
+- "Undo that" brings back the old version, for all of these. Organise and edit are protected by the `ARIA_OWNER`
+  face lock.
+- **How long:** a short note takes 5–15 s, writing a new note ~15 s, a long note like Matrizen (7,900 characters)
+  ~2 minutes. The small model gets organising right more often on short notes; on long ones it sometimes leaves
+  parts as they were.
+- Tested: `tests/test_note_writer.py` (scripted model), real model: 10 phrases pick the right tool and change
+  (`ARIA_MODEL_TESTS=1`), and live in MyNotion with a copy of the database (lock, banner, live update).
+
 ## Email — `Engines/MailEngine.py` (with MyNotion's Inbox)
 
 Your Gmail, without a Google Cloud project: MyNotion's Inbox syncs it over IMAP with an **app password**
@@ -543,7 +561,8 @@ mail from `noted.db` and talks to Gmail herself to send, archive and check when 
 - **Posture nudges** (`Engines/Posture.py`): from where your face is in the picture, worked out in code (no vision
   model, so no slowdown). If you sit clearly closer to the screen than usual (face 25% bigger) or lower in the chair
   (slouching) for 8 of the last 10 minutes, she says one short line, like "Posture check: you're sliding down in your chair."
-  At most every 30 minutes and 6 times a day, and not in quiet hours, while muted, mid-conversation, during a video or call.
+  At most every 30 minutes and 6 times a day, and not in quiet hours, while muted, mid-conversation, during a video or call
+  (checked once a minute by `Engines/Desk.py`).
   "Usual" is learnt from the first minutes after you sit down; say "this is my good posture" while sitting well to set it
   yourself. `ARIA_POSTURE=0` turns it off.
 
@@ -552,8 +571,8 @@ mail from `noted.db` and talks to Gmail herself to send, archive and check when 
 ## Tests — `tests/`
 
 - About 515 tests (plus 31 opt-in checks with the real model), and MyNotion's mail tests (`cd ../MyNotion/note && npm test`): `.venv/bin/python -m pytest` (install once with `pip install -r requirements-dev.txt`).
-- They cover reminders and repeats, follow-up timing, the memory note sync, lists and the calendar, the weekly review,
-  the reply filters (stock lines, repeats, "what?"), conversation-starter rules, app matching, file search and web search parsing.
+- They cover reminders and repeats, the memory note sync, lists and the calendar, writing and organising notes,
+  the reply filters (stock lines, repeats, "what?"), quiet hours, app matching, file search and web search parsing.
 - No model, camera, microphone or network needed. They only use temporary databases: opening the real
   `aria_memory.db` or MyNotion's database fails the test, and app or MyNotion launches are recorded instead of run.
 

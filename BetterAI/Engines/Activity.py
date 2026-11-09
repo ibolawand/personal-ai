@@ -16,7 +16,7 @@ import threading
 import time
 from collections import Counter
 
-from Engines.Initiative import idle_seconds, screen_locked
+from Engines.Desk import idle_seconds, screen_locked
 
 TICK_S = 20
 ACTIVE_IDLE_S = 120      # input within this counts as "using the laptop"
@@ -103,7 +103,7 @@ class Activity:
             if app != self.current_app:
                 self.current_app, self.current_since = app, now
 
-    # ── for Initiative and the tool ──
+    # ── for posture nudges and the tool ──
 
     def stretch_minutes(self) -> int:
         with self._lock:

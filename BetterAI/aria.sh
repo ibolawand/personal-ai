@@ -7,7 +7,6 @@
 #   aria.sh --telegram text Aria from your phone: set up the private bot once
 #   aria.sh --untis    connect WebUntis (school timetable, homework, tests): asks for your login once
 #   aria.sh --report   how fast she answered and what went wrong (last 7 days; --report 30 for a month)
-#   aria.sh --chat     make Aria start a conversation now (also --review, --event, --followup, --break) — to try it out
 # Extra flags for main.py (e.g. --voice) go in Engines/.env as:  ARIA_ARGS=--voice
 DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 PY="$DIR/.venv/bin/python"
@@ -23,8 +22,6 @@ case "$1" in
   --report)        "$PY" -m Engines.Diagnostics "${2:-7}"; exit 0 ;;
   --untis)         "$PY" -m Engines.Untis; exit $? ;;
   --telegram)      "$PY" -m Engines.Telegram; exit $? ;;
-  --chat|--review|--event|--followup|--break)
-                   "$PY" -m ui.instance "${1#--}" || echo "Aria isn't running."; exit 0 ;;
 esac
 
 ARGS=""   # ARIA_ARGS from Engines/.env is read by main.py itself

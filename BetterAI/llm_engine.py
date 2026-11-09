@@ -175,11 +175,10 @@ Reply ONLY with JSON: {{"junk": [numbers of the facts that are not lasting facts
             print(f"[Memory] junk check failed: {e}")
             return []
 
-    def extract_facts(self, conversation: list, known=(), think=True) -> tuple[list, list, list]:
-        """After a conversation, pull out (facts, topics, followups) worth remembering about the user.
-        followups: [{"about", "when", "question"}] — upcoming things a friend would ask about afterwards."""
+    def extract_facts(self, conversation: list, known=(), think=True) -> tuple[list, list]:
+        """After a conversation, pull out (facts, topics) worth remembering about the user."""
         if not conversation:
-            return [], [], []
+            return [], []
         convo_text = "\n".join(f"{m['role']}: {m['content']}" for m in conversation)
         known_text = "\n".join(f"- {f}" for f in known) or "(nothing yet)"
         prompt = f"""From this conversation, extract NEW lasting facts about the user that will still be true and useful in a month:
@@ -192,8 +191,7 @@ Do NOT save:
 - what's in their calendar, notes, files or on the screen (Aria can look those up)
 - anything the assistant said or did, guesses, or anything unclear or possibly misheard
 - facts already known (below), even if worded differently
-- one-off upcoming or past events ("has an exam tomorrow", "had an interview yesterday") — upcoming ones go in
-  "followups" below, past ones are not saved
+- one-off upcoming or past events ("has an exam tomorrow", "had an interview yesterday")
 
 Already known:
 {known_text}
@@ -203,25 +201,15 @@ Conversation:
 
 Write each fact short, without "User", e.g. "Plays guitar", "Friend Sara likes climbing", "Prefers calm music to fall asleep".
 
-Separately, list UPCOMING things in the user's life they mentioned that a friend would ask about afterwards
-(an exam, a trip, a job interview, a doctor's appointment, a date, a visit, a game, a presentation). Only real plans
-the user said they have — not tasks they asked the assistant to do, and not things that already happened.
-For each: "about" (a few words, e.g. "the math exam"), "when" exactly as it relates to today ("today", "tonight",
-"tomorrow", "friday", "this weekend", "next week", "12.11.", or "soon" if unclear), and "question" (what a friend
-would ask afterwards, e.g. "How did the math exam go?").
-
-Reply ONLY with JSON: {{"facts": ["...", ...], "topics": ["one or two word topic", ...],
-"followups": [{{"about": "...", "when": "...", "question": "..."}}, ...]}}
-Most conversations have no new facts and no follow-ups: then use empty lists."""
+Reply ONLY with JSON: {{"facts": ["...", ...], "topics": ["one or two word topic", ...]}}
+Most conversations have no new facts: then use empty lists."""
         try:
             response = ollama.chat(model=self.model, think=think, format="json", options=chat_options(), keep_alive=KEEP_ALIVE,
                                    messages=[{"role": "user", "content": prompt}])
             data = json.loads(response["message"]["content"])
             facts = [f.strip() for f in data.get("facts", []) if isinstance(f, str) and f.strip()]
             topics = [t.strip().lower() for t in data.get("topics", []) if isinstance(t, str) and t.strip()]
-            followups = [f for f in data.get("followups", []) if isinstance(f, dict)
-                         and str(f.get("about", "")).strip() and str(f.get("question", "")).strip()]
-            return facts, topics, followups
+            return facts, topics
         except Exception as e:
             print(f"[Memory] Fact extraction failed: {e}")
-            return [], [], []
+            return [], []

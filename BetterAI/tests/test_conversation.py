@@ -1,4 +1,4 @@
-"""How Aria talks: filters, rewrites of repeated/stock replies, the weekly review, conversation starters."""
+"""How Aria talks: filters, rewrites of repeated/stock replies, quiet hours."""
 
 import datetime as dt
 import time
@@ -25,9 +25,7 @@ def test_sleep_phrases_need_the_whole_message(text, match):
 
 
 def test_regexes():
-    assert main.CHAT_BRUSH_OFF_RE.match("eh fine") and not main.CHAT_BRUSH_OFF_RE.match("yeah i made carbonara")
     assert main.CONFUSED_RE.match("what?") and main.CONFUSED_RE.match("huh") and not main.CONFUSED_RE.match("what time is it")
-    assert main.NOT_NOW_RE.match("not now") and main.NOT_NOW_RE.match("I'm busy") and not main.NOT_NOW_RE.match("notes")
 
 
 def stream(text, previous=()):
@@ -154,114 +152,11 @@ def test_confirmation_is_decided_in_code(aria):
     assert reply == "Deleted." and done == [1] and aria.llm.prompts == []
 
 
-# ── weekly review ──
-
-def test_weekly_review_answers_are_handled_in_code(aria, notion):
-    notion.add_to_list("to-do", "pay rent, call the landlord, book train tickets, water the plants")
-    items = notion.open_todo_items()
-    aria._review = {"items": items, "i": 0, "coming": ""}
-    r1, _ = aria.handle_turn("done", check_state=False)
-    r2, _ = aria.handle_turn("drop that one", check_state=False)
-    r3, _ = aria.handle_turn("remind me about it on monday at 10", check_state=False)
-    r4, _ = aria.handle_turn("keep it", check_state=False)
-    assert r1.startswith("Ticked off pay rent.") and r2.startswith("Dropped call the landlord.")
-    assert aria.reminders.calls == [("book train tickets", {"at_time": "10", "day": "monday"})]
-    assert r4.startswith("Keeping it. That's all of them.") and aria._review is None
-    left = [t for _, t in notion.open_todo_items()]
-    assert left == ["book train tickets", "water the plants"]
-    assert aria.llm.prompts == []        # the model was never asked
-
-
-def test_weekly_review_can_be_stopped(aria, notion):
-    notion.add_to_list("to-do", "a thing")
-    aria._review = {"items": notion.open_todo_items(), "i": 0, "coming": ""}
-    reply, _ = aria.handle_turn("let's stop", check_state=False)
-    assert reply == "Okay, we'll leave the rest for now." and aria._review is None
-
-
-# ── conversation starters ──
-
-@pytest.fixture
-def initiative(aria, monkeypatch, tmp_path):
-    import Engines.Initiative as I
-    monkeypatch.setattr(I, "STATE_FILE", str(tmp_path / "initiative.json"))
-    for name in ("screen_locked", "fullscreen_app", "mic_in_use_by_others"):
-        monkeypatch.setattr(I, name, lambda: False)
-    aria.vision = types.SimpleNamespace(_camera_index=0, _running=True, is_present=True)
-    aria.focus = types.SimpleNamespace(active=False)
-    aria._shutting_down = False
-    aria.activity = None
-    aria.followups = None
-    monkeypatch.setattr(I, "in_quiet_hours", lambda now=None: False)
-    ini = I.Initiative(aria)
-    ini._present_since = time.time() - 3600
-    aria.initiative = ini
-    return ini
-
-
 def test_quiet_hours_wrap_midnight():
-    import Engines.Initiative as I
-    assert I.in_quiet_hours(dt.datetime(2026, 1, 1, 23, 0))
-    assert I.in_quiet_hours(dt.datetime(2026, 1, 1, 7, 0))
-    assert not I.in_quiet_hours(dt.datetime(2026, 1, 1, 12, 0))
-
-
-def test_initiative_blocking_rules(initiative, aria):
-    now = time.time()
-    assert initiative._blocked(now, True) == ""
-    assert initiative._blocked(now, False) == "nobody here"
-    aria.muted = True
-    assert initiative._blocked(now, True) == "muted"
-    aria.muted = False
-    aria.focus.active = True
-    assert initiative._blocked(now, True) == "focus session"
-    aria.focus.active = False
-    aria.last_talked = now
-    assert initiative._blocked(now, True) == "talked recently"
-    aria.last_talked = 0
-    initiative._present_since = now
-    assert initiative._blocked(now, True) == "just arrived"
-
-
-def test_watching_something_blocks(initiative, aria):
-    initiative._present_since = time.time() - 3600
-    aria.activity = types.SimpleNamespace(watching=lambda: True)
-    assert initiative._blocked(time.time(), True) == "watching something"
-
-
-def test_ignored_chats_back_off(initiative):
-    initiative.finished("chat", answered=False)
-    initiative.finished("chat", answered=False)
-    assert initiative.state["ignored"] == 2
-    initiative.finished("chat", answered=True)
-    assert initiative.state["ignored"] == 0
-    initiative.finished("chat", answered=True, snoozed=True)
-    assert initiative.state["snooze_until"] > time.time() + 2 * 3600
-
-
-def test_break_nudge_after_a_long_stretch(initiative, aria):
-    act = types.SimpleNamespace(stretch_minutes=lambda: 100, stretch_main_app=lambda: "PyCharm")
-    aria.activity = act
-    op = initiative._break_nudge()
-    assert op["kind"] == "break" and "1 hour 40 minutes" in op["prompt"] and "PyCharm" in op["prompt"]
-    assert initiative._break_nudge() is None          # not again right away
-
-
-def test_chat_topics_vary(initiative, aria):
-    aria.memory = types.SimpleNamespace(get_memories=lambda n=30: ["Plays guitar", "Studies C#", "Likes pasta"])
-    kinds = []
-    for _ in range(12):
-        initiative._chat_prompt([])
-        kinds.append(initiative.state["last_topic"])
-    assert all(a != b or a == "fact" for a, b in zip(kinds, kinds[1:]))       # never the same kind twice in a row
-    # no fact twice before all three were used (the list keeps the last 8, so look at a fresh run)
-    initiative.state = {}
-    for _ in range(60):
-        initiative._chat_prompt([])
-        if len(initiative.state.get("recent_facts", [])) >= 3:
-            break
-    used = initiative.state["recent_facts"]
-    assert len(set(used)) == 3
+    import Engines.Desk as D
+    assert D.in_quiet_hours(dt.datetime(2026, 1, 1, 23, 0))
+    assert D.in_quiet_hours(dt.datetime(2026, 1, 1, 7, 0))
+    assert not D.in_quiet_hours(dt.datetime(2026, 1, 1, 12, 0))
 
 
 # ── voice input she isn't sure about ──
@@ -361,18 +256,6 @@ def test_capture_ideas_and_links_go_to_the_inbox_directly(aria):
     assert aria.quick_capture("https://example.com/recipe") == "Saved to your Inbox."
     inbox = aria.notion.read_note("Inbox")
     assert "water my plants" in inbox and "example.com/recipe" in inbox and aria.llm.prompts == []
-
-
-def test_weekly_review_ends_with_a_recap(aria, notion, memory):
-    import Engines.FocusMode as F
-    aria.focus = F.FocusMode(types.SimpleNamespace(pending=lambda kinds=None: []), memory=memory)
-    memory.log_focus(50, "c#")
-    memory.log_focus(30, "databases")
-    notion.add_to_list("to-do", "one thing")
-    aria._review = {"items": notion.open_todo_items(), "i": 0, "coming": "tomorrow 15:00 Dentist"}
-    reply, _ = aria.handle_turn("done", check_state=False)
-    assert reply == ("Ticked off one thing. That's all of them. This week you put in 1 h 20 min of focus in 2 blocks, "
-                     "mostly c# (50 min), databases (30 min) — nice. Coming up: tomorrow 15:00 Dentist.")
 
 
 @pytest.mark.parametrize("text,spoken", [

@@ -2,7 +2,7 @@
 "Quiz me on my C# note" / "quiz me on the gear trains PDF" / "quiz me on my mistakes".
 
 The source is a MyNotion note or a document from Lala's folders (the content index). The model writes short-answer
-questions from a part of it; everything after that is handled in code (like the weekly review): each reply is an
+questions from a part of it; everything after that is handled in code: each reply is an
 answer, unless it's "skip", "I don't know", "repeat", "hint" or "stop". Answers are checked in code first (the
 expected words are in it) and only otherwise by the model, which is told the answer was heard by speech
 recognition. Missed questions are kept (~/.cache/aria/quiz.json) for "quiz me on my mistakes".

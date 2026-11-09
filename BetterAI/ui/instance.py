@@ -9,7 +9,6 @@ which would fight over the camera and mic. It sends a command to the running one
     show    open the text box
     quit    shut Aria down
     capture open the quick capture box (Ctrl+Alt+N)
-    chat / review / event / followup / break   start that kind of conversation right now (to try it out)
 """
 
 import os
@@ -17,7 +16,7 @@ import socket
 import threading
 
 SOCKET_PATH = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", f"aria-{os.getuid()}.sock")
-COMMANDS = ("toggle", "show", "quit", "capture", "chat", "review", "event", "followup", "break")
+COMMANDS = ("toggle", "show", "quit", "capture")
 
 
 def send(command: str) -> bool:

@@ -24,7 +24,7 @@ def overlay(app, monkeypatch, tmp_path):
     from ui.overlay import Overlay, OverlayBridge
     bridge = OverlayBridge()
     sent = []
-    bridge.aria = type("A", (), {"muted": False, "initiative": None, "submit_text": lambda self, t: sent.append(t),
+    bridge.aria = type("A", (), {"muted": False, "submit_text": lambda self, t: sent.append(t),
                                   "quick_capture": lambda self, t: sent.append(("capture", t)),
                                   "toggle_from_card": lambda self, *a: sent.append(("toggle",) + a)})()
     o = Overlay(bridge)

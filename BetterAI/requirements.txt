@@ -27,6 +27,7 @@ Pillow
 spotipy
 pyserial
 requests
+markdown-it-py      # Aria writes notes in Markdown (Engines/NoteWriter.py)
 python-dotenv
 
 secretstorage

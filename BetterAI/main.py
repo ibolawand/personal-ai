@@ -24,15 +24,15 @@ from Engines.FilesEngine import FilesEngine
 from Engines.LaptopEngine import LaptopEngine
 from Engines.MemoryNote import MemoryNote
 from Engines.NotionEngine import NotionEngine
+from Engines.NoteWriter import NoteWriter
 from Engines.FocusMode import FocusMode
 from Engines.Activity import Activity
-from Engines.Followups import Followups
 from Engines.Weather import Weather
 from Engines.Undo import Undo
 from Engines.Recall import Recall
 from Engines.Health import Health
 from Engines.Battery import BatteryWatch
-from Engines.Initiative import Initiative, NOT_NOW_RE, idle_seconds
+from Engines.Desk import PostureNudges, idle_seconds
 from Engines.Posture import Posture
 from Engines.Quiz import Quiz
 from Engines.Dictation import Dictation
@@ -105,13 +105,6 @@ Examples of your tone (don't copy them word for word; you reply with just the wo
 "i had a rough day" -> Aw, I'm sorry. Want to tell me what happened, or should I just keep you company for a bit?
 "add milk to my shopping list" -> (call add_to_list first, then) Done, milk's on the list."""
 
-# weekly review answers, decided in code (see Aria._review_answer)
-REVIEW_STOP_RE = re.compile(r"\b(stop|that'?s enough|enough for now|end (the )?review|let'?s stop|no more|not now)\b", re.I)
-REVIEW_KEEP_RE = re.compile(r"^\s*(?:keep|leave it|skip|not yet|not done|still|next|pass)\b|\bkeep it\b|\bnot (?:done|yet)\b", re.I)
-REVIEW_DROP_RE = re.compile(r"\b(drop|remove|delete|scrap|forget (?:about )?it|don'?t need|not needed|cross it out|get rid)\b", re.I)
-REVIEW_LATER_RE = re.compile(r"\b(remind|later|tomorrow|next week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I)
-REVIEW_DONE_RE = re.compile(r"\b(done|did it|did that|finished|completed|already did|tick(?:ed)? (?:it )?off|yes,? (?:i )?did)\b", re.I)
-
 SLEEP_PHRASES = ["go to sleep", "sleep", "goodbye", "see you later", "that's all", "shut up"]
 SHUTDOWN_PHRASES = ["exit", "quit", "shutdown"]
 SLEEP_TIMEOUT = 60
@@ -121,8 +114,7 @@ ASK_NAME_EVERY_S = 6 * 3600
 WAKE_HEARD_RE = re.compile(r"\b(?:aria|arya|ariya|ariah|ahria|aaria)\b|\b(?:hey|hi|okay|ok)\W+(?:area|ari|aria)\b", re.I)    # "what's your name?" to an unknown face at most this often
 MOOD_CHECK = os.environ.get("ARIA_MOOD_CHECK", "0") == "1"
 MOOD_STALE_S = 180
-INITIATIVE_TIMEOUT = 120   # when Aria started the conversation, give Lala longer to answer
-CHAT_TIMEOUT = 120         # same after Aria asked a question
+CHAT_TIMEOUT = 120         # after Aria asked a question, give Lala longer to answer
 DICTATION_TIMEOUT = 180    # while dictating, a long pause to think is fine (what was said is saved on timeout)
 DICTATION_SILENCE_S = 2.2  # and a pause mid-thought shouldn't cut a sentence in two
 MUSIC_TOOLS = {"play_song", "play_artist", "play_playlist", "play_genre"}
@@ -194,27 +186,6 @@ CLAIM_RE = re.compile(r"\b(i'?ll|i will|i'?ve|i have|done|turned|added|removed|s
 CORRECTION_RE = re.compile(r"^\s*(?:no+[,.!]?\s+)?(?:i said|i meant|i asked|that'?s (?:not what i (?:said|meant|asked)|wrong|"
                            r"not right)|you misheard|you got it wrong|wrong)\b|^\s*no+[,.!]?\s+not\b", re.I)
 CONFUSED_RE = re.compile(r"^\s*(?:what|huh|wdym|what do you mean|what\?+|sorry\??|pardon|come again)\s*[?!.]*\s*$", re.I)
-
-# In a casual chat Aria started, the model only gets tools when Lala's message is clearly a request,
-# and some tools only when named — otherwise it looks at the screen or files small talk into notes by itself.
-CHAT_REQUEST_RE = re.compile(
-    r"\b(can you|could you|would you|will you|please|remind|set (?:a|an|the)|play|pause|skip|open|add|put|turn|"
-    r"start|close|lock|volume|timer|note (?:that|down)|write (?:it|that) down|save|search|look (?:it )?up|google|"
-    r"what'?s on my|when is|what do i have|check)\b", re.I)
-CHAT_GATED_TOOLS = {
-    "look_at_screen": r"\b(my screen|on (?:the|my) screen|look at (?:this|my|the))\b",
-    "look": r"\b(camera|look at me|can you see me|who'?s (?:there|here))\b",
-    "read_clipboard": r"\b(copied|clipboard)\b",
-    "add_note": r"\b(note|write (?:it|that) down|remember)\b",
-    "save_as_note": r"\b(note|save)\b",
-    "web_search": r"\b(search|look (?:it )?up|google)\b",
-    "notify_desktop": r"\b(notification|notify)\b",
-}
-# a short reply to a chat Aria started means "not in the mood": she lets it go instead of pushing
-CHAT_BRUSH_OFF_RE = re.compile(r"^\s*(?:ok(?:ay)?|k|yeah|yep|yes|fine|eh(?: fine)?|meh|hm+|not much|nothing|nah|no|"
-                               r"good|alright|all good|sure|i'?m (?:fine|good|ok(?:ay)?))\s*[.!]?\s*$", re.I)
-CHAT_LET_GO = ["Fair enough.", "Alright, I'll let you be.", "Okay, carry on.", "Got it, I'll leave you to it."]
-
 
 class SentenceStreamer:
     """Turns the streamed reply into whole sentences for the voice, as soon as each one is complete.
@@ -448,12 +419,8 @@ class Aria:
         self._session_convo = []  # messages since last wake, for fact extraction
         self._recent = deque(maxlen=6)  # last turns incl. tool calls, replayed as LLM history
         self._pending_state = None      # mood check result from the previous turn (runs in background)
-        self.awake = False              # in a conversation (Initiative only speaks up while she's asleep)
+        self.awake = False              # in a conversation
         self.last_talked = 0.0          # last time Lala said something
-        self._initiative_pending = None # opener queued by Initiative, picked up when she wakes
-        self._initiative_active = None  # the opener of the current conversation, if she started it
-        self._session_hint = None       # extra instruction for this conversation (weekly review, event check-in…)
-        self._review = None             # weekly review in progress: {"items": [(list, text)], "i", "coming"}
 
         self.vision = AriaVision(
             on_known_user=self._on_known_user,
@@ -497,13 +464,13 @@ class Aria:
         if self.notion:
             self.notion.last_reply = lambda: self._last_reply  # for "save that as a note"
             self.notion.on_card = self.ui.show_card
-        self.initiative = Initiative(self)
+        self.posture_nudges = PostureNudges(self)       # "sit up a bit?" now and then (Engines/Desk.py)
         self.memory_note = MemoryNote(self.memory, self.notion, self.confirm, on_card=self.ui.show_card)
         self.memory_note.llm = self.llm
-        self.followups = Followups(self.memory, self.notion)
         self.weather = Weather()
         self.undo = Undo(self.notion, self.reminders)
         self.quiz = Quiz(self.notion, self.files, model=LLM_MODEL)
+        self.writer = NoteWriter(self.notion, model=LLM_MODEL) if self.notion else None   # write / organise notes
         # Gmail through MyNotion's Inbox (same database); None without MyNotion
         self.mail = self._try("Mail", lambda: MailEngine(os.environ.get("DB_PATH"), self.confirm, notion=self.notion,
                                                          llm=self.llm)) if self.notion else None
@@ -530,7 +497,6 @@ class Aria:
             files=self.files,
             notion=self.notion,
             owner_check=self._owner_check,
-            initiative=self.initiative,
             memory_note=self.memory_note,
             activity=self.activity,
             weather=self.weather,
@@ -542,6 +508,7 @@ class Aria:
             face_learner=self.learn_my_face,
             mail=self.mail,
             untis=self.untis,
+            writer=self.writer,
         )
         print(f"[Tools] {len(self.tools.schemas)} tools available")
         # texting from the phone (./aria.sh --telegram once); nothing runs without it
@@ -555,7 +522,7 @@ class Aria:
         self.reminders.start()
         if self.notion:
             threading.Thread(target=self._event_reminder_loop, daemon=True).start()
-        self.initiative.start()
+        self.posture_nudges.start()
         threading.Thread(target=Health(self).log_startup, daemon=True).start()
         self.activity.start()
         self.focus.start_watching()
@@ -856,16 +823,6 @@ class Aria:
         print(f"[Capture] {text!r} -> {[n for n, _ in used]}: {result}")
         return result
 
-    def start_initiative(self, opener: dict):
-        """Called by Initiative while Aria is asleep: wake up and start a conversation."""
-        if self.awake or self._shutting_down:
-            return
-        self._initiative_pending = opener
-        self._wake_event.set()
-
-    def set_initiative(self, on: bool):
-        self.initiative.set_enabled(on)
-
     def request_sleep(self):
         self._sleep_request.set()
 
@@ -921,13 +878,6 @@ class Aria:
             self._recent.append([{"role": "user", "content": user_input},
                                  {"role": "assistant", "content": confirmed}])
             return confirmed, [("confirmation", confirmed)]
-        if self._review:
-            handled = self._review_answer(user_input)
-            if handled is not None:
-                self._save_turn(user_input, handled)
-                self._recent.append([{"role": "user", "content": user_input},
-                                     {"role": "assistant", "content": handled}])
-                return handled, [("weekly_review", handled)]
         quiz = getattr(self, "quiz", None)
         if quiz and quiz.active:
             # during a quiz every reply is an answer (or skip / hint / repeat / stop), checked in code
@@ -990,39 +940,24 @@ class Aria:
         if CLIPBOARD_RE.search(user_input):
             prompt += f"\n[{self.screen.read_clipboard()}]"
 
-        review_item = self._review_item()
-        if review_item:
-            prompt += (f"\n[Weekly review: you just asked about the to-do '{review_item[1]}' (on the list "
-                       f"'{review_item[0]}'). If they want a reminder for it, call set_reminder; if they want it "
-                       f"on the calendar, call add_event. Answer in one short sentence and don't ask about other to-dos.]")
         # everything that changes each turn goes after the message, so the prompt starts the same every turn
         system_prompt = self.context.build_system_prompt(self._base_prompt(), moment=False)
         moment = self.context.moment()
         if moment:
             prompt += f"\n[Right now: {moment}]"
-        if self._session_hint:
-            system_prompt += "\n\n[This conversation] " + self._session_hint
         routed = hasattr(self.tools, "schemas_for")
         schemas = self.tools.schemas_for(user_input, self._recent_tool_names()) if routed else self.tools.schemas
-        if self._initiative_active and self._initiative_active["kind"] in ("chat", "followup", "break"):
-            if not CHAT_REQUEST_RE.search(user_input):
-                schemas = []
-            else:
-                schemas = [t for t in schemas if t["function"]["name"] not in CHAT_GATED_TOOLS
-                           or re.search(CHAT_GATED_TOOLS[t["function"]["name"]], user_input, re.I)]
         reply, used = self.llm.chat_with_tools(
             prompt, self._history(), system_prompt, schemas, self.tools.execute, on_text=on_text
         )
-        if not used and ACTION_RE.search(user_input) and CLAIM_RE.search(reply or "") and \
-                not (self._initiative_active and self._initiative_active["kind"] == "chat"):
+        if not used and ACTION_RE.search(user_input) and CLAIM_RE.search(reply or ""):
             # it *said* it did it but called no tool (small models do this): once more, firmly
             print("[Tools] reply claims an action without a tool call — retrying")
             Diagnostics.problem("claimed_no_tool", f"{user_input} -> {reply[:120]}")
             reply, used = self.llm.chat_with_tools(
                 prompt + "\n[You must call the right tool for this now. Don't just say it's done.]",
                 self._history(), system_prompt, self.tools.schemas if routed else schemas, self.tools.execute)
-        if routed and not used and CANT_RE.search(reply or "") and len(schemas) < len(self.tools.schemas) \
-                and not (self._initiative_active and self._initiative_active["kind"] == "chat"):
+        if routed and not used and CANT_RE.search(reply or "") and len(schemas) < len(self.tools.schemas):
             # the tool it needed wasn't offered for this message: ask again with every tool
             print("[Tools] reply sounds like a missing tool — retrying with all tools")
             Diagnostics.problem("missing_tool", f"{user_input} -> {reply[:120]}")
@@ -1064,9 +999,6 @@ class Aria:
             if not used:
                 Diagnostics.problem("empty_reply", user_input)
             reply = (used[-1][1] if used else "Sorry, I can't do that one.")[:300]
-        if review_item:
-            self._review["i"] += 1
-            reply = (reply + " " + self._review_next()).strip()
         if not any(name == "save_as_note" for name, _ in used):
             self._last_reply = reply
         trace = list(self.llm.last_trace)
@@ -1174,72 +1106,6 @@ class Aria:
             return self.notion.open_mynotion(what)
         return None
 
-    # ── weekly review (started by Initiative) ──
-
-    def _review_item(self):
-        r = self._review
-        return r["items"][r["i"]] if r and r["i"] < len(r["items"]) else None
-
-    def _review_answer(self, text: str):
-        """done / drop / keep / stop are handled here. Returns the reply, or None to let the model handle it
-        (e.g. 'remind me on monday'), which then gets told which to-do it's about."""
-        item = self._review_item()
-        if not item:
-            self._review = None
-            return None
-        title, todo = item
-        if REVIEW_STOP_RE.search(text):
-            self._review = None
-            return "Okay, we'll leave the rest for now."
-        if REVIEW_LATER_RE.search(text):
-            said = self._review_remind(todo, text)
-            if said is None:
-                return None
-        elif REVIEW_DROP_RE.search(text):
-            self.notion.remove_from_list(title, [todo])
-            said = f"Dropped {todo}."
-        elif REVIEW_KEEP_RE.search(text):
-            said = "Keeping it."
-        elif REVIEW_DONE_RE.search(text):
-            self.notion.check_off([todo], title)
-            said = f"Ticked off {todo}."
-        else:
-            return None
-        self._review["i"] += 1
-        return f"{said} {self._review_next()}"
-
-    def _review_remind(self, todo: str, text: str):
-        """'remind me monday at 10' / 'later' (tomorrow 09:00) / 'next week' (next monday 09:00)."""
-        low = text.lower()
-        m = re.search(r"\b(today|tonight|tomorrow|(?:next )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
-                      r"|in \d+ days?)\b", low)
-        day = m.group(1) if m else ("monday" if "next week" in low else "tomorrow")
-        if day == "tonight":
-            day = "today"
-        t = re.search(r"\b(?:at|um)\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)", low) or \
-            re.search(r"\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b", low)
-        at = t.group(1).strip() if t else ("19:00" if "tonight" in low else None)
-        result = self.reminders.set_reminder(todo, at_time=at, day=day) if day != "today" else \
-            self.reminders.set_reminder(todo, at_time=at or "18:00")
-        return result if result.startswith("I'll remind") else None
-
-    def _review_next(self) -> str:
-        item = self._review_item()
-        if item:
-            return random.choice(["Next: {}?", "What about {}?", "And {}?"]).format(item[1])
-        coming = self._review.get("coming")
-        self._review = None
-        out = "That's all of them."
-        focus = getattr(self, "focus", None)
-        if focus is not None and getattr(focus, "memory", None):
-            stats = focus.stats("week")
-            if not stats.startswith("No finished") and not stats.startswith("I don't"):
-                out += " This week you put in " + stats[0].lower() + stats[1:].replace(" in the last 7 days", "")
-                out = out.rstrip(".") + " — nice."
-        if coming:
-            out += f" Coming up: {coming}."
-        return out
-
     def _check_state_bg(self, user_input):
         try:
             state = self.state_engine.check(user_input)
@@ -1302,11 +1168,7 @@ class Aria:
 
         def work():
             known = self.memory.get_memories(200)
-            facts, topics, followups = self.llm.extract_facts(convo, known=known)
-            if followups:
-                n = self.followups.add_from_extraction(followups)
-                if n:
-                    print(f"[Memory] Will ask about {n} thing(s) later: {[f.get('about') for f in followups]}")
+            facts, topics = self.llm.extract_facts(convo, known=known)
             norm = lambda f: re.sub(r"^user(?:'s)?\s+(?:is\s+)?|[^a-z0-9 ]", "", f.lower()).strip()
             seen = {norm(f) for f in known}
             facts = [f for f in facts if norm(f) not in seen]      # same fact, different wording of "User …"
@@ -1342,11 +1204,6 @@ class Aria:
         self._sleep_request.clear()
         self._slept_at = time.time()
         self.awake = False
-        self._session_hint = None
-        self._review = None
-        if self._initiative_active:
-            init, self._initiative_active = self._initiative_active, None
-            self.initiative.finished(init["kind"], init.get("answered", False))
         if self.arduino:
             self.arduino.sleep_mode()
         self._remember_session()
@@ -1390,15 +1247,6 @@ class Aria:
     def _greeting_prompt(self) -> str:
         """Normal short greeting — plus the daily briefing the first time Aria greets Lala each day."""
         prompt = self.context.greeting_prompt(known_user=self._vision_user)
-        due = self.followups.due()
-        if due:
-            # "how did the exam go?" fits a hello perfectly
-            self.followups.asked(due)
-            self._session_hint = (f"You asked Lala how {due['about']} went. React like a friend who cares: happy for "
-                                  f"them, or sympathetic if it went badly. No advice unless asked.")
-            prompt += (f"\nEarlier Lala told you about {due['about']}, which should be over now. After the greeting, "
-                       f"ask how it went, naturally (like: \"{due['question']}\").")
-            return prompt
         today = time.strftime("%Y-%m-%d")
         if not self.notion or not self._owner_check() or _read_marker(BRIEFING_MARKER) == today:
             return prompt
@@ -1416,41 +1264,17 @@ class Aria:
             self.notion.show_agenda_card(d, d + datetime.timedelta(days=6), "Next 7 days")
         except Exception as e:
             print(f"[MyNotion] agenda card failed: {e}")
-        self._session_hint = ("At the start of this conversation you asked what Lala wants to get done today. "
-                              "If they name things, add them in one add_to_list call to the 'to-do' list, then "
-                              "confirm briefly. If they say nothing in particular, just move on.")
         return (prompt + "\nThis is the first time today, so after the greeting give a short spoken briefing "
-                "from these facts (2-4 natural sentences, no lists, skip anything empty, times as spoken words), "
-                "then end by asking if there's anything they want to get done today:\n"
+                "from these facts (2-4 natural sentences, no lists, skip anything empty, times as spoken words):\n"
                 f"{facts}")
-
-    def _open_initiative(self, init: dict):
-        """Aria starts the conversation: an event check-in, the weekly review, or a casual chat."""
-        self.ui.set_state("thinking")
-        system_prompt = self.context.build_system_prompt(self._base_prompt())
-        opening = tidy_reply(self.llm.chat(init["prompt"], [], system_prompt, temperature=0.9)).strip().strip('"')
-        if not opening:
-            return
-        self._initiative_active = dict(init, answered=False)
-        self._session_hint = init.get("hint")
-        if init["kind"] == "review":
-            self._review = {"items": init["items"], "i": 0, "coming": init.get("coming", "")}
-        if init["kind"] == "chat":
-            self.initiative.remember_opener(opening)
-        print(f"Aria (starting a conversation): {opening}")
-        self.memory.save_message("assistant", opening)
-        self._session_convo.append({"role": "assistant", "content": opening})
-        self._recent.append([{"role": "assistant", "content": opening}])
-        self.speak(opening)
 
     def _not_for_me(self, text: str, since_s: float, asked: bool) -> str | None:
         """Voice mode: why what was heard isn't for Aria (someone else talking, a video), or None. See Addressee.py."""
         if wants_sleep(text):
             return None                    # "go to sleep" always counts, whenever it's said
-        expecting = bool(self.confirm.pending or self._review or getattr(self, "_unsure_heard", None)
+        expecting = bool(self.confirm.pending or getattr(self, "_unsure_heard", None)
                          or getattr(getattr(self, "quiz", None), "active", None)
-                         or self._dictating()
-                         or (self._initiative_active and not self._initiative_active.get("answered")))
+                         or self._dictating())
         v = self.vision
         face_age = None
         if getattr(v, "_running", False) and getattr(v, "_camera_index", None) is not None:
@@ -1537,7 +1361,6 @@ class Aria:
             if not self._wait_for_wake():
                 continue
             self.awake = True
-            init, self._initiative_pending = self._initiative_pending, None
 
             if self.arduino:
                 self.arduino.startup_animation()
@@ -1546,13 +1369,9 @@ class Aria:
             if self.announcements.empty() and self.text_inputs.empty():
                 # only greet when nothing is waiting — a reminder or a typed question goes first,
                 # and generating a greeting nobody hears would just delay the answer
-                if init:
-                    self._open_initiative(init)
-                    timeout = INITIATIVE_TIMEOUT
-                else:
-                    opening = tidy_reply(self.llm.chat(self._greeting_prompt(), [], self._base_prompt())) or "Hey!"
-                    print(f"Aria: {opening}")
-                    self.speak(opening)
+                opening = tidy_reply(self.llm.chat(self._greeting_prompt(), [], self._base_prompt())) or "Hey!"
+                print(f"Aria: {opening}")
+                self.speak(opening)
 
             last_interaction = time.time()
             pending_input = None
@@ -1571,7 +1390,7 @@ class Aria:
                 remaining = timeout - (time.time() - last_interaction)
                 if remaining <= 0:
                     print("\n[Wake] Going back to sleep.")
-                    if not said_anything and init is None and self.option == 2:
+                    if not said_anything and self.option == 2:
                         Diagnostics.problem("woke_for_nothing")
                     # say it in voice mode; in text mode the orb dimming is enough
                     self._go_to_sleep("Going to sleep." if self.option == 2 else None)
@@ -1622,18 +1441,6 @@ class Aria:
                 if CORRECTION_RE.search(user_input):
                     Diagnostics.problem("corrected", f"{user_input}  (after: {self._last_reply[:100]})")
                 timeout = SLEEP_TIMEOUT
-
-                if self._initiative_active and not self._initiative_active.get("answered"):
-                    self._initiative_active["answered"] = True
-                    if NOT_NOW_RE.match(user_input):
-                        self.initiative.finished(self._initiative_active["kind"], True, snoozed=True)
-                        self._initiative_active = None
-                        self._go_to_sleep("Sure, later.")
-                        break
-                    if self._initiative_active["kind"] in ("chat", "break") and CHAT_BRUSH_OFF_RE.match(user_input):
-                        self._initiative_active["answered"] = False   # counts like ignored: wait longer next time
-                        self._go_to_sleep(random.choice(CHAT_LET_GO))
-                        break
 
                 # while dictating, "that's all" / "sleep" / "exit" are words to write down or the end of the
                 # dictation; only a clear "go to sleep" / "goodbye" ends the conversation
@@ -1690,8 +1497,7 @@ if __name__ == "__main__":
 
     if args.no_ui:
         aria = Aria(option=option)
-        instance.listen(lambda cmd: aria.shutdown() if cmd == "quit" else
-                        aria.initiative.force(cmd) if cmd in ("chat", "review", "event", "followup", "break") else None)
+        instance.listen(lambda cmd: aria.shutdown() if cmd == "quit" else None)
         aria.run()
     else:
         from ui.overlay import run_with_overlay

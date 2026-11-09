@@ -42,6 +42,22 @@ def daily_title(day: dt.date = None) -> str:
 MYNOTION_BIN = os.environ.get("MYNOTION_BIN") or str(
     Path(__file__).resolve().parents[3] / "MyNotion" / "note" / "out" / "MyNotion-linux-x64" / "MyNotion")
 MAX_READ_CHARS = 2500
+# "this note", "the open note", "it": the note open in MyNotion right now (MyNotion keeps it in app_state)
+THIS_RE = re.compile(r"^\s*(?:(?:this|that|the current|the open|my open|current|open|the)\s*(?:note|page|one)?|it|here)\s*$",
+                     re.I)
+EDIT_SETTLE_S = 1.2     # before Aria reads the open note: MyNotion saves what was just typed (600 ms after the last key)
+LOCK_FOR_S = 180        # MyNotion ignores a lock older than this (Aria crashed while editing)
+APP_STATE_SQL = ("CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, value TEXT, "
+                 "updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
+
+
+def mynotion_running() -> bool:
+    """Is the MyNotion app open? (Its "open note" is only true while it is.)"""
+    try:
+        return subprocess.run(["pgrep", "-x", "MyNotion"], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=3).returncode == 0
+    except Exception:                       # no pgrep, a timeout, or the tests' stand-in for starting programs
+        return False
 
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august",
@@ -312,6 +328,8 @@ class NotionEngine:
                 "SELECT * FROM notes WHERE userID = ? ORDER BY updated_at DESC", (self.user_id,))]
 
     def _find_note(self, title: str):
+        if title and THIS_RE.match(title):
+            return self.open_note()
         best, score = None, 0
         for n in self._notes():
             s = _match_score(title, n["title"])
@@ -329,6 +347,61 @@ class NotionEngine:
         with self._conn() as c:
             c.execute("UPDATE notes SET content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                       (content_html, note_id))
+
+    # ── the note open in MyNotion, and editing it safely ──
+
+    @staticmethod
+    def is_this(title) -> bool:
+        return not (title or "").strip() or bool(THIS_RE.match(title))
+
+    def title_score(self, query, title) -> float:
+        return _match_score(query, title)
+
+    def _state(self, key):
+        with self._conn() as c:
+            c.execute(APP_STATE_SQL)
+            row = c.execute("SELECT value FROM app_state WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def _set_state(self, key, value):
+        with self._conn() as c:
+            c.execute(APP_STATE_SQL)
+            c.execute("INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) "
+                      "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                      (key, value))
+
+    def open_note(self):
+        """The note open in MyNotion right now (None if none is, or MyNotion isn't running)."""
+        value = self._state("open_note")
+        if not value or not str(value).isdigit() or not mynotion_running():
+            return None
+        n = self._note_by_id(int(value))
+        return n if n and n["userID"] in (self.user_id, 0) else None
+
+    def resolve_note(self, title):
+        """The note meant by a title, or by "this note" / nothing at all (the one open in MyNotion)."""
+        return self.open_note() if self.is_this(title) else self._find_note(title)
+
+    @contextmanager
+    def editing(self, note_id: int):
+        """While Aria reworks a note, MyNotion shows "Aria is editing…" and doesn't let you type in it."""
+        self._set_state("aria_editing", str(note_id))
+        try:
+            if str(self._state("open_note")) == str(note_id) and mynotion_running():
+                time.sleep(EDIT_SETTLE_S)          # what was just typed reaches the database first
+            yield
+        finally:
+            try:
+                self._set_state("aria_editing", None)
+            except sqlite3.Error as e:
+                print(f"[MyNotion] couldn't clear the editing lock: {e}")
+
+    def replace_content(self, note_id: int, old_html: str, new_html: str) -> bool:
+        """Save the new version only if the note still is what Aria read (else someone changed it meanwhile)."""
+        with self._conn() as c:
+            cur = c.execute("UPDATE notes SET content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND "
+                            "COALESCE(content, '') = ?", (new_html, note_id, old_html or ""))
+            return cur.rowcount == 1
 
     # ── notes: tools ──
 
@@ -351,6 +424,12 @@ class NotionEngine:
                 content = content[:-len("<p></p>")]
             self._set_content(n["id"], content + text_to_html(text))
             return "Added to today's note."
+        if title and THIS_RE.match(title):
+            n = self.open_note()
+            if not n:
+                return "Which note? I can't see one open in MyNotion — say its name."
+            self._set_content(n["id"], (n["content"] or "") + text_to_html(text))
+            return f"Added to '{n['title']}'."
         if title:
             existing = self._find_note(title)
             if existing and _match_score(title, existing["title"]) >= 80:

@@ -482,11 +482,6 @@ class Overlay(QWidget):
         if cmd == "quit":
             quit_app()
             return
-        if cmd in ("chat", "review", "event", "followup", "break"):
-            aria = self.bridge.aria
-            if aria:
-                threading.Thread(target=aria.initiative.force, args=(cmd,), daemon=True).start()
-            return
         if not self.isVisible():
             self.show()
         self._add_wave(0.6)
@@ -1105,14 +1100,6 @@ class Overlay(QWidget):
         mute_act.setEnabled(bool(aria))
         mute_act.triggered.connect(lambda: aria.toggle_mute())
         menu.addAction(mute_act)
-
-        init = getattr(aria, "initiative", None)
-        chat_act = QAction("Let Aria start conversations", menu)
-        chat_act.setCheckable(True)
-        chat_act.setEnabled(init is not None)
-        chat_act.setChecked(bool(init and init.enabled))
-        chat_act.toggled.connect(lambda on: aria.set_initiative(on))
-        menu.addAction(chat_act)
 
         clear_act = QAction("Clear bubbles", menu)
         clear_act.triggered.connect(lambda: (self.bubbles.clear(), self._close_card()))
