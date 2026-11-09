@@ -899,6 +899,29 @@ class Aria:
                 + "Answer questions about it from this text. To change it, use the note tools. "
                   "If the message isn't about the note, don't bring the note up.]")
 
+    def edit_app(self, action: str, html: str, instruction: str = "", title: str = "", context: str = "",
+                 previous: str = ""):
+        """"Select text, ask Aria" in MyNotion: her version of the selected text, as (html, "") or (None, why not).
+        Not a conversation turn: nothing is saved, spoken or remembered, and she changes nothing herself. It only
+        waits its turn, because the model answers one thing at a time."""
+        writer = getattr(self, "writer", None)
+        if not writer:
+            return None, "I can't change notes right now: MyNotion's database isn't connected."
+        with self._turn_lock():
+            before = getattr(self, "_ui_state", None)
+            self.ui.set_state("thinking")
+            try:
+                return writer.rework(html, action, instruction=instruction, title=title, context=context,
+                                     previous=previous)
+            except Exception as e:
+                Diagnostics.problem("app_edit", f"{action}: {type(e).__name__}: {e}")
+                raise
+            finally:
+                if before is None:
+                    self.ui.set_state("listening" if getattr(self, "awake", False) else "sleeping")
+                elif self._ui_state == "thinking":
+                    self.ui.set_state(before)
+
     def _app_answer(self, text, on_text):
         try:
             return self.answer_app(text, on_text)
@@ -926,7 +949,7 @@ class Aria:
             print(f"[App] can't follow the orb's state: {type(e).__name__}: {e}")
         try:
             from ui import app_bridge
-            self._app_server = app_bridge.start(self._app_answer)
+            self._app_server = app_bridge.start(self._app_answer, edit=self.edit_app)
             print("[App] MyNotion can reach me")
         except Exception as e:
             print(f"[App] MyNotion's panel won't work: {type(e).__name__}: {e}")

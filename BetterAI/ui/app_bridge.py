@@ -11,6 +11,11 @@ closes; this one is a conversation: one JSON object per line, in both directions
                       {"id": "8", "type": "status", "ready": true}
                       {"id": "7", "type": "error", "message": "…"}
 
+    "Select text, ask Aria" (she changes nothing herself; MyNotion puts her version in if it's accepted):
+    MyNotion → Aria   {"id": "9", "type": "edit", "action": "rewrite|shorter|spelling|table|custom",
+                       "html": "<the selection>", "instruction": "", "title": "", "context": "", "previous": ""}
+    Aria → MyNotion   {"id": "9", "type": "proposal", "html": "<her version>"}   or an "error" saying why not
+
 "done" carries the final reply (it replaces what was streamed) and, in "confirm", a yes/no question that is
 waiting for an answer. This module knows nothing about Aria: start() gets the function that runs a turn.
 """
@@ -24,9 +29,12 @@ SOCKET_PATH = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", f"aria-{
 MAX_TEXT = 4000         # characters in one message
 MAX_LINE = 65536        # bytes in one request line; a longer one closes the connection
 SORRY = "Something went wrong on my side."
+EDIT_ACTIONS = ("rewrite", "shorter", "spelling", "table", "custom")
+MAX_HTML = 40000        # characters of selected HTML (and of her previous version, for "Try again")
+EDIT_TEXTS = {"instruction": 500, "title": 200, "context": 2000, "previous": MAX_HTML}
 
 
-def _handle(line: bytes, answer, send):
+def _handle(line: bytes, answer, send, edit=None):
     """One request line → its events."""
     try:
         req = json.loads(line.decode("utf-8"))
@@ -38,6 +46,8 @@ def _handle(line: bytes, answer, send):
     kind = req.get("type")
     if kind == "status":
         return send({"id": rid, "type": "status", "ready": True})
+    if kind == "edit":
+        return _handle_edit(rid, req, edit, send)
     if kind != "chat":
         return send({"id": rid, "type": "error", "message": "I don't know that kind of request."})
     text = req.get("text")
@@ -54,7 +64,38 @@ def _handle(line: bytes, answer, send):
     send({"id": rid, "type": "done", "reply": reply, "tools": list(tools), "confirm": confirm})
 
 
-def _serve(conn, answer):
+def _handle_edit(rid, req, edit, send):
+    """"Select text, ask Aria": the selection in, her version of it (or why there is none) out."""
+    def refuse(message):
+        send({"id": rid, "type": "error", "message": message})
+    if edit is None:
+        return refuse("I can't change notes right now.")
+    action, html = req.get("action"), req.get("html")
+    if action not in EDIT_ACTIONS:
+        return refuse("I don't know that kind of change.")
+    if not isinstance(html, str) or not html.strip():
+        return refuse("There was nothing selected.")
+    if len(html) > MAX_HTML:
+        return refuse("That's too much at once. Select a smaller part.")
+    fields = {}
+    for name, limit in EDIT_TEXTS.items():
+        value = req.get(name, "")
+        if not isinstance(value, str) or len(value) > limit:
+            return refuse(f"That request wasn't valid ({name}).")
+        fields[name] = value
+    if action == "custom" and not fields["instruction"].strip():
+        return refuse("How should I change it?")
+    try:
+        new_html, why = edit(action=action, html=html, **fields)
+    except Exception as e:
+        print(f"[App] edit failed: {type(e).__name__}: {e}")
+        return refuse(SORRY)
+    if not new_html:
+        return refuse(why or SORRY)
+    send({"id": rid, "type": "proposal", "html": new_html})
+
+
+def _serve(conn, answer, edit=None):
     lock = threading.Lock()
 
     def send(obj):
@@ -79,13 +120,14 @@ def _serve(conn, answer):
                 if len(line) > MAX_LINE:
                     return
                 if line.strip():
-                    _handle(line, answer, send)
+                    _handle(line, answer, send, edit)
             if len(buf) > MAX_LINE:
                 return
 
 
-def start(answer, path: str = SOCKET_PATH):
-    """Listen in a daemon thread. answer(text, on_text) -> (reply, tool names, pending question or None)."""
+def start(answer, path: str = SOCKET_PATH, edit=None):
+    """Listen in a daemon thread. answer(text, on_text) -> (reply, tool names, pending question or None);
+    edit(action=, html=, instruction=, title=, context=, previous=) -> (new html or None, why not)."""
     if os.path.exists(path):
         os.unlink(path)             # left over from a crash; a running Aria was ruled out before we got here
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -103,7 +145,7 @@ def start(answer, path: str = SOCKET_PATH):
                 conn, _ = server.accept()
             except OSError:
                 return
-            threading.Thread(target=_serve, args=(conn, answer), daemon=True).start()
+            threading.Thread(target=_serve, args=(conn, answer, edit), daemon=True).start()
 
     threading.Thread(target=loop, daemon=True).start()
     return server

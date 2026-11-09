@@ -944,6 +944,109 @@ Reply with the new Markdown for this part only.
                           f"Changed {what}'{note['title']}'. Say 'undo that' to get the old version back.")
 
 
+    # ── a selection from MyNotion ("Select text, ask Aria") ──
+
+    REWORKS = {
+        "rewrite": "Improve the wording of this part: clearer and smoother, with the same meaning, the same facts "
+                   "and about the same length.",
+        "shorter": "Make this part clearly shorter: keep the meaning and the key facts, drop repetition and filler.",
+        "spelling": "Correct the spelling, grammar and punctuation mistakes in this part. Only fix real mistakes. "
+                    "Don't reword, reorder, translate or add anything; keep the formatting. If there are no "
+                    "mistakes, reply with it unchanged.",
+        "table": "Turn this part into a Markdown table (| a | b |) with short column headings. Keep every word "
+                 "and number of it.",
+    }
+
+    def rework(self, html: str, action: str, instruction: str = "", title: str = "", context: str = "",
+               previous: str = ""):
+        """A new version of the text selected in MyNotion: (its HTML, "") or (None, why not). Nothing is saved:
+        MyNotion shows the version and puts it into the note only if it is accepted. The same checks as for whole
+        notes apply (pictures, highlights and formulas stay), with one more try if the first version fails them."""
+        instruction = (instruction or "").strip()
+        if action not in self.REWORKS and action != "custom":
+            return None, "I don't know that kind of change."
+        if action == "custom" and not instruction:
+            return None, "How should I change it?"
+        md, keep = html_to_md(html or "")
+        if not md.strip():
+            return None, "There's no text in what you selected."
+        if len(md) > CHUNK_CHARS:
+            return None, "That's too much at once. Select a smaller part."
+        task = self.REWORKS.get(action) or (f'Change this part like this: "{instruction}". Change only what that '
+                                           "asks for and keep anything it doesn't touch.")
+        if action != "custom" and instruction:
+            task += f' Also: "{instruction}".'
+        prompt = f"""{task}
+This is a part of a student's note{f' titled "{title.strip()}"' if (title or "").strip() else ""}. Keep its language.
+Your reply REPLACES this part completely, so never keep the old lines next to their new version.
+{KEEP_RULES}
+{FORMAT_HELP if action in ("custom", "table") else "Keep the formatting (Markdown)."}
+Reply with the new Markdown for this part only, nothing before or after it."""
+        if (context or "").strip():
+            prompt += ("\n\nFor context only, the text around this part (don't repeat it in your reply):\n"
+                       f"<<<\n{context.strip()[:2000]}\n>>>")
+        again = html_to_md(previous)[0].strip() if previous else ""
+        if again:
+            prompt += f"\n\nAn earlier version was this. Write a clearly different one:\n<<<\n{again}\n>>>"
+        prompt += f"\n\nThe part:\n<<<\n{md}\n>>>"
+        temperature = 0.6 if again else 0.1 if action == "spelling" else 0.3
+
+        new = self._md(prompt, temperature=temperature)
+        problem = _rework_problem(action, md, new, keep)
+        if problem and problem[1]:
+            new = self._md(f"That doesn't work: {problem[1]} Reply with the whole part again.",
+                           history=[{"role": "user", "content": prompt}, {"role": "assistant", "content": new}],
+                           temperature=max(temperature, 0.2))
+            problem = _rework_problem(action, md, new, keep)
+        if problem:
+            return None, problem[0]
+        return md_to_html(new, keep), ""
+
+
+def _rework_problem(action, old, new, keep):
+    """Why this version of a selection can't be offered: (what to tell the user, what to tell the model for one
+    more try — empty if another try is pointless), or None if it is fine."""
+    count = lambda md: sum(facts(md)["words"].values())
+    same = " ".join(new.split()) == " ".join(old.split())
+    if not new.strip():
+        return "I couldn't come up with a version just now. Try again.", "Your reply was empty."
+    if action == "spelling":
+        ok, changed = small_changes(old, new)
+        if same or (ok and not changed):
+            return "I found no mistakes in that part.", ""
+        if not ok:
+            return ("I couldn't correct that without changing too much, so I left it.",
+                    "You changed too much. Fix only spelling, grammar and punctuation mistakes; keep every formula "
+                    "and {{n}} marker.")
+        return None
+    if same:
+        return "I couldn't find a different way to write that.", "That is the same text as before."
+    if _markers(old) - _markers(new):
+        return ("That would have removed a picture or highlight, so I left it.",
+                "A {{n}} marker is missing. Keep every marker around the same words.")
+    if action != "custom" and (facts(old)["formulas"] - facts(new)["formulas"]):
+        return ("That would have dropped a formula, so I left it.",
+                "A formula is missing. Keep every $…$ formula exactly as it was.")
+    if action == "table":
+        if "<table" not in md_to_html(new, keep):
+            return "I couldn't turn that into a table.", "That is not a Markdown table (| a | b | with a |---| line)."
+        gap = missing(old, new, keep, keep)
+        if not nothing_missing(gap):
+            return (f"The table would have left out {describe(gap)}, so I left it.",
+                    f"The table leaves out {describe(gap)}. Keep everything.")
+        return None
+    if _duplicated(old, new):
+        return ("My version repeated parts of the text, so I left it.",
+                "You kept old lines next to their new version. Keep only the new way.")
+    if action == "shorter" and count(new) >= count(old):
+        return "I couldn't make that shorter.", "That is not shorter than before. Make it clearly shorter."
+    if action == "rewrite" and count(new) > 1.5 * count(old) + 5:
+        return ("My version got much longer instead of clearer, so I left it.",
+                "That is much longer than before (did you keep the old text next to the new?). Keep about the "
+                "same length.")
+    return None
+
+
 def _headings(md):
     return [m.group(2).strip() for m in (_HEADING.match(l) for l in md.split("\n")) if m]
 

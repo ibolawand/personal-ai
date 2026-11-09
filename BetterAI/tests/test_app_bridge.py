@@ -403,3 +403,155 @@ def test_the_socket_is_never_open_to_others(serve, tmp_path, monkeypatch):
     finally:
         os.umask(old)
     assert seen == [0o600]
+
+
+# ── "Select text, ask Aria": the edit request ─────────────────────────────────
+
+@pytest.fixture
+def serve_edit(tmp_path):
+    servers = []
+
+    def start(edit):
+        path = str(tmp_path / f"e{len(servers)}.sock")
+        servers.append(app_bridge.start(hi_there, path, edit=edit))
+        return path
+    yield start
+    for s in servers:
+        s.close()
+
+
+def test_edit_request_returns_a_proposal(serve_edit):
+    got = []
+
+    def edit(**kw):
+        got.append(kw)
+        return "<p>Kürzer.</p>", ""
+    sock = client(serve_edit(edit))
+    events = ask_edit(sock, {"id": "e1", "type": "edit", "action": "shorter", "html": "<p>Ein langer Satz.</p>",
+                             "title": "Bio", "context": "davor danach", "previous": "<p>alt</p>", "instruction": "kurz"})
+    assert events == [{"id": "e1", "type": "proposal", "html": "<p>Kürzer.</p>"}]
+    assert got == [{"action": "shorter", "html": "<p>Ein langer Satz.</p>", "instruction": "kurz", "title": "Bio",
+                    "context": "davor danach", "previous": "<p>alt</p>"}]
+
+
+def ask_edit(sock, obj):
+    sock.sendall(json.dumps(obj, ensure_ascii=False).encode() + b"\n")
+    events, buf = [], b""
+    while True:
+        while b"\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                return events
+            buf += chunk
+        line, buf = buf.split(b"\n", 1)
+        events.append(json.loads(line.decode()))
+        if events[-1]["type"] in ("proposal", "error"):
+            return events
+
+
+def test_edit_without_a_proposal_gives_the_reason(serve_edit):
+    sock = client(serve_edit(lambda **kw: (None, "I found no mistakes in that part.")))
+    events = ask_edit(sock, {"id": "e1", "type": "edit", "action": "spelling", "html": "<p>Alles gut.</p>"})
+    assert events == [{"id": "e1", "type": "error", "message": "I found no mistakes in that part."}]
+
+
+@pytest.mark.parametrize("req", [
+    {"action": "dance", "html": "<p>x</p>"},
+    {"action": "shorter"},
+    {"action": "shorter", "html": "   "},
+    {"action": "shorter", "html": 5},
+    {"action": "shorter", "html": "x" * 40001},
+    {"action": "custom", "html": "<p>x</p>"},                          # an own instruction, but none given
+    {"action": "custom", "html": "<p>x</p>", "instruction": "y" * 501},
+    {"action": "shorter", "html": "<p>x</p>", "title": 7},
+    {"action": "shorter", "html": "<p>x</p>", "previous": "x" * 40001},
+])
+def test_bad_edit_request_is_refused_before_aria_sees_it(serve_edit, req):
+    called = []
+    sock = client(serve_edit(lambda **kw: (called.append(kw), ("<p>y</p>", ""))[1]))
+    events = ask_edit(sock, {"id": "e1", "type": "edit", **req})
+    assert [e["type"] for e in events] == ["error"] and events[0]["message"] and called == []
+    assert ask(sock, {"id": "s", "type": "status"})[-1]["ready"] is True
+
+
+def test_edit_that_raises_gives_a_plain_error(serve_edit):
+    def boom(**kw):
+        raise RuntimeError("model fell over")
+    sock = client(serve_edit(boom))
+    events = ask_edit(sock, {"id": "e1", "type": "edit", "action": "shorter", "html": "<p>x</p>"})
+    assert events == [{"id": "e1", "type": "error", "message": "Something went wrong on my side."}]
+
+
+def test_edit_on_an_aria_that_cannot_edit(serve):
+    sock = client(serve(hi_there))                                    # started without an edit function
+    events = ask_edit(sock, {"id": "e1", "type": "edit", "action": "shorter", "html": "<p>x</p>"})
+    assert [e["type"] for e in events] == ["error"]
+
+
+class Writer:
+    def __init__(self, result=("<p>Kurz.</p>", "")):
+        self.result, self.calls = result, []
+
+    def rework(self, html, action, instruction="", title="", context="", previous=""):
+        self.calls.append((html, action, instruction, title, context, previous))
+        return self.result
+
+
+def test_edit_app_asks_the_writer_and_is_not_a_conversation(aria):
+    aria.writer = Writer()
+    saved, states = [], []
+    aria.memory.save_message = lambda role, content: saved.append((role, content))
+    aria.ui.set_state = states.append
+    aria.speak = lambda t: saved.append(("spoken", t))
+    out = aria.edit_app(action="shorter", html="<p>Lang.</p>", instruction="", title="Bio", context="c", previous="")
+    assert out == ("<p>Kurz.</p>", "")
+    assert aria.writer.calls == [("<p>Lang.</p>", "shorter", "", "Bio", "c", "")]
+    assert saved == [] and list(aria._recent) == [] and aria.llm.prompts == []
+    assert states[0] == "thinking" and states[-1] == "sleeping"
+
+
+def test_edit_app_waits_for_a_running_turn(aria):
+    aria.writer = Writer()
+    holding, release, result = threading.Event(), threading.Event(), {}
+
+    def other_turn():
+        with aria._turn_lock():
+            holding.set()
+            release.wait(5)
+    threading.Thread(target=other_turn, daemon=True).start()
+    holding.wait(5)
+    worker = threading.Thread(target=lambda: result.update(r=aria.edit_app(action="shorter", html="<p>x</p>")),
+                              daemon=True)
+    worker.start()
+    worker.join(0.2)
+    assert worker.is_alive() and aria.writer.calls == []
+    release.set()
+    worker.join(5)
+    assert result["r"][0] == "<p>Kurz.</p>"
+
+
+def test_edit_app_without_notes_says_so(aria):
+    aria.writer = None
+    html, why = aria.edit_app(action="shorter", html="<p>x</p>")
+    assert html is None and why
+
+
+def test_edit_app_puts_the_orb_back(aria):
+    aria.writer = Writer()
+    states = []
+    aria.ui.set_state = states.append
+    aria._track_ui_state()
+    aria.ui.set_state("speaking")
+    aria.edit_app(action="shorter", html="<p>x</p>")
+    assert states == ["speaking", "thinking", "speaking"]
+
+
+def test_bridge_and_edit_app_together(aria, tmp_path):
+    aria.writer = Writer(("<p>Größe 😀</p>", ""))
+    path = str(tmp_path / "both.sock")
+    server = app_bridge.start(aria.answer_app, path, edit=aria.edit_app)
+    try:
+        events = ask_edit(client(path), {"id": "e9", "type": "edit", "action": "rewrite", "html": "<p>Grösse</p>"})
+    finally:
+        server.close()
+    assert events == [{"id": "e9", "type": "proposal", "html": "<p>Größe 😀</p>"}]

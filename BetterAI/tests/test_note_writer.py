@@ -328,3 +328,145 @@ def test_a_rewrite_that_keeps_the_old_lines_too_is_refused(writer, notion):
     assert "repeated parts" in writer.edit_note("Bio", "rewrite", "make the lines a list")
     assert "twice" in model.prompts[1]
     assert notion._note_by_id(nid)["content"] == old
+
+
+# ── a selection from MyNotion: rework(html, action, …) -> (new html or None, why not) ──────────────────────
+
+PARA = "<p>The mitochondria is the the powerhouse of the cell and it makes a lot of energy for the cell.</p>"
+
+
+def rework(*replies):
+    model = FakeModel(*replies)
+    return NoteWriter(None, ask=model), model
+
+
+def test_rework_rewrites_a_paragraph():
+    w, model = rework("Mitochondria are the powerhouse of the cell: they produce most of its energy.")
+    html, why = w.rework(PARA, "rewrite", title="Biology")
+    assert html == "<p>Mitochondria are the powerhouse of the cell: they produce most of its energy.</p>" and why == ""
+    assert "Biology" in model.prompts[0] and "powerhouse of the cell and it makes" in model.prompts[0]
+    assert "<p>" not in model.prompts[0]                         # the model works in Markdown
+
+
+def test_rework_part_of_a_sentence_stays_one_piece():
+    w, _ = rework("the cell's **powerhouse**")
+    html, _ = w.rework("the powerhouse of the cell", "rewrite")
+    assert html == "<p>the cell's <strong>powerhouse</strong></p>"
+
+
+def test_rework_shorter_must_be_shorter():
+    longer = "The mitochondria is really and truly the powerhouse of the whole cell and it makes a great lot of energy for it."
+    w, model = rework(longer, "Mitochondria power the cell.")
+    html, why = w.rework(PARA, "shorter")
+    assert html == "<p>Mitochondria power the cell.</p>"
+    assert len(model.prompts) == 2 and "shorter" in model.prompts[1].lower()      # told what was wrong, once
+
+
+def test_rework_gives_up_after_one_retry():
+    longer = PARA[3:-4] + " And some more words on top of it."
+    w, model = rework(longer, longer, "never asked")
+    html, why = w.rework(PARA, "shorter")
+    assert html is None and "shorter" in why.lower()
+    assert len(model.prompts) == 2
+
+
+def test_rework_spelling_accepts_small_fixes_only():
+    w, _ = rework("The mitochondria is the powerhouse of the cell and it makes a lot of energy for the cell.")
+    html, _ = w.rework(PARA, "spelling")
+    assert html == "<p>The mitochondria is the powerhouse of the cell and it makes a lot of energy for the cell.</p>"
+    w, _ = rework("Cells have organelles.", "Cells have organelles.")
+    html, why = w.rework(PARA, "spelling")
+    assert html is None and "too much" in why
+
+
+def test_rework_spelling_with_nothing_to_fix():
+    w, model = rework("Alles richtig geschrieben.")
+    html, why = w.rework("<p>Alles richtig geschrieben.</p>", "spelling")
+    assert html is None and why == "I found no mistakes in that part."
+    assert len(model.prompts) == 1                              # nothing to retry
+
+
+def test_rework_table_keeps_every_word():
+    lines = "<p>Bio: 5.5</p><p>Mathe: 4</p>"
+    w, _ = rework("| Fach | Note |\n|---|---|\n| Bio | 5.5 |\n| Mathe | 4 |")
+    html, why = w.rework(lines, "table")
+    assert "<table" in html and "Mathe" in html and "5.5" in html
+    w, _ = rework("| Fach | Note |\n|---|---|\n| Bio | 5.5 |", "| Fach | Note |\n|---|---|\n| Bio | 5.5 |")
+    html, why = w.rework(lines, "table")
+    assert html is None and "mathe" in why.lower()              # says what would be lost
+    w, _ = rework("Bio: 5.5, Mathe: 4", "Bio: 5.5 and Mathe: 4")
+    html, why = w.rework(lines, "table")
+    assert html is None and "table" in why
+
+
+def test_rework_keeps_formulas_pictures_and_highlights():
+    part = ('<p>Die Fläche ist <span data-latex="A = \\pi r^2" data-type="inline-math"></span> und das ist '
+            '<mark data-color="#bbf7d0">wichtig</mark> für die Prüfung am Freitag.</p>')
+    w, model = rework("Fläche: $A = \\pi r^2$, {{0}}wichtig{{/0}} für Freitag.")
+    html, _ = w.rework(part, "shorter")
+    assert 'data-latex="A = \\pi r^2"' in html and '<mark data-color="#bbf7d0">wichtig</mark>' in html
+    assert "{{0}}wichtig{{/0}}" in model.prompts[0]
+    w, _ = rework("Fläche: $A = \\pi r^2$, wichtig für Freitag.", "Fläche: $A = \\pi r^2$, wichtig für Freitag.")
+    html, why = w.rework(part, "shorter")
+    assert html is None and "highlight" in why
+    w, _ = rework("Die Fläche ist {{0}}wichtig{{/0}} für Freitag.", "Die Fläche ist {{0}}wichtig{{/0}} für Freitag.")
+    html, why = w.rework(part, "rewrite")
+    assert html is None and "formula" in why
+
+
+def test_rework_with_an_own_instruction():
+    w, model = rework("- makes energy\n- is the powerhouse of the cell")
+    html, _ = w.rework(PARA, "custom", instruction="turn into bullet points")
+    assert html.startswith("<ul>") and html.count("<li>") == 2
+    assert "turn into bullet points" in model.prompts[0]
+    assert NoteWriter(None, ask=FakeModel()).rework(PARA, "custom") == (None, "How should I change it?")
+
+
+def test_rework_refuses_the_old_lines_next_to_the_new_ones():
+    both = PARA[3:-4] + "\n\nMitochondria are the powerhouse of the cell and they make a lot of energy for the cell."
+    w, model = rework(both, both)
+    html, why = w.rework(PARA, "rewrite")
+    assert html is None and len(model.prompts) == 2
+
+
+def test_rework_the_same_text_back_is_not_a_proposal():
+    same = PARA[3:-4]
+    w, model = rework(same, same)
+    html, why = w.rework(PARA, "rewrite")
+    assert html is None and "different" in why
+
+
+def test_rework_an_empty_answer():
+    w, _ = rework("", "")
+    assert w.rework(PARA, "rewrite") == (None, "I couldn't come up with a version just now. Try again.")
+
+
+def test_rework_limits():
+    w, model = rework("never asked")
+    assert w.rework("<p></p>", "rewrite") == (None, "There's no text in what you selected.")
+    assert w.rework("<p>" + "wort " * 1000 + "</p>", "rewrite") == (None, "That's too much at once. Select a smaller part.")
+    assert w.rework(PARA, "dance") == (None, "I don't know that kind of change.")
+    assert model.prompts == []
+
+
+def test_rework_try_again_differs_from_the_last_version():
+    w, model = rework("Mitochondria: the cell's power plants.")
+    temps = []
+    real = model.__call__
+    w.ask = lambda prompt, history=(), temperature=0.3: (temps.append(temperature), real(prompt, history, temperature))[1]
+    html, _ = w.rework(PARA, "rewrite", previous="<p>Mitochondria power the cell.</p>")
+    assert html == "<p>Mitochondria: the cell's power plants.</p>"
+    assert "Mitochondria power the cell." in model.prompts[0] and temps[0] >= 0.6
+
+
+def test_rework_uses_the_surrounding_text_only_as_context():
+    w, model = rework("It produces ATP.")
+    w.rework("<p>It makes energy.</p>", "rewrite", context="Chapter 3: Mitochondria. It makes energy. Next: ribosomes.")
+    assert "Chapter 3: Mitochondria" in model.prompts[0]
+
+
+def test_rework_never_touches_the_database(notion):
+    note_id = notion._create_note("Biology", PARA)
+    w = NoteWriter(notion, ask=FakeModel("Mitochondria power the cell."))
+    assert w.rework(PARA, "shorter")[0]
+    assert notion._note_by_id(note_id)["content"] == PARA and notion._state("aria_editing") is None
