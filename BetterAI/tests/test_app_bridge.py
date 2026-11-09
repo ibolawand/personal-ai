@@ -7,6 +7,7 @@ import os
 import socket
 import stat
 import threading
+import types
 import time
 
 import pytest
@@ -555,3 +556,52 @@ def test_bridge_and_edit_app_together(aria, tmp_path):
     finally:
         server.close()
     assert events == [{"id": "e9", "type": "proposal", "html": "<p>Größe 😀</p>"}]
+
+
+# ── "Explain" for selected text: an answer only, never a tool (the model once translated the whole note) ──
+
+class Recording(FakeLLM):
+    def chat_with_tools(self, prompt, history, system_prompt, tools, execute, on_text=None, **k):
+        self.offered = getattr(self, "offered", []) + [list(tools)]
+        return super().chat_with_tools(prompt, history, system_prompt, tools, execute, on_text=on_text, **k)
+
+
+def test_a_message_without_tools_offers_the_model_none(aria):
+    aria.tools = types.SimpleNamespace(schemas=["edit_note", "play_song"], execute=lambda n, a: "",
+                                       schemas_for=lambda text, recent=(): ["edit_note"])
+    aria.llm = Recording(replies=[("It means the cell's power plant.", [])])
+    reply, tools, _ = aria.answer_app("Explain this part of my note simply:\npowerhouse of the cell", tools=False)
+    assert reply == "It means the cell's power plant." and tools == []
+    assert aria.llm.offered == [[]]
+
+
+def test_a_message_without_tools_is_never_retried_with_tools(aria):
+    aria.tools = types.SimpleNamespace(schemas=["edit_note", "play_song"], execute=lambda n, a: "",
+                                       schemas_for=lambda text, recent=(): ["edit_note"])
+    # "I can't" normally means a missing tool (retry with all of them); "I'll translate it" claims an action
+    aria.llm = Recording(replies=[("I can't do that, sorry.", []), ("never asked", [])])
+    aria.answer_app("translate and explain this part of my note", tools=False)
+    aria.llm.replies = [("I'll translate it now.", []), ("never asked", [])]
+    aria.answer_app("translate this part of my note", tools=False)
+    assert aria.llm.offered == [[], []]
+
+
+def test_a_normal_panel_message_still_gets_tools(aria):
+    aria.tools = types.SimpleNamespace(schemas=["edit_note", "play_song"], execute=lambda n, a: "",
+                                       schemas_for=lambda text, recent=(): ["edit_note"])
+    aria.llm = Recording(replies=[("Sure.", [])])
+    aria.answer_app("hi")
+    assert aria.llm.offered == [["edit_note"]]
+
+
+def test_the_bridge_passes_no_tools_on(serve):
+    got = []
+
+    def answer(text, on_text, tools=True):
+        got.append(tools)
+        return "ok", [], None
+    sock = client(serve(answer))
+    ask(sock, {"id": "1", "type": "chat", "text": "explain", "tools": False})
+    ask(sock, {"id": "2", "type": "chat", "text": "hello"})
+    ask(sock, {"id": "3", "type": "chat", "text": "hello", "tools": "no"})      # only a real false switches them off
+    assert got == [False, True, True]

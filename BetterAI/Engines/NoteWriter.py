@@ -991,19 +991,20 @@ Reply with the new Markdown for this part only, nothing before or after it."""
         prompt += f"\n\nThe part:\n<<<\n{md}\n>>>"
         temperature = 0.6 if again else 0.1 if action == "spelling" else 0.3
 
+        check = lambda version: _rework_problem(action, md, version, keep, instruction, again)
         new = self._md(prompt, temperature=temperature)
-        problem = _rework_problem(action, md, new, keep)
+        problem = check(new)
         if problem and problem[1]:
             new = self._md(f"That doesn't work: {problem[1]} Reply with the whole part again.",
                            history=[{"role": "user", "content": prompt}, {"role": "assistant", "content": new}],
                            temperature=max(temperature, 0.2))
-            problem = _rework_problem(action, md, new, keep)
+            problem = check(new)
         if problem:
             return None, problem[0]
         return md_to_html(new, keep), ""
 
 
-def _rework_problem(action, old, new, keep):
+def _rework_problem(action, old, new, keep, instruction="", previous=""):
     """Why this version of a selection can't be offered: (what to tell the user, what to tell the model for one
     more try — empty if another try is pointless), or None if it is fine."""
     count = lambda md: sum(facts(md)["words"].values())
@@ -1021,6 +1022,16 @@ def _rework_problem(action, old, new, keep):
         return None
     if same:
         return "I couldn't find a different way to write that.", "That is the same text as before."
+    flat = lambda t: " ".join(_words(t))
+    if previous and flat(new) == flat(previous):
+        return ("I couldn't find a different version this time.",
+                "That is the same as the earlier version. Write a clearly different one.")
+    if instruction and len(flat(instruction).split()) >= 2 and flat(instruction) in flat(new) \
+            and flat(instruction) not in flat(old):
+        # "second item stays / translate into German": the request written into the text instead of carried out
+        return ("My version repeated your instruction instead of following it, so I left it.",
+                f'You wrote the instruction ("{instruction}") into the text. Carry it out instead: reply only '
+                "with the changed part.")
     if _markers(old) - _markers(new):
         return ("That would have removed a picture or highlight, so I left it.",
                 "A {{n}} marker is missing. Keep every marker around the same words.")

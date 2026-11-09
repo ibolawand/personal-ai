@@ -5,6 +5,7 @@ A second private Unix socket next to the hotkey one (ui/instance.py). That one t
 closes; this one is a conversation: one JSON object per line, in both directions.
 
     MyNotion → Aria   {"id": "7", "type": "chat", "text": "what's due this week?"}
+                      (add "tools": false for an answer only, e.g. "Explain" for selected text)
                       {"id": "8", "type": "status"}
     Aria → MyNotion   {"id": "7", "type": "text", "delta": "Two "}            the reply, as it's written
                       {"id": "7", "type": "done", "reply": "…", "tools": ["get_due"], "confirm": null}
@@ -57,7 +58,9 @@ def _handle(line: bytes, answer, send, edit=None):
     if len(text) > MAX_TEXT:
         return send({"id": rid, "type": "error", "message": f"That message is too long (over {MAX_TEXT} characters)."})
     try:
-        reply, tools, confirm = answer(text, lambda delta: delta and send({"id": rid, "type": "text", "delta": delta}))
+        on_text = lambda delta: delta and send({"id": rid, "type": "text", "delta": delta})
+        # "tools": false asks for an answer only: she can't change or do anything for this message
+        reply, tools, confirm = answer(text, on_text, tools=False) if req.get("tools") is False else answer(text, on_text)
     except Exception as e:
         print(f"[App] turn failed: {type(e).__name__}: {e}")
         return send({"id": rid, "type": "error", "message": SORRY})

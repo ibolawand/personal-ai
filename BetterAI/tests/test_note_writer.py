@@ -470,3 +470,21 @@ def test_rework_never_touches_the_database(notion):
     w = NoteWriter(notion, ask=FakeModel("Mitochondria power the cell."))
     assert w.rework(PARA, "shorter")[0]
     assert notion._note_by_id(note_id)["content"] == PARA and notion._state("aria_editing") is None
+
+
+def test_rework_refuses_the_instruction_written_into_the_text():
+    echoed = "second item stays\ntranslate into German"
+    w, model = rework(echoed, "zweiter Punkt bleibt")
+    html, _ = w.rework("second item stays", "custom", instruction="translate into German")
+    assert html == "<p>zweiter Punkt bleibt</p>" and len(model.prompts) == 2
+    w, _ = rework(echoed, echoed)
+    assert w.rework("second item stays", "custom", instruction="translate into German")[0] is None
+
+
+def test_rework_try_again_must_differ_from_the_last_version():
+    w, model = rework("Mitochondria power the cell.", "Cells get their energy from mitochondria.")
+    html, _ = w.rework(PARA, "shorter", previous="<p>Mitochondria power the cell.</p>")
+    assert html == "<p>Cells get their energy from mitochondria.</p>" and len(model.prompts) == 2
+    w, _ = rework("Mitochondria power the cell.", "Mitochondria power the cell.")
+    html, why = w.rework(PARA, "shorter", previous="<p>Mitochondria power the cell.</p>")
+    assert html is None and "different" in why

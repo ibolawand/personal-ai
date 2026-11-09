@@ -856,7 +856,7 @@ class Aria:
             self.ui.set_state("listening" if getattr(self, "awake", False) else "sleeping")
         return tidy_reply(reply) or reply
 
-    def answer_app(self, text: str, on_text=None):
+    def answer_app(self, text: str, on_text=None, tools: bool = True):
         """A message typed in MyNotion's Aria panel (ui/app_bridge.py): a normal turn with every tool, but nothing
         is spoken and she doesn't wake up. Returns (reply, tool names, the yes/no question now waiting or None)."""
         dictation = getattr(self, "dictation", None)
@@ -865,7 +865,8 @@ class Aria:
             return "You're dictating right now. Say \"stop dictation\" first, then ask me again.", [], None
         with self._turn_lock():
             before = getattr(self, "_ui_state", None)
-            reply, used = self.handle_turn(text, check_state=False, on_text=on_text, extra=self._open_note_context())
+            reply, used = self.handle_turn(text, check_state=False, on_text=on_text, extra=self._open_note_context(),
+                                           use_tools=tools)
             if before is None:
                 self.ui.set_state("listening" if getattr(self, "awake", False) else "sleeping")
             elif self._ui_state == "thinking":
@@ -922,9 +923,9 @@ class Aria:
                 elif self._ui_state == "thinking":
                     self.ui.set_state(before)
 
-    def _app_answer(self, text, on_text):
+    def _app_answer(self, text, on_text, tools=True):
         try:
-            return self.answer_app(text, on_text)
+            return self.answer_app(text, on_text, tools=tools)
         except Exception as e:
             Diagnostics.problem("app_turn", f"{text[:80]} -> {type(e).__name__}: {e}")
             raise
@@ -977,11 +978,13 @@ class Aria:
                     self._turn_rlock = threading.RLock()
         return self._turn_rlock
 
-    def handle_turn(self, user_input: str, check_state: bool = True, on_text=None, extra: str = ""):
+    def handle_turn(self, user_input: str, check_state: bool = True, on_text=None, extra: str = "",
+                    use_tools: bool = True):
         with self._turn_lock():
-            return self._handle_turn(user_input, check_state, on_text, extra)
+            return self._handle_turn(user_input, check_state, on_text, extra, use_tools)
 
-    def _handle_turn(self, user_input: str, check_state: bool = True, on_text=None, extra: str = ""):
+    def _handle_turn(self, user_input: str, check_state: bool = True, on_text=None, extra: str = "",
+                     use_tools: bool = True):
         """One full turn: mood → state check → LLM with tools → save. Returns (reply, tools_used)."""
         self.ui.set_state("thinking")
 
@@ -1067,10 +1070,14 @@ class Aria:
             prompt += f"\n[Right now: {moment}]"
         routed = hasattr(self.tools, "schemas_for")
         schemas = self.tools.schemas_for(user_input, self._recent_tool_names()) if routed else self.tools.schemas
+        if not use_tools:
+            # an answer only (MyNotion's "Explain" for selected text): asked to explain a few words, the model
+            # once called edit_note and translated the whole note. With no tools it can't change anything.
+            routed, schemas = False, []
         reply, used = self.llm.chat_with_tools(
             prompt, self._history(), system_prompt, schemas, self.tools.execute, on_text=on_text
         )
-        if not used and ACTION_RE.search(user_input) and CLAIM_RE.search(reply or ""):
+        if use_tools and not used and ACTION_RE.search(user_input) and CLAIM_RE.search(reply or ""):
             # it *said* it did it but called no tool (small models do this): once more, firmly
             print("[Tools] reply claims an action without a tool call — retrying")
             Diagnostics.problem("claimed_no_tool", f"{user_input} -> {reply[:120]}")
