@@ -60,13 +60,27 @@ def _math_text(m):
     return f" ${tex}$ " if m.group(2).lower() == "inline" else f"\n$${tex}$$\n"
 
 
+TABLE_RE = re.compile(r"<table[^>]*>.*?</table>", re.I | re.S)
+
+
+def _table_text(m):
+    """A table from MyNotion as one line per row, cells split by " | " (a cell with several lines stays on its row)."""
+    rows = []
+    for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", m.group(0), flags=re.I | re.S):
+        cells = re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", tr, flags=re.I | re.S)
+        rows.append(" | ".join(html_to_text(c).replace("\n", " ") for c in cells))
+    return "\n" + "\n".join(rows) + "\n"
+
+
 def html_to_text(content: str) -> str:
     s = content or ""
     s = MATH_RE.sub(_math_text, s)
+    s = TABLE_RE.sub(_table_text, s)
+    s = re.sub(r"<sup[^>]*>(.*?)</sup>", r"^\1", s, flags=re.I | re.S)   # m² as m^2 (like the formulas)
     s = re.sub(r"<li[^>]*data-checked=\"true\"[^>]*>", "\n☑ ", s, flags=re.I)
     s = re.sub(r"<li[^>]*data-checked=\"false\"[^>]*>", "\n☐ ", s, flags=re.I)
     s = re.sub(r"<li[^>]*>", "\n• ", s, flags=re.I)
-    s = re.sub(r"<br\s*/?>|</p>|</h\d>|</li>|</blockquote>", "\n", s, flags=re.I)
+    s = re.sub(r"<br\s*/?>|</p>|</h\d>|</li>|</blockquote>|</summary>", "\n", s, flags=re.I)
     s = re.sub(r"<[^>]+>", "", s)
     s = html.unescape(s)
     s = re.sub(r"[ \t]+", " ", s)

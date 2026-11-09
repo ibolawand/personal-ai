@@ -365,6 +365,7 @@ MyNotion watches that file and refreshes itself, so whatever Aria adds shows up 
   - List commands only ever change notes that are lists, so your other notes are never touched.
 - **Ask your notes:** "when is Sara's birthday?", "what did I note about the landlord?" Aria searches your notes and answers from them.
   You can also read a note ("read my birthdays note") or list them ("which notes do I have?").
+  Tables in a note are read row by row ("Fach | Note"), a toggle's title and text as separate lines, m² as m^2.
 - **Calendar:**
   - "what do I have tomorrow / this week / on friday?"
   - "put dentist on friday at 15:00"

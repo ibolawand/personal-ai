@@ -195,3 +195,13 @@ def test_formulas_are_read_as_latex():
             '<div data-latex="x = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}" data-type="block-math"></div><p>done</p>')
     assert html_to_text(note) == ("Energy: $E = mc^2$ is famous.\n$$x = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}$$\n"
                                   "done")
+
+
+def test_tables_toggles_and_scripts_are_read_in_order():
+    from Engines.NotionEngine import html_to_text
+    note = ('<p>Marks</p><div class="tableWrapper"><table style="min-width: 200px;"><colgroup><col style="width: 120px;"><col></colgroup>'
+            '<tbody><tr><th colspan="1" rowspan="1"><p>Fach</p></th><th colspan="1" rowspan="1"><p>Note</p></th></tr>'
+            '<tr><td colspan="1" rowspan="1"><p>Bio</p></td><td colspan="1" rowspan="1"><p>5.5</p><p>(Test)</p></td></tr></tbody></table></div>'
+            '<details open=""><summary>Question</summary><div data-type="detailsContent"><p>Answer</p></div></details>'
+            '<p>H<sub>2</sub>O and m<sup>2</sup></p>')
+    assert html_to_text(note) == "Marks\nFach | Note\nBio | 5.5 (Test)\nQuestion\nAnswer\nH2O and m^2"
