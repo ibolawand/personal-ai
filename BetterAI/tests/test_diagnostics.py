@@ -85,8 +85,8 @@ def test_every_chat_model_call_keeps_the_model_loaded():
     for f in ["llm_engine.py", "Engines/Quiz.py", "Engines/UserStateEngine.py"]:
         src = (root / f).read_text()
         for call in re.findall(r"ollama\.chat\((.*?)\)(?:\.message|\n|:)", src, re.S):
-            if "VISION_MODEL" in call:
-                continue
+            if "VISION_MODEL" in call or "keep_alive=0" in call:
+                continue                    # the picture model (vision_chat) leaves memory right after answering
             assert "keep_alive=KEEP_ALIVE" in call and "options=" in call, f"{f}: {call[:120]}"
 
 

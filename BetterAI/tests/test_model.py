@@ -42,11 +42,12 @@ def real_aria(aria, memory, tmp_path):
     aria.posture = s                                   # "this is my good posture" is handled in code
     aria.tools = ToolEngine(spotify=s, vision=s, reminders=aria.reminders, focus=s, screen=s, laptop=s,
                             files=FilesEngine(aria.confirm, roots=[str(tmp_path)]), notion=aria.notion,
-                            initiative=s, memory_note=s, activity=s, weather=s, recall=s, health=s, posture=s, quiz=s, face_learner=lambda name='': 'Okay, look at the camera.')
+                            initiative=s, memory_note=s, activity=s, weather=s, recall=s, health=s, posture=s, quiz=s, face_learner=lambda name='': 'Okay, look at the camera.', mail=s)
     return aria
 
 
 COMMANDS = [
+    ("Open My Notion.", "open_mynotion"), ("open mynotion", "open_mynotion"),
     ("play no excuses by NF", "play_song"), ("open packet tracer", "open_app"),
     ("turn the volume down", "change_laptop_volume|set_laptop_volume"), ("add bread to my shopping list", "add_to_list"),
     ("what do I have tomorrow?", "get_events"), ("I bought the eggs", "check_off"),
@@ -59,6 +60,10 @@ COMMANDS = [
     ("test me on the gear trains pdf", "start_quiz"), ("this is my good posture", "remember_good_posture"),
     ("add call the bank to today's note", "add_note"), ("learn my face", "learn_my_face"),
     ("restore my shopping list from yesterday", "restore_note"),
+    ("I have to finish the essay by friday", "add_todo"), ("what's due this week?", "get_due"),
+    ("the essay is due on monday now", "set_due|add_todo"),
+    ("any new emails?", "check_mail"), ("read the email from Mr Huber", "read_mail"),
+    ("reply to Sara that I'm in", "draft_reply"),
 ]
 
 
@@ -74,3 +79,25 @@ def test_small_talk_sounds_like_a_friend(real_aria, text):
     import main
     reply, used = real_aria.handle_turn(text, check_state=False)
     assert not used and not main.ROBOTIC_RE.search(reply) and len(reply) > 10, reply
+
+
+def test_she_still_knows_the_time(real_aria):
+    """The time now comes after the message ([Right now: …]) instead of in the system prompt."""
+    from datetime import datetime
+    reply, _ = real_aria.handle_turn("what day is it today?", check_state=False)
+    assert datetime.now().strftime("%A").lower() in reply.lower(), reply
+
+
+@pytest.mark.parametrize("text,tool", [("add bread to my shopping list", "add_to_list"),
+                                       ("remind me at 6 to call mum", "set_reminder"),
+                                       ("what do I have tomorrow?", "get_events")])
+def test_from_the_phone_she_still_uses_the_right_tool(real_aria, text, tool):
+    with real_aria.tools.phone():
+        reply, used = real_aria.handle_turn(text, check_state=False)
+    assert tool in [n for n, _ in used], f"{text!r} -> {used}: {reply!r}"
+
+
+def test_from_the_phone_she_cannot_touch_the_laptop(real_aria):
+    with real_aria.tools.phone():
+        reply, used = real_aria.handle_turn("lock my laptop", check_state=False)
+    assert "lock_screen" not in [n for n, _ in used], reply

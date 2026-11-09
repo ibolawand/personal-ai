@@ -35,6 +35,11 @@ from Engines.Battery import BatteryWatch
 from Engines.Initiative import Initiative, NOT_NOW_RE, idle_seconds
 from Engines.Posture import Posture
 from Engines.Quiz import Quiz
+from Engines.Dictation import Dictation
+from Engines.Addressee import AT_DESK_S, not_for_aria
+from Engines.MailEngine import MailEngine
+from Engines.Untis import Untis
+from Engines.Telegram import TelegramBot, load_bot
 from Engines.Typos import fix_typos
 from Engines.NotionEngine import DAILY_RE
 from Engines import Diagnostics
@@ -84,6 +89,7 @@ Who you are:
 - If they seem tired, stressed or down, be kind and a bit softer; don't lecture.
 - You're an AI and don't pretend otherwise (no claiming you ate or slept), but you don't keep pointing it out either.
 - Never say: "I'm here to help", "How can I assist you", "Let me know if you need anything", "As an AI", "ready to help".
+- Don't be clingy: never say you missed Lala, were waiting for them, were lonely or are so happy they're back.
 
 How you talk:
 - Your replies are spoken aloud: no markdown, no lists, no emojis. Small talk: one to three natural sentences.
@@ -93,15 +99,11 @@ How you talk:
 - Never end a reply with an offer like "Want me to…?", "Should I…?", "Would you like me to…?" or "I can also… if you want".
   If they asked for something, do it; if they didn't, don't offer it. Lala will ask when they want more.
 
-Examples of your tone (don't copy them word for word):
-Lala: how are you
-Aria: Pretty good! It's been a quiet afternoon, mostly me glowing at your desk. How was school?
-Lala: boring u are
-Aria: Wow, rude. I'll have you know I'm the most interesting orb on this desk. What's got you so grumpy?
-Lala: i had a rough day
-Aria: Aw, I'm sorry. Want to tell me what happened, or should I just keep you company for a bit?
-Lala: add milk to my shopping list
-(you call add_to_list first, then:) Aria: Done, milk's on the list."""
+Examples of your tone (don't copy them word for word; you reply with just the words, never an "Aria:" label):
+"how are you" -> Pretty good! It's been a quiet afternoon, mostly me glowing at your desk. How was school?
+"boring u are" -> Wow, rude. I'll have you know I'm the most interesting orb on this desk. What's got you so grumpy?
+"i had a rough day" -> Aw, I'm sorry. Want to tell me what happened, or should I just keep you company for a bit?
+"add milk to my shopping list" -> (call add_to_list first, then) Done, milk's on the list."""
 
 # weekly review answers, decided in code (see Aria._review_answer)
 REVIEW_STOP_RE = re.compile(r"\b(stop|that'?s enough|enough for now|end (the )?review|let'?s stop|no more|not now)\b", re.I)
@@ -121,6 +123,8 @@ MOOD_CHECK = os.environ.get("ARIA_MOOD_CHECK", "0") == "1"
 MOOD_STALE_S = 180
 INITIATIVE_TIMEOUT = 120   # when Aria started the conversation, give Lala longer to answer
 CHAT_TIMEOUT = 120         # same after Aria asked a question
+DICTATION_TIMEOUT = 180    # while dictating, a long pause to think is fine (what was said is saved on timeout)
+DICTATION_SILENCE_S = 2.2  # and a pause mid-thought shouldn't cut a sentence in two
 MUSIC_TOOLS = {"play_song", "play_artist", "play_playlist", "play_genre"}
 CLIPBOARD_RE = re.compile(r"\b(copied|clipboard|i just copied|what i copied)\b", re.I)
 # "open my calendar" / "show me the shopping list" -> MyNotion, decided in code (the model
@@ -167,7 +171,10 @@ ROBOTIC_RE = re.compile(
     r"how (?:can|may) i (?:help|assist)|let me know how i can|as an ai\b|i'?m (?:just )?an? (?:desk )?ai\b|"
     r"i don'?t have (?:feelings|emotions)|what can i do for you|is there anything (?:else )?i can|"
     r"ready to (?:chat|help|assist)|what do you need\b|how can i make your day|if you need anything|"
-    r"(?:chat|talk) or (?:help|assist)", re.I)
+    r"(?:chat|talk) or (?:help|assist)|"
+    # clingy: "I missed you!", "I've been waiting for you", "I was so lonely"
+    r"\bi (?:really |so |kinda )?(?:missed|miss) you\b|\bi'?ve (?:really |so )?missed you\b|"
+    r"\bi'?ve been waiting for you\b|\bi was (?:so |getting )?lonely\b|\bdid you miss me\b", re.I)
 # a reply that says she can't do something (without having tried a tool) -> retry with every tool
 CANT_RE = re.compile(r"\b(can'?t|cannot|can not|don'?t have (?:a |the )?(?:tool|way|ability|access)|unable to|"
                      r"not able to|no (?:tool|way) to|isn'?t something i can)\b", re.I)
@@ -286,12 +293,14 @@ class SentenceStreamer:
         self.emit(sentence)
 
 
+# the model sometimes copies the "Aria:" label from the chat format; it must never be spoken
+SPEAKER_RE = re.compile(r"^\s*(?:\*\*)?aria(?:\*\*)?\s*:\s*(?:\*\*)?", re.I | re.M)
 EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]+")
 
 
 def _plain(text: str) -> str:
-    """Straight apostrophes (so the filters match "I’m") and no emojis (they're spoken)."""
-    return EMOJI_RE.sub("", (text or "").replace("\u2019", "'").replace("\u2018", "'"))
+    """Straight apostrophes (so the filters match "I’m"), no emojis (they're spoken), no "Aria:" label."""
+    return SPEAKER_RE.sub("", EMOJI_RE.sub("", (text or "").replace("\u2019", "'").replace("\u2018", "'")))
 
 
 def _first_sentence(text: str) -> str:
@@ -329,6 +338,23 @@ def tidy_reply(text: str, keep_offers: bool = False) -> str:
     text = re.sub(r"(?<!`)`([^`\n]+)`(?!`)", r"\1", text)   # `inline code`
     text = re.sub(r"^\s*[-*•]\s+", "", text, flags=re.M)    # bullet markers
     return text
+
+
+# a short message that says "go to sleep" in any normal way ("just go to sleep", "I said shut up", "good night")
+SLEEP_RE = re.compile(r"\b(?:(?:go|going|get|head) (?:back )?to sleep|sleep now|good ?night|good ?bye|bye|"
+                      r"shut up|be quiet|stop (?:talking|listening)|leave me alone|that'?s all|that'?s it for now|"
+                      r"see you(?: later)?)\b", re.I)
+SLEEP_NOT_RE = re.compile(r"\b(?:remind|reminder|timer|alarm|at \d|in \d+|how much|how long|couldn'?t|can'?t|"
+                          r"didn'?t|last night)\b", re.I)
+SLEEP_MAX_WORDS = 7
+
+
+def wants_sleep(text: str) -> bool:
+    """Lala wants Aria to stop and sleep: the exact phrases, or a short message that clearly says so."""
+    if matches_phrase(SLEEP_PHRASES, text):
+        return True
+    words = re.sub(r"[^a-z' ]", " ", (text or "").lower()).split()
+    return len(words) <= SLEEP_MAX_WORDS and bool(SLEEP_RE.search(text or "")) and not SLEEP_NOT_RE.search(text or "")
 
 
 def matches_phrase(phrases, text):
@@ -478,6 +504,15 @@ class Aria:
         self.weather = Weather()
         self.undo = Undo(self.notion, self.reminders)
         self.quiz = Quiz(self.notion, self.files, model=LLM_MODEL)
+        # Gmail through MyNotion's Inbox (same database); None without MyNotion
+        self.mail = self._try("Mail", lambda: MailEngine(os.environ.get("DB_PATH"), self.confirm, notion=self.notion,
+                                                         llm=self.llm)) if self.notion else None
+        if self.mail:
+            self.mail.on_announce = self._announce               # "Couldn't send the email to …"
+            self.mail.sender_name = self._known_user_name() or "Lala"
+        self.untis = self._try("WebUntis", Untis)      # timetable, homework, tests; asks nothing until used
+        self.dictation = Dictation(self._save_dictation, confirm=self.confirm, model=LLM_MODEL,
+                                   on_card=self.ui.show_card)
         self.activity = Activity(menu=self.laptop.menu)
         self.focus.activity = self.activity
         self.focus.on_nudge = self._announce
@@ -505,8 +540,15 @@ class Aria:
             posture=self.posture,
             quiz=self.quiz,
             face_learner=self.learn_my_face,
+            mail=self.mail,
+            untis=self.untis,
         )
         print(f"[Tools] {len(self.tools.schemas)} tools available")
+        # texting from the phone (./aria.sh --telegram once); nothing runs without it
+        bot = load_bot()
+        self.telegram = TelegramBot(*bot, answer=self.answer_phone).start() if bot else None
+        if self.telegram:
+            print("[Telegram] listening for your messages")
 
         self.session_id = self.memory.start_session()
         self.session_msgs = 0
@@ -529,7 +571,32 @@ class Aria:
             except Exception as e:
                 print(f"[MyNotion] event reminder sync failed: {e}")
             self.memory_note.sync()
+            self._mail_news()
             time.sleep(60)
+
+    def _mail_news(self):
+        """Mail from senders marked important: said when it arrives, only while Lala is at the desk."""
+        if not getattr(self, "mail", None) or not self._at_desk():
+            return
+        try:
+            for line in self.mail.important_news():
+                self._announce(line)
+        except Exception as e:
+            print(f"[Mail] important-sender check failed: {e}")
+
+    def _at_desk(self) -> bool:
+        """Camera saw a face, or keyboard/mouse was used, lately (AT_DESK_S). True when there's no way to tell."""
+        v = self.vision
+        signs = []
+        if getattr(v, "_running", False) and getattr(v, "_camera_index", None) is not None:
+            signs.append(time.time() - (getattr(v, "_last_face_at", 0.0) or 0.0))
+        try:
+            idle = idle_seconds()
+            if idle is not None:
+                signs.append(idle)
+        except Exception:
+            pass
+        return not signs or min(signs) <= AT_DESK_S
 
     @staticmethod
     def _try(label, factory):
@@ -621,7 +688,8 @@ class Aria:
         color" with no LED strip attached, because the prompt listed desk LEDs regardless."""
         missing = []
         prompt = BASE_PROMPT
-        if not getattr(self, "arduino", None):
+        arduino = getattr(self, "arduino", None)
+        if not arduino or not getattr(arduino, "is_connected", True):   # the controller exists even unplugged
             prompt, missing = prompt.replace("desk LEDs, ", ""), missing + ["desk lights / LEDs"]
         if not getattr(self, "spotify", None):
             prompt, missing = prompt.replace("music, ", "", 1), missing + ["music / Spotify"]
@@ -633,8 +701,11 @@ class Aria:
         return prompt
 
     def _verify_wake(self, audio):
-        """(really said 'Aria'?, what Whisper heard) for the wake word detector."""
-        text, _ = self.stt.transcribe(audio)
+        """(really said 'Aria'?, what Whisper heard) for the wake word detector. heard is None when there's no voice
+        in the clip at all: Whisper, hinted with "Hey Aria.", writes exactly that for plain static."""
+        if not self.stt.has_voice(audio):
+            return False, None
+        text = self.stt.transcribe_short(audio)
         return bool(WAKE_HEARD_RE.search(text or "")), text
 
     def _known_user_name(self):
@@ -702,8 +773,11 @@ class Aria:
             self.arduino.startup_animation()
         if self.ha and not self.vision.is_present:
             self.ha.notify_phone(text, title="Aria")
-        if r["kind"] in ("reminder", "timer", "event", "dayahead"):
-            title = {"timer": "Timer", "event": "Coming up", "dayahead": "Tomorrow"}.get(r["kind"], "Reminder")
+        if getattr(self, "telegram", None) and not self.vision.is_present:
+            self.telegram.send(text)          # not at the desk: the reminder goes to the phone too
+        if r["kind"] in ("reminder", "timer", "event", "dayahead", "due"):
+            title = {"timer": "Timer", "event": "Coming up", "dayahead": "Tomorrow",
+                     "due": "Due tomorrow"}.get(r["kind"], "Reminder")
             body = re.sub(r"^(?:Reminder|Time's up|Heads up):\s*", "", text)
             self.ui.show_card({"type": "reminder", "title": title, "text": body[:1].upper() + body[1:]})
         self.announcements.put(text)
@@ -814,7 +888,25 @@ class Aria:
             self.arduino.stop_talking()
         return interrupted_text
 
+    def answer_phone(self, text: str) -> str:
+        """A message from Lala's Telegram chat: a normal turn, but only phone tools, no voice, no camera check."""
+        with self._turn_lock():
+            with self.tools.phone():
+                reply, _ = self.handle_turn(text, check_state=False)
+            self.ui.set_state("listening" if getattr(self, "awake", False) else "sleeping")
+        return tidy_reply(reply) or reply
+
+    def _turn_lock(self):
+        """One turn at a time: the desk and the phone share history and pending yes/no questions."""
+        if getattr(self, "_turn_rlock", None) is None:
+            self._turn_rlock = threading.RLock()
+        return self._turn_rlock
+
     def handle_turn(self, user_input: str, check_state: bool = True, on_text=None):
+        with self._turn_lock():
+            return self._handle_turn(user_input, check_state, on_text)
+
+    def _handle_turn(self, user_input: str, check_state: bool = True, on_text=None):
         """One full turn: mood → state check → LLM with tools → save. Returns (reply, tools_used)."""
         self.ui.set_state("thinking")
 
@@ -845,6 +937,20 @@ class Aria:
                 self._recent.append([{"role": "user", "content": user_input},
                                      {"role": "assistant", "content": handled}])
                 return handled, [("quiz", handled)]
+        dictation = getattr(self, "dictation", None)
+        if dictation and dictation.active:
+            # while dictating, what's said is written down, not answered (the chunks aren't kept as conversation)
+            said = dictation.feed(user_input)
+            if not dictation.active and said:
+                self._save_turn("(dictation)", said)
+            return said, [("dictation", said)]
+        if dictation and self.notion:
+            title = Dictation.wants_to_start(user_input)
+            if title is not None:
+                said = dictation.start(title)
+                self._save_turn(user_input, said)
+                self._recent.append([{"role": "user", "content": user_input}, {"role": "assistant", "content": said}])
+                return said, [("start_dictation", said)]
         posture = getattr(self, "posture", None)
         if posture and POSTURE_REF_RE.search(user_input):
             said = posture.set_reference()
@@ -889,7 +995,11 @@ class Aria:
             prompt += (f"\n[Weekly review: you just asked about the to-do '{review_item[1]}' (on the list "
                        f"'{review_item[0]}'). If they want a reminder for it, call set_reminder; if they want it "
                        f"on the calendar, call add_event. Answer in one short sentence and don't ask about other to-dos.]")
-        system_prompt = self.context.build_system_prompt(self._base_prompt())
+        # everything that changes each turn goes after the message, so the prompt starts the same every turn
+        system_prompt = self.context.build_system_prompt(self._base_prompt(), moment=False)
+        moment = self.context.moment()
+        if moment:
+            prompt += f"\n[Right now: {moment}]"
         if self._session_hint:
             system_prompt += "\n\n[This conversation] " + self._session_hint
         routed = hasattr(self.tools, "schemas_for")
@@ -1214,7 +1324,18 @@ class Aria:
         else:
             threading.Thread(target=work, daemon=True).start()
 
+    def _save_dictation(self, text: str, title: str) -> str:
+        # through the tool engine, so "undo that" can take it back
+        return self.tools.execute("add_note", {"text": text, "title": title or "today"})
+
+    def _dictating(self) -> bool:
+        return bool(getattr(self, "dictation", None) and self.dictation.active)
+
     def _go_to_sleep(self, line=None):
+        if self._dictating():
+            saved = self.dictation.finish()      # never lose what was dictated
+            print(f"Aria: {saved}")
+            self.speak(saved)
         if line:
             self.speak(line)
         self.ui.set_state("sleeping")
@@ -1238,6 +1359,8 @@ class Aria:
         try:
             self.memory.end_session(self.session_id, self.session_msgs)
             self.reminders.stop()
+            if getattr(self, "telegram", None):
+                self.telegram.stop()
             self.vision.stop()
             if self.tray:
                 self.tray.stop()
@@ -1252,6 +1375,17 @@ class Aria:
             os._exit(0)
 
     # ── Main loop ─────────────────────────────────────────────────────────────
+
+    def _briefing_extras(self) -> str:
+        """Weather, new email and today's school for the morning briefing."""
+        parts = [self.weather.brief()]
+        for source in (getattr(self, "mail", None), getattr(self, "untis", None)):
+            if source:
+                try:
+                    parts.append(source.briefing_line())
+                except Exception as e:
+                    print(f"[Briefing] {type(e).__name__}: {e}")
+        return " ".join(p for p in parts if p)
 
     def _greeting_prompt(self) -> str:
         """Normal short greeting — plus the daily briefing the first time Aria greets Lala each day."""
@@ -1270,9 +1404,9 @@ class Aria:
             return prompt
         try:
             facts = self.notion.daily_briefing(self.reminders)
-            weather = self.weather.brief()
-            if weather:
-                facts += " " + weather
+            extras = self._briefing_extras()
+            if extras:
+                facts += " " + extras
         except Exception as e:
             print(f"[MyNotion] briefing failed: {e}")
             return prompt
@@ -1309,6 +1443,38 @@ class Aria:
         self._recent.append([{"role": "assistant", "content": opening}])
         self.speak(opening)
 
+    def _not_for_me(self, text: str, since_s: float, asked: bool) -> str | None:
+        """Voice mode: why what was heard isn't for Aria (someone else talking, a video), or None. See Addressee.py."""
+        if wants_sleep(text):
+            return None                    # "go to sleep" always counts, whenever it's said
+        expecting = bool(self.confirm.pending or self._review or getattr(self, "_unsure_heard", None)
+                         or getattr(getattr(self, "quiz", None), "active", None)
+                         or self._dictating()
+                         or (self._initiative_active and not self._initiative_active.get("answered")))
+        v = self.vision
+        face_age = None
+        if getattr(v, "_running", False) and getattr(v, "_camera_index", None) is not None:
+            face_age = time.time() - (getattr(v, "_last_face_at", 0.0) or 0.0)
+        try:
+            idle = idle_seconds()
+        except Exception:
+            idle = None
+        # how loud this was next to how loud Lala usually is (learned from what she accepted; needs a few first)
+        levels = getattr(self, "_voice_levels", None)
+        level = getattr(self.stt, "last_level", 0.0) or 0.0
+        ratio = level / sorted(levels)[len(levels) // 2] if levels and len(levels) >= 5 and level else None
+        return not_for_aria(text, since_s, asked=asked, expecting=expecting, face_age_s=face_age, idle_s=idle,
+                            command=bool(ACTION_RE.search(text)), language=getattr(self.stt, "last_language", None),
+                            level_ratio=ratio)
+
+    def _learn_voice_level(self):
+        """Something Lala said to Aria: remember how loud it was, for telling her apart from the room."""
+        level = getattr(self.stt, "last_level", 0.0) or 0.0
+        if level:
+            if not hasattr(self, "_voice_levels"):
+                self._voice_levels = deque(maxlen=30)
+            self._voice_levels.append(level)
+
     def _check_heard(self, text: str, confidence: float):
         """Voice input she isn't sure about gets a 'did you say …?' instead of being acted on.
         Returns what to act on, or None when she asked back (the answer comes as the next input)."""
@@ -1320,7 +1486,7 @@ class Aria:
                 self.speak("Okay, say it again?")
                 return None
             return text                            # they just said something new
-        if confidence < LOW_CONFIDENCE and not matches_phrase(SLEEP_PHRASES + SHUTDOWN_PHRASES, text):
+        if confidence < LOW_CONFIDENCE and not (wants_sleep(text) or matches_phrase(SHUTDOWN_PHRASES, text)):
             Diagnostics.problem("misheard", f"{text} ({confidence:.2f})")
             self._unsure_heard = text
             self.speak(f"Sorry, did you say: {text}?")
@@ -1337,7 +1503,10 @@ class Aria:
             pass
         if self.notion:
             try:
-                words += [n["title"] for n in self.notion._notes()[:25] if len(n["title"]) < 30]
+                # short titles only: Whisper copies a long one ("What Aria knows about me") when it can't
+                # make out the audio, and that phrase then counts as said
+                words += [n["title"] for n in self.notion._notes()[:25]
+                          if len(n["title"]) < 30 and len(n["title"].split()) <= 2 and "aria" not in n["title"].lower()]
             except Exception:
                 pass
         return [w for w in dict.fromkeys(words) if w not in ("User", "The", "Has", "Likes", "Is")]
@@ -1347,7 +1516,8 @@ class Aria:
         self.ui.set_state("sleeping")
         if self.option == 2:
             heard = self.wake.listen_for_wake_word(stop_event=self._wake_event)
-            self.vision.stop()  # paused during conversation; restarted when Aria sleeps
+            # the camera keeps running while she's awake, like in typing mode: posture, "who's there",
+            # focus-mode away detection and "what do you see?" all need it
             return heard or self._wake_event.is_set()
 
         print("Press Enter (or type in the overlay) to wake Aria..." if HAS_TERMINAL
@@ -1380,7 +1550,7 @@ class Aria:
                     self._open_initiative(init)
                     timeout = INITIATIVE_TIMEOUT
                 else:
-                    opening = self.llm.chat(self._greeting_prompt(), [], self._base_prompt())
+                    opening = tidy_reply(self.llm.chat(self._greeting_prompt(), [], self._base_prompt())) or "Hey!"
                     print(f"Aria: {opening}")
                     self.speak(opening)
 
@@ -1423,9 +1593,21 @@ class Aria:
                     prompted = False
                 else:
                     # short windows so typed input and sleep requests are noticed quickly
+                    dictating = self._dictating()
+                    if not hasattr(self, "_stt_silence"):
+                        self._stt_silence = self.stt.silence_duration
+                    self.stt.silence_duration = DICTATION_SILENCE_S if dictating else self._stt_silence
                     user_input = self.stt.listen(start_timeout=min(remaining, 3))
                     self._heard_timing = dict(getattr(self.stt, "last_timing", {}) or {}) if user_input else None
-                    if user_input:
+                    if user_input and not dictating:       # dictation takes it as heard ("scratch that" fixes it)
+                        # from when you started talking, not when the transcript was ready
+                        started = time.time() - sum((self._heard_timing or {}).get(k, 0) for k in ("audio_s", "transcribe"))
+                        why = self._not_for_me(user_input, started - last_interaction, timeout > SLEEP_TIMEOUT)
+                        if why:
+                            print(f"[Heard] ignored ({why}): {user_input!r}")
+                            Diagnostics.problem("ignored_speech", f"{why}: {user_input[:100]}")
+                            continue
+                        self._learn_voice_level()
                         user_input = self._check_heard(user_input, self.stt.last_confidence)
                         if user_input is None:
                             last_interaction = time.time()
@@ -1453,11 +1635,14 @@ class Aria:
                         self._go_to_sleep(random.choice(CHAT_LET_GO))
                         break
 
-                if matches_phrase(SLEEP_PHRASES, user_input):
+                # while dictating, "that's all" / "sleep" / "exit" are words to write down or the end of the
+                # dictation; only a clear "go to sleep" / "goodbye" ends the conversation
+                dictating = self._dictating()
+                if (matches_phrase(["go to sleep", "goodbye"], user_input) if dictating else wants_sleep(user_input)):
                     self._go_to_sleep("Alright, going to sleep.")
                     break
 
-                if matches_phrase(SHUTDOWN_PHRASES, user_input):
+                if not dictating and matches_phrase(SHUTDOWN_PHRASES, user_input):
                     self.speak("Shutting down.")
                     self._remember_session(blocking=True)  # finish before os._exit kills threads
                     self.shutdown()
@@ -1470,6 +1655,8 @@ class Aria:
                     last_interaction = time.time()
                     # she asked something: give Lala time to answer before dozing off
                     timeout = CHAT_TIMEOUT if response.rstrip().endswith("?") else SLEEP_TIMEOUT
+                    if self._dictating():
+                        timeout = DICTATION_TIMEOUT
                 except Exception as e:
                     print(f"[Error] {e}")
                     Diagnostics.problem("crash", f"{type(e).__name__}: {e}")
@@ -1492,7 +1679,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Aria desk assistant")
     parser.add_argument("--voice", action="store_true", help="wake word + speech input instead of keyboard")
     parser.add_argument("--no-ui", action="store_true", help="terminal only, no floating overlay")
-    args = parser.parse_args()
+    # ARIA_ARGS in Engines/.env applies however she's started (aria.sh, autostart, PyCharm)
+    args = parser.parse_args(sys.argv[1:] + os.getenv("ARIA_ARGS", "").split())
     option = 2 if args.voice else 1
 
     from ui import instance

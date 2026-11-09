@@ -17,6 +17,7 @@ import time
 from collections import Counter
 
 import ollama
+from llm_engine import vision_chat
 
 from Engines.ScreenEngine import VISION_MODEL
 
@@ -405,9 +406,9 @@ class AriaVision:
         img_base64  = base64.b64encode(buffer).decode('utf-8')
 
         try:
-            response = ollama.chat(
-                model=VISION_MODEL,
-                messages=[{
+            response = vision_chat(
+                VISION_MODEL,
+                [{
                     "role": "user",
                     "content": "Describe what you see briefly. If there's a person, describe their appearance.",
                     "images": [img_base64]

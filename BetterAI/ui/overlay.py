@@ -73,7 +73,7 @@ QLineEdit {
 """
 CARD_W = 300
 CARD_MAX_H = 260
-CARD_STAY = {"list": 45, "agenda": 45, "confirm": 90, "reminder": 180}   # seconds without hovering before a card fades
+CARD_STAY = {"list": 45, "agenda": 45, "confirm": 90, "reminder": 180, "dictation": 3600}   # seconds without hovering before a card fades
 CARD_STYLE = """
 QFrame#card { background: rgba(18, 14, 28, 238); border: 1px solid rgba(185, 120, 255, 130); border-radius: 14px; }
 QLabel { color: #f0ecfa; background: transparent; }
@@ -333,6 +333,25 @@ class Card(QFrame):
                 b.clicked.connect(lambda: self.on_action("close", None))
             else:
                 b.clicked.connect(lambda _=False, m=payload: self.on_action("snooze", m))
+            buttons.addWidget(b)
+        rows.addLayout(buttons)
+
+    def _build_dictation(self, rows, card):
+        text = QLabel(card.get("text") or "Listening… start talking.")
+        text.setWordWrap(True)
+        if not card.get("text"):
+            text.setObjectName("muted")
+        rows.addWidget(text)
+        rows.addWidget(self._muted(f"{card.get('words', 0)} words · say “stop” to save, “scratch that” to undo"))
+        buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 8, 0, 0)
+        buttons.addStretch(1)
+        for label, say in (("Cancel", "cancel dictation"), ("Save", "stop dictating")):
+            b = QPushButton(label)
+            b.setCursor(Qt.PointingHandCursor)
+            if say == "stop dictating":
+                b.setObjectName("yes")
+            b.clicked.connect(lambda _=False, t=say: self.on_action("answer", t))
             buttons.addWidget(b)
         rows.addLayout(buttons)
 

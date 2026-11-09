@@ -38,6 +38,8 @@ NOISE_FILLERS = {
     "cough", "throat", "laughter", "noise",
 }
 AI_NAMES = {"aria"}
+INTERRUPT_MIN_CONFIDENCE = 0.5   # an unsure transcript while she talks is usually her own voice, or a guess
+ECHO_OVERLAP = 0.6               # this share of the heard words in what she's saying = her own voice from the speakers
 LEAD_HOOKS = (
     "stop", "wait", "hold on", "hang on", "actually",
     "no", "shut up", "listen", "sorry", "excuse me", "please",
@@ -213,6 +215,25 @@ def normalize_for_tts(text: str) -> str:
     return text.strip()
 
 
+FIRST_CHUNK_MIN = 60     # a first sentence longer than this starts playing after its first clause
+
+
+def first_chunks(sentence: str) -> list:
+    """The first sentence, split after its first comma/dash when it's long: the voice is made on the CPU (~1 s for a
+    long sentence), so speaking can start after the first clause while the rest is being made."""
+    if len(sentence) <= FIRST_CHUNK_MIN:
+        return [sentence]
+    m = re.search(r"[,;:—–] ", sentence[15:])
+    if not m or len(sentence) - (15 + m.end()) < 12:
+        return [sentence]
+    cut = 15 + m.end()
+    return [sentence[:cut].strip(), sentence[cut:].strip()]
+
+
+def _words(text: str) -> set:
+    return {w for w in re.findall(r"[a-z']+", (text or "").lower()) if len(w) > 1}
+
+
 class VoiceEngine:
     def __init__(self, live2d_controller=None, stt_engine=None):
         self.controller = live2d_controller
@@ -275,17 +296,25 @@ class VoiceEngine:
         self._interrupted_text = None
         self._stop_interrupt_listener = False
         self._flush_audio_queue()
+        self._spoken_words = set()       # what she's saying this time, to recognise her own voice (echo)
         self.first_audio_at = None       # when the first sentence started playing (speed log)
 
         interrupt_thread = threading.Thread(target=self._listen_for_interrupt, daemon=True)
         interrupt_thread.start()
 
-        for sentence in sentences:
+        def chunks():
+            first = True
+            for sentence in sentences:
+                sentence = normalize_for_tts(sentence or "").strip()
+                if not sentence:
+                    continue
+                yield from (first_chunks(sentence) if first else [sentence])
+                first = False
+
+        for sentence in chunks():
             if self._interrupted:
                 break
-            sentence = normalize_for_tts(sentence or "").strip()
-            if not sentence:
-                continue
+            self._spoken_words.update(_words(sentence))
             tone = TONES[sentence_tone(sentence)]
             audio_np, sr = self._synthesize(sentence, speed=self._speed * tone["speed"])
             if audio_np is not None and not self._interrupted:
@@ -301,7 +330,9 @@ class VoiceEngine:
             time.sleep(0.05)
 
         self._stop_interrupt_listener = True
-        interrupt_thread.join(timeout=1.0)
+        # if someone started talking just as she finished, let that recording end (10 s at most), so it
+        # never runs at the same time as the next normal listen
+        interrupt_thread.join(timeout=12.0)
 
         if self.controller:
             self.controller.stop_talking()
@@ -419,12 +450,19 @@ class VoiceEngine:
         try:
             time.sleep(0.3)
             while not self._interrupted and not self._stop_interrupt_listener:
-                heard = self.stt.listen_short(timeout=0.2)
+                heard = self.stt.listen_short(timeout=0.5, stop=lambda: self._stop_interrupt_listener)
                 if not heard:
                     continue
 
                 text, level = heard if isinstance(heard, tuple) else (heard, None)
                 cleaned = text.strip().lower()
+                confidence = getattr(self.stt, "last_confidence", 1.0)
+                if confidence < INTERRUPT_MIN_CONFIDENCE:
+                    print(f"[VoiceEngine] Shielded (unsure, {confidence:.2f}): '{cleaned}'")
+                    continue
+                if self._is_echo(cleaned):
+                    print(f"[VoiceEngine] Shielded (her own voice): '{cleaned}'")
+                    continue
 
                 if not self._is_real_interrupt(cleaned, level):
                     continue
@@ -436,6 +474,11 @@ class VoiceEngine:
                 break
         except Exception as e:
             print(f"[VoiceEngine] Interrupt monitoring error: {e}")
+
+    def _is_echo(self, cleaned: str) -> bool:
+        words = _words(cleaned)
+        mine = getattr(self, "_spoken_words", set())
+        return bool(words) and len(words & mine) / len(words) >= ECHO_OVERLAP
 
     def _is_real_interrupt(self, cleaned, level=None):
         words = [w.strip(string.punctuation) for w in cleaned.split()]

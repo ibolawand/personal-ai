@@ -460,3 +460,47 @@ def test_good_posture_is_handled_in_code(aria, text):
     aria.posture = types.SimpleNamespace(set_reference=lambda: "Got it, that's your good posture.")
     reply, used = aria.handle_turn(text, check_state=False)
     assert used == [("remember_good_posture", reply)] and aria.llm.prompts == []
+
+
+def test_copied_speaker_label_is_never_spoken():
+    out = []
+    s = main.SentenceStreamer(out.append)
+    for chunk in ["Ar", "ia: Pretty", " good! How ", "was school?"]:
+        s.feed(chunk)
+    s.flush()
+    assert out == ["Pretty good!", "How was school?"]
+    assert main.tidy_reply("**Aria:** Done, milk's on the list.") == "Done, milk's on the list."
+    assert main.tidy_reply("Aria said hi.") == "Aria said hi."
+
+
+def test_no_clingy_lines():
+    assert tidy_reply("Hey Lawand! It's been a while, I missed you! How was your day?") == "Hey Lawand! How was your day?"
+    assert tidy_reply("I've been waiting for you. What's up?") == "What's up?"
+    assert tidy_reply("Did you miss the bus?") == "Did you miss the bus?"
+
+
+@pytest.mark.parametrize("text", ["Just go to sleep.", "I said shut up.", "good night aria", "okay bye",
+                                  "you can go to sleep now", "be quiet", "stop listening", "that's all, thanks",
+                                  "go to sleep", "goodbye"])
+def test_short_goodbyes_put_her_to_sleep(text):
+    assert main.wants_sleep(text)
+
+
+@pytest.mark.parametrize("text", ["remind me to go to sleep at 11", "how much sleep do I need",
+                                  "set a timer so I go to sleep in 20 minutes", "I couldn't sleep last night at all",
+                                  "my friend said shut up to me today and I was really annoyed by it"])
+def test_other_sleep_words_dont(text):
+    assert not main.wants_sleep(text)
+
+
+def test_did_you_miss_me_is_dropped():
+    assert tidy_reply("Hey there! Did you miss me? How was your day?") == "Hey there! How was your day?"
+
+
+def test_unplugged_led_strip_is_not_offered(aria):
+    aria.spotify = object()
+    aria.vision = types.SimpleNamespace(_camera_index=0)
+    aria.arduino = types.SimpleNamespace(is_connected=False)
+    assert "desk LEDs" not in aria._base_prompt()
+    aria.arduino.is_connected = True
+    assert aria._base_prompt() == main.BASE_PROMPT

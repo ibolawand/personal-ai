@@ -6,6 +6,7 @@ when its backend (Spotify, Arduino, Home Assistant, ...) is actually
 available, so the model can't pick a tool that doesn't exist.
 """
 
+import contextlib
 import os
 from pathlib import Path
 
@@ -45,7 +46,7 @@ class ToolEngine:
     def __init__(self, spotify=None, arduino=None, vision=None, ha=None,
                  reminders=None, focus=None, screen=None, laptop=None, files=None, notion=None,
                  owner_check=None, initiative=None, memory_note=None, activity=None, weather=None, undo=None,
-                 recall=None, health=None, posture=None, quiz=None, face_learner=None):
+                 recall=None, health=None, posture=None, quiz=None, face_learner=None, mail=None, untis=None):
         self.spotify = spotify
         self.arduino = arduino
         self.vision = vision
@@ -67,6 +68,8 @@ class ToolEngine:
         self.posture = posture
         self.quiz = quiz
         self.face_learner = face_learner
+        self.mail = mail
+        self.untis = untis
         self._registry = {t["schema"]["function"]["name"]: t for t in self._build()}
 
     # Tools that touch the laptop, files, clipboard/screen or phone — gated by owner_check
@@ -76,20 +79,25 @@ class ToolEngine:
         "tidy_downloads", "undo_tidy_downloads", "look_at_screen", "read_clipboard", "copy_to_clipboard",
         "check_phone_location", "check_phone_battery", "notify_phone",
         "read_note", "search_notes", "list_notes", "get_events", "move_event", "delete_event",
-        "clear_list", "daily_briefing", "what_you_know_about_me", "forget_about_me",
+        "clear_list", "get_due", "daily_briefing", "what_you_know_about_me", "forget_about_me",
         "recall_conversation", "search_conversations",
+        "check_mail", "read_mail", "search_mail", "draft_reply", "draft_mail", "archive_mail", "mark_mail_read",
+        "mail_todo", "mail_to_event", "mark_sender_important",
+        "school_day", "school_homework", "school_exams",
     }
 
     # Changes "undo that" can take back (Engines/Undo.py)
     UNDOABLE = {"restore_note", "add_note", "save_as_note", "add_to_list", "remove_from_list", "check_off", "add_event",
+                "add_todo", "set_due",
                 "set_reminder", "set_timer"}
 
     # ── Tool routing ──────────────────────────────────────────────────────────
     # All ~75 tool descriptions take ~5,500 of the model's 8,192 context tokens. So each turn gets the core set plus
     # only the groups the message is about (and groups used in the last turns, for follow-ups). Tools that are in
     # no group are always offered. If the model then says it can't do something, main.py retries with all tools.
+    _phone = False      # True while a message from Lala's Telegram chat is handled: phone tools only
     CORE = {"calculate", "web_search", "set_timer", "set_reminder", "list_reminders", "cancel_reminder",
-            "snooze_reminder", "add_note", "add_to_list", "get_events", "search_notes", "undo_last", "get_weather"}
+            "snooze_reminder", "add_note", "add_to_list", "add_todo", "get_events", "search_notes", "undo_last", "get_weather"}
     GROUPS = {
         "music": (r"\b(play|music|song|spotify|pause|resume|skip|next|previous|track|playlist|artist|album|listen|"
                   r"what'?s playing|lo-?fi|genre)\b",
@@ -113,15 +121,24 @@ class ToolEngine:
                    r"bought|got the|done with|briefing|plan|plans|agenda|week|weekend|tomorrow|today|tonight|"
                    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|birthday|inbox|remove|clear|move|"
                    r"delete|cancel|shopping|packing|mynotion|notion|save that|day like|restore|older version|"
-                   r"old version|bring back|undelete|recover|backup)\b",
+                   r"old version|bring back|undelete|recover|backup|due|deadline|overdue|by (?:mon|tue|wed|thu|fri|sat|sun)\w*|"
+                   r"hand in|submit)\b",
                    {"add_note", "save_as_note", "read_note", "search_notes", "list_notes", "add_to_list",
                     "remove_from_list", "check_off", "clear_list", "get_events", "add_event", "move_event",
-                    "delete_event", "open_mynotion", "daily_briefing", "restore_note"}),
+                    "delete_event", "open_mynotion", "daily_briefing", "restore_note", "add_todo", "set_due", "get_due"}),
         "screen": (r"\b(screen|see|look|looking|copied|clipboard|this error|error|camera|who'?s|who is|in front)\b",
                    {"look_at_screen", "look", "read_clipboard", "copy_to_clipboard"}),
         "quiz": (r"\b(quiz|test me|ask me (?:some )?questions|revise|revision|flash ?cards?|study with me)\b",
                  {"start_quiz"}),
         "faces": (r"\b(face|faces|recogni[sz]e me|who am i)\b", {"learn_my_face"}),
+        "school": (r"\b(school|class(?:es)?|lessons?|timetable|stundenplan|homework|hausübung\w*|hausaufgabe\w*|"
+                   r"tests?|exams?|schularbeit\w*|teachers?|rooms?|cancell?ed|subjects?|supplier\w*|periods?|untis|"
+                   r"webuntis)\b",
+                   {"school_day", "school_homework", "school_exams"}),
+        "mail": (r"\b(e-?mails?|mails?|inbox|wrote|written|write|replied|reply|answer(?:ed)?|sent me|message from|"
+                 r"gmail|archive|the (?:one|thing) from|from (?:mr|mrs|ms|dr|prof)\.?)\b",
+                 {"check_mail", "read_mail", "search_mail", "draft_reply", "draft_mail", "archive_mail",
+                  "mark_mail_read", "mail_todo", "mail_to_event", "mark_sender_important"}),
         "posture": (r"\b(posture|slouch\w*|sitting|sit (?:up|straight|like this)|how i'?m sitting)\b",
                     {"remember_good_posture"}),
         "focus": (r"\b(focus|pomodoro|study|studying|deep work|concentrat\w*|how long|screen time|break|rounds?)\b",
@@ -147,8 +164,23 @@ class ToolEngine:
         for pattern, names in self.GROUPS.values():
             if re.search(pattern, text or "", re.I) or names & recent:
                 wanted |= names
-        return [s for n, s in ((t["schema"]["function"]["name"], t["schema"]) for t in self._registry.values())
-                if n in wanted or n not in grouped]
+        hidden = self._unplugged()
+        if self._phone:
+            from Engines.Telegram import PHONE_TOOLS
+            hidden = hidden | (set(self._registry) - PHONE_TOOLS)
+        picked = [(n, s) for n, s in ((t["schema"]["function"]["name"], t["schema"]) for t in self._registry.values())
+                  if (n in wanted or n not in grouped) and n not in hidden]
+        # the tools every message gets come first, always in the same order, so the prompt starts the same each turn
+        # and Ollama can reuse what it already read; the message's extra groups follow
+        always = lambda n: n in self.CORE or n not in grouped
+        return [s for n, s in picked if always(n)] + [s for n, s in picked if not always(n)]
+
+    LED_TOOLS = {"set_led_color", "set_led_effect", "set_led_brightness", "led_off"}
+
+    def _unplugged(self) -> set:
+        """Tools for hardware that isn't plugged in right now. The Arduino controller exists even without a
+        board (it keeps retrying), so its tools are hidden until it actually connects."""
+        return set() if getattr(self.arduino, "is_connected", True) else self.LED_TOOLS
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -156,11 +188,24 @@ class ToolEngine:
     def schemas(self) -> list:
         return [t["schema"] for t in self._registry.values()]
 
+    @contextlib.contextmanager
+    def phone(self):
+        """While a message from Lala's phone is handled: only PHONE_TOOLS, and no camera check."""
+        self._phone = True
+        try:
+            yield
+        finally:
+            self._phone = False
+
     def execute(self, name: str, args: dict) -> str:
         tool = self._registry.get(name)
         if not tool:
             return f"Unknown tool '{name}'."
-        if name in self.PROTECTED and not self.owner_check():
+        if self._phone:
+            from Engines.Telegram import PHONE_TOOLS
+            if name not in PHONE_TOOLS:
+                return "Refused: that only works at the desk, not from the phone."
+        elif name in self.PROTECTED and not self.owner_check():     # from the phone, her own chat proves it's Lala
             return "Refused: only Lala can use that, and I don't recognise who's at the desk."
         try:
             if self.undo and name in self.UNDOABLE:
@@ -238,6 +283,54 @@ class ToolEngine:
                 _tool("focus_status", "How much time is left in the focus session or break.", fm.status),
                 _tool("focus_stats", "How much Lala focused ('how much did I focus this week/today?').",
                       fm.stats, optional=("period",), period=("string", "'today', 'week' or 'month'")),
+            ]
+
+        if self.untis:
+            u = self.untis
+            tools += [
+                _tool("school_day", "Lala's school timetable from WebUntis for one day: lessons, times, rooms, and "
+                      "what changed (cancelled, room changes, substitutions). Use for 'what lessons do I have "
+                      "tomorrow', 'when does school end', 'is English cancelled'.",
+                      u.school_day, optional=("when",),
+                      when=("string", "'today', 'tomorrow', 'friday', '12.11.'. Default: today")),
+                _tool("school_homework", "Lala's open homework from WebUntis, with when it's due.", u.school_homework),
+                _tool("school_exams", "Lala's upcoming tests and Schularbeiten from WebUntis (next 3 weeks).",
+                      u.school_exams),
+            ]
+
+        if self.mail:
+            m = self.mail
+            tools += [
+                _tool("check_mail", "New email in Lala's Gmail inbox (Primary only, no ads): who wrote and about what. "
+                      "For 'any new emails?', 'did anyone write to me?'.", m.check_mail),
+                _tool("read_mail", "Read one email aloud: by sender ('the one from Mr Huber'), subject words, 'latest', "
+                      "or 'that' for the one just mentioned. Long ones get a summary first; full=true reads all of it.",
+                      m.read_mail, optional=("which", "full"),
+                      which=("string", "sender name, subject words, 'latest' or 'that'"),
+                      full=("boolean", "true to read the whole email after a summary")),
+                _tool("search_mail", "Search Lala's emails for words ('what did Sara write about friday').",
+                      m.search_mail, query=("string", "the words to look for")),
+                _tool("draft_reply", "Reply to an email ('reply that I'll be there at 3'). Writes it in Lala's voice and "
+                      "asks before sending; pass what Lala wants to say, not a finished email.",
+                      m.draft_reply, optional=("which",), which=("string", "which email: 'that', sender or subject"),
+                      gist=("string", "what the reply should say")),
+                _tool("draft_mail", "Write a new email ('email Mr Huber that I'm sick'). To someone who emailed before, "
+                      "or a full address. Asks before sending.", m.draft_mail, optional=("subject",),
+                      to=("string", "name or email address"), gist=("string", "what the email should say"),
+                      subject=("string", "subject, if Lala said one")),
+                _tool("archive_mail", "Archive an email (out of the inbox, kept in All Mail). Never deletes.",
+                      m.archive_mail, optional=("which",), which=("string", "'that', sender or subject")),
+                _tool("mark_mail_read", "Mark an email read, or unread with read=false.", m.mark_mail_read,
+                      optional=("which", "read"), which=("string", "'that', sender or subject"),
+                      read=("boolean", "false to mark unread")),
+                _tool("mail_todo", "'Remind me to answer that (tomorrow)': a to-do 'Answer X about Y' with a due date.",
+                      m.mail_todo, optional=("which", "due"), which=("string", "'that', sender or subject"),
+                      due=("string", "when, e.g. 'tomorrow', 'friday'; default tomorrow")),
+                _tool("mail_to_event", "'Turn that into an event': the date/time from the email into the calendar "
+                      "(asks first).", m.mail_to_event, optional=("which",),
+                      which=("string", "'that', sender or subject")),
+                _tool("mark_sender_important", "'Always tell me when Sara emails': Aria says it when their mail arrives.",
+                      m.mark_sender_important, who=("string", "the sender's name or address")),
             ]
 
         if self.quiz:
@@ -378,10 +471,26 @@ class ToolEngine:
                       "(birthdays, plans, passwords hints, exam topics, ideas) before saying you don't know.",
                       self._search_notes, query=("string", "key words, e.g. 'Sara birthday'")),
                 _tool("list_notes", "Only for 'which notes do I have': lists note titles. To see what is IN a note or list, use read_note.", nt.list_notes),
-                _tool("add_to_list", "Add items to a list note (shopping list, to-do list, packing list, films to watch…).",
+                _tool("add_to_list", "Add items to a list note (shopping list, packing list, films to watch…). For tasks or "
+                      "anything with a deadline use add_todo.",
                       nt.add_to_list,
                       list_name=("string", "which list, e.g. 'shopping' or 'to-do'"),
                       items=("string", "the items, comma-separated, e.g. 'oat milk, eggs'")),
+                _tool("add_todo",
+                      "Add ONE to-do (a task Lala has to do), with a due date when they say one: 'I have to finish "
+                      "the essay by friday', 'remind me on my to-do list to call the bank', 'hand in the report "
+                      "on 20 november'. Use this, not add_to_list, for tasks and anything with a deadline.",
+                      nt.add_todo, optional=("due", "list_name"),
+                      task=("string", "the task without the date, e.g. 'finish the essay'"),
+                      due=("string", "when it's due, as Lala said it: 'friday', 'tomorrow', '20 november'; empty if none"),
+                      list_name=("string", "only if Lala names a list other than the to-do list")),
+                _tool("set_due", "Change or remove the due date of an existing to-do ('the essay is due monday "
+                      "now', 'no deadline for the bank call').", nt.set_due, optional=("due",),
+                      item=("string", "the to-do, e.g. 'essay'"),
+                      due=("string", "the new date, or 'none' to remove it")),
+                _tool("get_due", "What's due / deadlines / overdue to-dos ('what's due this week?', 'do I have "
+                      "deadlines?', 'anything overdue?').", nt.get_due, optional=("when",),
+                      when=("string", "'this week' (default), 'next week', 'tomorrow', 'friday', 'this month' or 'all'")),
                 _tool("remove_from_list", "Delete items from a list entirely (only when Lala says remove/delete; "
                                           "for bought/done use check_off).", nt.remove_from_list,
                       list_name=("string", "which list"), items=("string", "items to remove, comma-separated")),
@@ -395,7 +504,8 @@ class ToolEngine:
                 _tool("clear_list", "Remove everything from a list (asks to confirm).", nt.clear_list,
                       list_name=("string", "which list")),
                 # calendar (MyNotion)
-                _tool("get_events", "Read Lala's MyNotion calendar.", nt.get_events, optional=("when",),
+                _tool("get_events", "Read Lala's MyNotion calendar (and school hours that day, from WebUntis).",
+                      self._events_with_school, optional=("when",),
                       when=("string", "'today', 'tomorrow', 'friday', '12.11.', 'this week', 'next week', "
                                       "'weekend' or 'this month'. Default: this week")),
                 _tool("add_event", "Add an event to Lala's MyNotion calendar. Leave time empty for all-day events. "
@@ -512,8 +622,12 @@ class ToolEngine:
             ]
 
         if self.undo:
-            tools.append(_tool("undo_last", "Undo Aria's last change to notes, lists, the calendar or reminders "
-                               "('undo that', 'that was wrong, take it back').", self.undo.undo))
+            def undo():
+                # an email still in its 10-second wait is the most recent thing to take back
+                stopped = self.mail.cancel_send() if self.mail else None
+                return stopped or self.undo.undo()
+            tools.append(_tool("undo_last", "Undo Aria's last change to notes, lists, the calendar or reminders, "
+                               "or stop an email that's about to go out ('undo that', 'don't send it').", undo))
 
         if self.weather:
             tools += [
@@ -538,6 +652,12 @@ class ToolEngine:
                 self._conversation_starters, enabled=("boolean", "true to allow, false to stop")))
 
         return tools
+
+    def _events_with_school(self, when: str = "this week"):
+        """The calendar, plus the school hours for a single day ("what do I have tomorrow?")."""
+        events = self.notion.get_events(when)
+        school = self.untis.day_line(when) if self.untis else ""
+        return f"{events} {school}" if school else events
 
     def _search_notes(self, query: str):
         """Notes first; if nothing's there, documents that mention it (people say 'document' for both)."""

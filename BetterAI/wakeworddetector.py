@@ -3,7 +3,7 @@ Wake word, in two steps:
   1. a small openWakeWord model listens all the time: "hey Aria" (models/hey_aria.onnx, trained with
      tools/train_wakeword.py), or the built-in "hey Jarvis" when that file is missing or WAKE_WORD=jarvis;
   2. when it fires, Whisper transcribes the last 2.5 seconds and only a real "Aria" wakes her (verify callback from
-     main.py). The model is trained on synthetic voices, so on its own it would wake up for TV or YouTube now and then;
+     main.py), or nothing at all when the model was fairly sure (Whisper often makes out no words in a quiet clip). The model is trained on synthetic voices, so on its own it would wake up for TV or YouTube now and then;
      Whisper on the GPU checks in ~0.2 s. Rejected detections go to the problem log.
 """
 
@@ -19,6 +19,9 @@ from openwakeword.utils import download_models
 
 ARIA_MODEL = Path(__file__).resolve().parent / "models" / "hey_aria.onnx"
 VERIFY_SECONDS = 2.5
+# the model fired but Whisper made out no words at all (a quiet or clipped "hey Aria"): wake anyway above this.
+# Whisper hearing *other* words (a video, someone talking) still means no.
+HEARD_NOTHING_WAKE = 0.6
 
 
 def wake_model_path():
@@ -55,6 +58,17 @@ class WakeWordDetector:
             ok, heard = self.verify(audio)
         except Exception as e:
             print(f"[Wake] verification failed ({e}), waking anyway")
+            return True
+        if not ok and heard is None:
+            print(f"[Wake] {score:.2f} but there's no voice in it: not waking")
+            try:
+                from Engines import Diagnostics
+                Diagnostics.problem("wake_unconfirmed", f"{score:.2f}: (no voice, just noise)")
+            except Exception:
+                pass
+            return False
+        if not ok and not heard.strip() and score >= HEARD_NOTHING_WAKE:
+            print(f"[Wake] {score:.2f}, Whisper heard nothing clear: waking")
             return True
         if not ok:
             print(f"[Wake] {score:.2f} but Whisper heard {heard!r}: not waking")

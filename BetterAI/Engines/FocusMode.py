@@ -99,7 +99,7 @@ class FocusMode:
 
     def _desk_on(self, music=True):
         done = []
-        if self.arduino:
+        if self.arduino and getattr(self.arduino, "is_connected", True):   # the controller exists even unplugged
             self.arduino.set_rgb(*FOCUS_RGB)
             self.arduino.set_effect("breathe")
             self.arduino.set_brightness(FOCUS_BRIGHTNESS)

@@ -11,6 +11,9 @@ import time
 
 YES_RE = re.compile(r"^\s*(yes|yeah|yep|yup|sure|do it|go ahead|confirm|confirmed|ok|okay|please do|yes please)\b", re.I)
 NO_RE = re.compile(r"^\s*(no|nope|cancel|stop|don'?t|never ?mind|wait)\b", re.I)
+# strict confirmations (sending an email): the whole answer is a yes, so "yes but make it 4" doesn't send the old draft
+JUST_YES_RE = re.compile(r"^\s*(?:yes|yeah|yep|yup|sure|ok|okay|do it|go ahead|confirm|confirmed|send it|please do|"
+                         r"yes please)(?:[\s,]+(?:please|send it|go ahead|do it|thanks|thank you))*[\s.!]*$", re.I)
 EXPIRE_SECONDS = 90
 
 
@@ -26,8 +29,9 @@ class Confirmer:
             except Exception as e:
                 print(f"[Confirm] card failed: {e}")
 
-    def request(self, description: str, fn) -> str:
+    def request(self, description: str, fn, strict: bool = False) -> str:
         self.pending = (description, fn, time.time())
+        self.strict = strict
         self._notify(description)
         return (f"NEEDS CONFIRMATION: {description}. Ask Lala to confirm with yes or no. "
                 f"It has NOT been done yet — do not say it's done.")
@@ -42,6 +46,9 @@ class Confirmer:
         if time.time() - ts > EXPIRE_SECONDS:
             self.pending = None
             return None
+        if getattr(self, "strict", False) and YES_RE.match(user_text) and not JUST_YES_RE.match(user_text):
+            self.pending = None
+            return None     # a yes with changes: back to the model, which writes it again
         if YES_RE.match(user_text):
             self.pending = None
             try:

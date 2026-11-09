@@ -14,7 +14,7 @@ class Any:
 def tools():
     a = Any()
     return ToolEngine(spotify=a, arduino=a, vision=a, ha=a, reminders=a, focus=a, screen=a, laptop=a, files=a,
-                      notion=a, initiative=a, memory_note=a, activity=a, weather=a, undo=a, recall=a, health=a, posture=a, quiz=a, face_learner=lambda name='': 'ok')
+                      notion=a, initiative=a, memory_note=a, activity=a, weather=a, undo=a, recall=a, health=a, posture=a, quiz=a, face_learner=lambda name='': 'ok', mail=a, untis=a)
 
 
 def names(tools, text, recent=()):
@@ -27,10 +27,15 @@ def names(tools, text, recent=()):
     ("what's this error on my screen?", "look_at_screen"), ("start a pomodoro on c#", "start_focus"),
     ("add eggs to my shopping list", "add_to_list"), ("move the dentist to friday", "move_event"),
     ("I bought the eggs", "check_off"), ("what did we talk about yesterday?", "recall_conversation"),
-    ("forget that I'm bored", "forget_about_me"), ("this is my good posture", "remember_good_posture"), ("quiz me on my c# note", "start_quiz"), ("learn my face", "learn_my_face"), ("restore my c# note from yesterday", "restore_note"), ("how many miles is 42 km", "convert_units"),
+    ("forget that I'm bored", "forget_about_me"), ("this is my good posture", "remember_good_posture"), ("quiz me on my c# note", "start_quiz"), ("learn my face", "learn_my_face"), ("restore my c# note from yesterday", "restore_note"), ("how many miles is 42 km", "convert_units"), ("what homework do I have?", "school_homework"), ("any tests next week?", "school_exams"), ("when does school end tomorrow", "school_day"), ("is english cancelled today", "school_day"), ("what lessons do I have on friday", "school_day"),
     ("split the bill between 3", "split_bill"), ("are your systems okay?", "system_check"),
     ("remind me at 6 to call mum", "set_reminder"), ("do I need a jacket tomorrow?", "get_weather"),
     ("dim the lights", "set_led_brightness"), ("I live in Vienna", "set_home_city"),
+    ("any new emails?", "check_mail"), ("read the one from Mr Huber", "read_mail"),
+    ("what did Sara write about friday", "search_mail"), ("reply that I'll be there at 3", "draft_reply"),
+    ("write an email to Mr Huber saying I'm sick", "draft_mail"), ("archive that email", "archive_mail"),
+    ("mark the mail from Sara as read", "mark_mail_read"), ("remind me to answer that email tomorrow", "mail_todo"),
+    ("turn that email into an event", "mail_to_event"), ("always tell me when Sara emails", "mark_sender_important"),
 ])
 def test_the_needed_tool_is_offered(tools, text, needed):
     assert needed in names(tools, text)
@@ -83,3 +88,14 @@ def test_small_talk_is_not_retried(aria):
     aria.llm.replies = [("Pretty good! How are you?", [])]
     aria.handle_turn("how are you", check_state=False)
     assert len(aria.llm.prompts) == 1
+
+
+def test_led_tools_only_while_the_strip_is_plugged_in():
+    """The Arduino controller always exists (it keeps retrying in the background), so Aria offered to change
+    the desk lights with nothing plugged in."""
+    import types
+    strip = types.SimpleNamespace(is_connected=False)
+    t = ToolEngine(arduino=strip)
+    assert "set_led_color" not in names(t, "make the lights blue")
+    strip.is_connected = True                      # plugged in later
+    assert "set_led_color" in names(t, "make the lights blue")
