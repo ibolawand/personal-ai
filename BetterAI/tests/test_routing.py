@@ -99,3 +99,13 @@ def test_led_tools_only_while_the_strip_is_plugged_in():
     assert "set_led_color" not in names(t, "make the lights blue")
     strip.is_connected = True                      # plugged in later
     assert "set_led_color" in names(t, "make the lights blue")
+
+
+def test_arguments_a_tool_does_not_have_are_dropped():
+    """The model said "undo that" as undo_last(list_name='shopping'); the made-up argument must not make it fail."""
+    from Engines.Tool_Engine import ToolEngine
+    calls = []
+    t = ToolEngine(undo=type("U", (), {"undo": lambda self: calls.append(1) or "Put it back."})())
+    assert t.execute("undo_last", {"list_name": "shopping"}) == "Put it back."
+    assert calls == [1]
+    assert "32" in t.execute("calculate", {"expression": "16 * 2", "precision": 2})     # real arguments still arrive

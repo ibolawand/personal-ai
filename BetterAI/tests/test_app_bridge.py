@@ -255,3 +255,69 @@ def test_bridge_and_answer_app_together(aria, serve):
     events = ask(client(serve(aria.answer_app)), {"id": "9", "type": "chat", "text": "add milk to my shopping list"})
     assert events[-1] == {"id": "9", "type": "done", "reply": "On it.", "tools": ["add_to_list"], "confirm": None}
     assert "".join(e["delta"] for e in events[:-1]) == "On it."
+
+
+# ── the open note goes along with a panel message (the small model doesn't reliably read it by itself) ──
+
+@pytest.fixture
+def open_note(aria, notion, monkeypatch):
+    """open_note(title, html) → that note is the one open in MyNotion."""
+    import Engines.NotionEngine as N
+    monkeypatch.setattr(N, "mynotion_running", lambda: True)
+
+    def make(title, html):
+        note_id = notion._create_note(title, html)
+        notion._set_state("open_note", str(note_id))
+        return note_id
+    return make
+
+
+def test_panel_message_carries_the_open_note(aria, open_note):
+    open_note("Schularbeiten stoff", "<h2>Mathe</h2><p>Matrizen bis Seite 40, Größe der Determinante</p>")
+    aria.llm = FakeLLM(replies=[("It's your exam topics.", [])])
+    aria.answer_app("what is this note about?")
+    prompt = aria.llm.prompts[0]
+    assert prompt.startswith("what is this note about?")
+    assert '"Schularbeiten stoff"' in prompt and "Matrizen bis Seite 40, Größe der Determinante" in prompt
+    assert "<p>" not in prompt                                   # as text, not MyNotion's HTML
+
+
+def test_the_note_text_is_not_kept_in_the_conversation(aria, open_note):
+    open_note("Biology", "<p>Mitochondria make ATP</p>")
+    aria.llm = FakeLLM(replies=[("Sure.", [])])
+    saved = []
+    aria.memory.save_message = lambda role, content: saved.append((role, content))
+    aria.answer_app("summarise this note")
+    assert aria._recent[-1][0] == {"role": "user", "content": "summarise this note"}
+    assert ("user", "summarise this note") in saved
+    assert not any("Mitochondria" in content for _, content in saved)
+
+
+def test_no_open_note_adds_nothing(aria):
+    aria.llm = FakeLLM(replies=[("Hey.", [])])
+    aria.answer_app("hi")
+    assert "MyNotion" not in aria.llm.prompts[0]
+
+
+def test_a_long_open_note_is_cut_and_says_so(aria, open_note):
+    open_note("Matrizen", "".join(f"<p>Zeile {i} mit etwas Text darin</p>" for i in range(400)))
+    aria.llm = FakeLLM(replies=[("Okay.", [])])
+    aria.answer_app("what is this note about?")
+    prompt = aria.llm.prompts[0]
+    assert "Zeile 0 " in prompt and "Zeile 399 " not in prompt
+    assert len(prompt) < 3200
+    assert "read_note" in prompt                                 # how to get the rest
+
+
+def test_the_orb_does_not_get_the_note_text(aria, open_note):
+    open_note("Biology", "<p>Mitochondria make ATP</p>")
+    aria.llm = FakeLLM(replies=[("Hey.", [])])
+    aria.handle_turn("hi", check_state=False)
+    assert "Mitochondria" not in aria.llm.prompts[0]
+
+
+def test_a_broken_notes_database_does_not_stop_the_answer(aria, open_note):
+    open_note("Biology", "<p>x</p>")
+    aria.notion.open_note = lambda: (_ for _ in ()).throw(RuntimeError("database is locked"))
+    aria.llm = FakeLLM(replies=[("Hey.", [])])
+    assert aria.answer_app("hi")[0] == "Hey."

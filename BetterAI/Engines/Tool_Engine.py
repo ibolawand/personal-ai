@@ -211,6 +211,10 @@ class ToolEngine:
                 return "Refused: that only works at the desk, not from the phone."
         elif name in self.PROTECTED and not self.owner_check():     # from the phone, her own chat proves it's Lala
             return "Refused: only Lala can use that, and I don't recognise who's at the desk."
+        # small models invent arguments (undo_last(list_name=…)): pass only the ones the tool has
+        known = tool["schema"]["function"].get("parameters", {}).get("properties")
+        if known is not None:
+            args = {k: v for k, v in (args or {}).items() if k in known}
         try:
             if self.undo and name in self.UNDOABLE:
                 result = self.undo.around(lambda r: str(r), lambda: tool["handler"](**(args or {})))

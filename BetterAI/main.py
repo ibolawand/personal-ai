@@ -41,7 +41,7 @@ from Engines.MailEngine import MailEngine
 from Engines.Untis import Untis
 from Engines.Telegram import TelegramBot, load_bot
 from Engines.Typos import fix_typos
-from Engines.NotionEngine import DAILY_RE
+from Engines.NotionEngine import DAILY_RE, html_to_text
 from Engines import Diagnostics
 from Engines.Reminders import Reminders
 from Engines.ScreenEngine import ScreenEngine
@@ -119,6 +119,7 @@ DICTATION_TIMEOUT = 180    # while dictating, a long pause to think is fine (wha
 DICTATION_SILENCE_S = 2.2  # and a pause mid-thought shouldn't cut a sentence in two
 MUSIC_TOOLS = {"play_song", "play_artist", "play_playlist", "play_genre"}
 CLIPBOARD_RE = re.compile(r"\b(copied|clipboard|i just copied|what i copied)\b", re.I)
+OPEN_NOTE_CHARS = 2500      # how much of the note open in MyNotion goes along with a message from its Aria panel
 # "open my calendar" / "show me the shopping list" -> MyNotion, decided in code (the model
 # tends to read the list aloud instead, especially right after talking about it)
 OPEN_IN_NOTION_RE = re.compile(r"^\s*(?:aria,?\s*)?(?:please\s+)?(?:open|show(?: me)?|pull up|bring up)\s+"
@@ -858,11 +859,33 @@ class Aria:
         """A message typed in MyNotion's Aria panel (ui/app_bridge.py): a normal turn with every tool, but nothing
         is spoken and she doesn't wake up. Returns (reply, tool names, the yes/no question now waiting or None)."""
         with self._turn_lock():
-            reply, used = self.handle_turn(text, check_state=False, on_text=on_text)
+            reply, used = self.handle_turn(text, check_state=False, on_text=on_text, extra=self._open_note_context())
             self.ui.set_state("listening" if getattr(self, "awake", False) else "sleeping")
             pending = self.confirm.pending
         reply = tidy_reply(reply, keep_offers=bool(pending)) or reply
         return reply, [name for name, _ in used], pending[0] if pending else None
+
+    def _open_note_context(self) -> str:
+        """The note open in MyNotion, as text for the model. In the panel "this note" is the one on screen, and the
+        small model doesn't reliably call read_note for it (it made up an answer instead), so it's given in code."""
+        try:
+            note = self.notion.open_note() if self.notion else None
+            if not note:
+                return ""
+            text = html_to_text(note["content"] or "").strip()
+        except Exception as e:
+            print(f"[App] couldn't read the open note: {type(e).__name__}: {e}")
+            return ""
+        title = note["title"] or "Untitled note"
+        if not text:
+            return f'\n[The note open in MyNotion right now is "{title}". It is empty. "This note" means this one.]'
+        cut = len(text) > OPEN_NOTE_CHARS
+        if cut:
+            text = text[:OPEN_NOTE_CHARS].rsplit("\n", 1)[0]
+        return (f'\n[The note open in MyNotion right now is "{title}". "This note" means this one. '
+                + ("Its first part" if cut else "Its text") + f":\n{text}\n"
+                + ("(It goes on: call read_note for all of it.) " if cut else "")
+                + "Answer questions about it from this text. To change it, use the note tools.]")
 
     def _app_answer(self, text, on_text):
         try:
@@ -902,11 +925,11 @@ class Aria:
             self._turn_rlock = threading.RLock()
         return self._turn_rlock
 
-    def handle_turn(self, user_input: str, check_state: bool = True, on_text=None):
+    def handle_turn(self, user_input: str, check_state: bool = True, on_text=None, extra: str = ""):
         with self._turn_lock():
-            return self._handle_turn(user_input, check_state, on_text)
+            return self._handle_turn(user_input, check_state, on_text, extra)
 
-    def _handle_turn(self, user_input: str, check_state: bool = True, on_text=None):
+    def _handle_turn(self, user_input: str, check_state: bool = True, on_text=None, extra: str = ""):
         """One full turn: mood → state check → LLM with tools → save. Returns (reply, tools_used)."""
         self.ui.set_state("thinking")
 
@@ -982,6 +1005,8 @@ class Aria:
         # Small models often forget to call read_clipboard, so attach it ourselves
         if CLIPBOARD_RE.search(user_input):
             prompt += f"\n[{self.screen.read_clipboard()}]"
+        # for this turn only (the note open next to MyNotion's Aria panel): the model sees it, the history doesn't
+        prompt += extra
 
         # everything that changes each turn goes after the message, so the prompt starts the same every turn
         system_prompt = self.context.build_system_prompt(self._base_prompt(), moment=False)
