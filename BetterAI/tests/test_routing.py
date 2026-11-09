@@ -109,3 +109,14 @@ def test_arguments_a_tool_does_not_have_are_dropped():
     assert t.execute("undo_last", {"list_name": "shopping"}) == "Put it back."
     assert calls == [1]
     assert "32" in t.execute("calculate", {"expression": "16 * 2", "precision": 2})     # real arguments still arrive
+
+
+def test_dropped_arguments_are_logged(monkeypatch):
+    from Engines import Diagnostics
+    from Engines.Tool_Engine import ToolEngine
+    problems = []
+    monkeypatch.setattr(Diagnostics, "problem", lambda kind, detail="", **k: problems.append((kind, detail)))
+    t = ToolEngine(undo=type("U", (), {"undo": lambda self: "Put it back."})())
+    t.execute("undo_last", {"list_name": "shopping"})
+    t.execute("calculate", {"expression": "1 + 1"})
+    assert problems == [("dropped_arg", "undo_last: list_name")]

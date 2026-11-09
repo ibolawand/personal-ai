@@ -214,6 +214,11 @@ class ToolEngine:
         # small models invent arguments (undo_last(list_name=…)): pass only the ones the tool has
         known = tool["schema"]["function"].get("parameters", {}).get("properties")
         if known is not None:
+            dropped = [k for k in (args or {}) if k not in known]
+            if dropped:
+                print(f"[Tools] {name}: ignoring made-up argument(s) {', '.join(dropped)}")
+                from Engines import Diagnostics
+                Diagnostics.problem("dropped_arg", f"{name}: {', '.join(dropped)}")
             args = {k: v for k, v in (args or {}).items() if k in known}
         try:
             if self.undo and name in self.UNDOABLE:

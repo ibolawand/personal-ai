@@ -492,6 +492,8 @@ mail from `noted.db` and talks to Gmail herself to send, archive and check when 
     shared `app_state` table each time she starts, so she has to have run once). A message typed meanwhile is kept.
   - It talks to Aria over a private socket (`$XDG_RUNTIME_DIR/aria-<uid>-app.sock`, only your user can open it);
     nothing leaves the computer.
+  - While you're dictating by voice, the panel doesn't take messages (they'd be written into the dictated note);
+    quiz answers can be typed there. The orb goes back to what it showed before a panel message.
   - Changes she makes to notes from the panel still save directly, with the "Aria is editing…" banner and undo.
     Previews (accept / reject) and select-text actions are planned next.
   - Tested: `tests/test_app_bridge.py`, MyNotion's `note/src/aria.test.ts` and `aria-panel.spec.ts`, and live in the

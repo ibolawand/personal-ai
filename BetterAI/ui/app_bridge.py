@@ -89,7 +89,11 @@ def start(answer, path: str = SOCKET_PATH):
     if os.path.exists(path):
         os.unlink(path)             # left over from a crash; a running Aria was ruled out before we got here
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server.bind(path)
+    old_umask = os.umask(0o177)     # private from the moment it exists (matters if it ever lands in /tmp)
+    try:
+        server.bind(path)
+    finally:
+        os.umask(old_umask)
     os.chmod(path, 0o600)
     server.listen(4)
 

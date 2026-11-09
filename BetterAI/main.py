@@ -119,6 +119,7 @@ DICTATION_TIMEOUT = 180    # while dictating, a long pause to think is fine (wha
 DICTATION_SILENCE_S = 2.2  # and a pause mid-thought shouldn't cut a sentence in two
 MUSIC_TOOLS = {"play_song", "play_artist", "play_playlist", "play_genre"}
 CLIPBOARD_RE = re.compile(r"\b(copied|clipboard|i just copied|what i copied)\b", re.I)
+_TURN_LOCK_SETUP = threading.Lock()
 OPEN_NOTE_CHARS = 2500      # how much of the note open in MyNotion goes along with a message from its Aria panel
 # "open my calendar" / "show me the shopping list" -> MyNotion, decided in code (the model
 # tends to read the list aloud instead, especially right after talking about it)
@@ -858,9 +859,18 @@ class Aria:
     def answer_app(self, text: str, on_text=None):
         """A message typed in MyNotion's Aria panel (ui/app_bridge.py): a normal turn with every tool, but nothing
         is spoken and she doesn't wake up. Returns (reply, tool names, the yes/no question now waiting or None)."""
+        dictation = getattr(self, "dictation", None)
+        if dictation and dictation.active:
+            # what's typed here would be written into the note being dictated
+            return "You're dictating right now. Say \"stop dictation\" first, then ask me again.", [], None
         with self._turn_lock():
+            before = getattr(self, "_ui_state", None)
             reply, used = self.handle_turn(text, check_state=False, on_text=on_text, extra=self._open_note_context())
-            self.ui.set_state("listening" if getattr(self, "awake", False) else "sleeping")
+            if before is None:
+                self.ui.set_state("listening" if getattr(self, "awake", False) else "sleeping")
+            elif self._ui_state == "thinking":
+                self.ui.set_state(before)       # what the orb showed before (she may still be speaking a voice reply)
+            # else: it changed meanwhile (the voice reply ended, she fell asleep): that's the current truth
             pending = self.confirm.pending
         reply = tidy_reply(reply, keep_offers=bool(pending)) or reply
         return reply, [name for name, _ in used], pending[0] if pending else None
@@ -896,9 +906,24 @@ class Aria:
             Diagnostics.problem("app_turn", f"{text[:80]} -> {type(e).__name__}: {e}")
             raise
 
+    def _track_ui_state(self):
+        """Remember what the orb shows, so a panel turn can put it back afterwards. Flashes aren't states."""
+        show = self.ui.set_state
+        self._ui_state = None
+
+        def set_state(state):
+            if state not in ("unknown", "alert"):
+                self._ui_state = state
+            show(state)
+        self.ui.set_state = set_state
+
     def _start_app_bridge(self):
         """MyNotion's Aria panel reaches her through this socket. A failure here never stops Aria from starting."""
         self._app_server = None
+        try:
+            self._track_ui_state()
+        except Exception as e:
+            print(f"[App] can't follow the orb's state: {type(e).__name__}: {e}")
         try:
             from ui import app_bridge
             self._app_server = app_bridge.start(self._app_answer)
@@ -924,7 +949,9 @@ class Aria:
     def _turn_lock(self):
         """One turn at a time: the desk and the phone share history and pending yes/no questions."""
         if getattr(self, "_turn_rlock", None) is None:
-            self._turn_rlock = threading.RLock()
+            with _TURN_LOCK_SETUP:              # the desk, the phone and MyNotion's panel may all ask first
+                if getattr(self, "_turn_rlock", None) is None:
+                    self._turn_rlock = threading.RLock()
         return self._turn_rlock
 
     def handle_turn(self, user_input: str, check_state: bool = True, on_text=None, extra: str = ""):

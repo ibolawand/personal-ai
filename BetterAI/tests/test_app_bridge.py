@@ -321,3 +321,85 @@ def test_a_broken_notes_database_does_not_stop_the_answer(aria, open_note):
     aria.notion.open_note = lambda: (_ for _ in ()).throw(RuntimeError("database is locked"))
     aria.llm = FakeLLM(replies=[("Hey.", [])])
     assert aria.answer_app("hi")[0] == "Hey."
+
+
+# ── small things found in review ──────────────────────────────────────────────
+
+def test_a_panel_message_is_not_written_into_a_dictation(aria):
+    from Engines.Dictation import Dictation
+    saved = []
+    aria.dictation = Dictation(save=lambda text, title: saved.append(text) or "Saved.")
+    aria.dictation.start("ideas")
+    aria.llm = FakeLLM(replies=[("should never be asked", [])])
+    reply, tools, confirm = aria.answer_app("what's due this week?")
+    assert "dictat" in reply.lower() and tools == [] and confirm is None
+    assert aria.dictation.active and "due this week" not in aria.dictation.text_so_far()
+    assert aria.llm.prompts == []
+
+
+def test_the_orb_goes_back_to_what_it_showed(aria):
+    states = []
+    aria.ui.set_state = states.append
+    aria._track_ui_state()
+    aria.ui.set_state("speaking")                 # she is still saying her last voice reply
+    aria.llm = FakeLLM(replies=[("Hey.", [])])
+    aria.answer_app("hi")
+    assert states == ["speaking", "thinking", "speaking"]
+
+
+def test_the_orb_is_left_alone_if_it_changed_meanwhile(aria):
+    states = []
+    aria.ui.set_state = states.append
+    aria._track_ui_state()
+    aria.ui.set_state("speaking")
+
+    class Meanwhile(FakeLLM):
+        def chat_with_tools(self, *a, **k):
+            aria.ui.set_state("listening")        # the voice reply ended during the panel turn
+            return super().chat_with_tools(*a, **k)
+    aria.llm = Meanwhile(replies=[("Hey.", [])])
+    aria.answer_app("hi")
+    assert states[-1] == "listening" and states.count("speaking") == 1
+
+
+def test_flashes_are_not_remembered_as_the_orbs_state(aria):
+    states = []
+    aria.ui.set_state = states.append
+    aria._track_ui_state()
+    aria.ui.set_state("sleeping")
+    aria.ui.set_state("alert")                    # a flash, not a state
+    aria.llm = FakeLLM(replies=[("Hey.", [])])
+    aria.answer_app("hi")
+    assert states[-1] == "sleeping"
+
+
+def test_every_thread_gets_the_same_turn_lock(aria):
+    locks = []
+    start = threading.Barrier(8)
+
+    def grab():
+        start.wait()
+        locks.append(aria._turn_lock())
+    threads = [threading.Thread(target=grab) for _ in range(8)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert len({id(lock) for lock in locks}) == 1
+
+
+def test_the_socket_is_never_open_to_others(serve, tmp_path, monkeypatch):
+    """Private from the moment it exists, not only after the chmod."""
+    seen = []
+    real_bind = socket.socket.bind
+
+    class Watching(socket.socket):
+        def bind(self, path):
+            real_bind(self, path)
+            seen.append(stat.S_IMODE(os.stat(path).st_mode))
+    monkeypatch.setattr(app_bridge.socket, "socket", Watching)
+    old = os.umask(0o022)
+    try:
+        serve(hi_there)
+        assert os.umask(0o022) == 0o022           # and the process's own umask is put back
+    finally:
+        os.umask(old)
+    assert seen == [0o600]
