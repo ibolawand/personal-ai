@@ -878,14 +878,16 @@ class Aria:
             return ""
         title = note["title"] or "Untitled note"
         if not text:
-            return f'\n[The note open in MyNotion right now is "{title}". It is empty. "This note" means this one.]'
+            return (f'\n[The note open in MyNotion right now is "{title}". It is empty. "This note" means this one. '
+                    "If the message isn't about the note, don't bring the note up.]")
         cut = len(text) > OPEN_NOTE_CHARS
         if cut:
             text = text[:OPEN_NOTE_CHARS].rsplit("\n", 1)[0]
         return (f'\n[The note open in MyNotion right now is "{title}". "This note" means this one. '
                 + ("Its first part" if cut else "Its text") + f":\n{text}\n"
                 + ("(It goes on: call read_note for all of it.) " if cut else "")
-                + "Answer questions about it from this text. To change it, use the note tools.]")
+                + "Answer questions about it from this text. To change it, use the note tools. "
+                  "If the message isn't about the note, don't bring the note up.]")
 
     def _app_answer(self, text, on_text):
         try:

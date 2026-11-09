@@ -476,6 +476,29 @@ mail from `noted.db` and talks to Gmail herself to send, archive and check when 
 
 ## MyNotion app (`../MyNotion`)
 
+- **Aria panel: talk to Aria without leaving MyNotion** (`ui/app_bridge.py`, `Aria.answer_app`; in MyNotion
+  `note/src/aria.ts` and `aria-panel/`). **Ctrl+J** or "Aria" in the sidebar opens a panel on the right, next to
+  whatever is open. Type a message, Enter sends it (Shift+Enter for a new line), ↑ / ↓ bring back earlier messages,
+  Esc closes it.
+  - She is the same Aria as the orb: same conversation, memory, tools and "undo that". Here she answers in writing,
+    word by word, and never speaks; the orb shows "thinking" but doesn't wake up.
+  - **She knows the open note.** A chip shows "This note: Biology", and the note's text (the first 2,500 characters)
+    goes along with each message, so "what is this note about?" and "which exercises do I need?" are answered from
+    it. This is done in code: asked to read it herself, the small model made up an answer instead. The text isn't
+    kept in the conversation history.
+  - Yes/no questions ("Clear your shopping list?") get **Yes** and **No** buttons; the answer is still checked in code.
+  - If she stops mid-answer, what she wrote so far stays, marked "Aria stopped answering", with **Retry**.
+  - If Aria isn't running, the panel says so and **Start** launches her (she writes where `aria.sh` is into the
+    shared `app_state` table each time she starts, so she has to have run once). A message typed meanwhile is kept.
+  - It talks to Aria over a private socket (`$XDG_RUNTIME_DIR/aria-<uid>-app.sock`, only your user can open it);
+    nothing leaves the computer.
+  - Changes she makes to notes from the panel still save directly, with the "Aria is editing…" banner and undo.
+    Previews (accept / reject) and select-text actions are planned next.
+  - Tested: `tests/test_app_bridge.py`, MyNotion's `note/src/aria.test.ts` and `aria-panel.spec.ts`, and live in the
+    built app on a copy of the database (streaming, the open note, lists, Yes/No, undo, a dropped connection, Start).
+- **Made-up tool arguments are ignored** (`ToolEngine.execute`): "undo that" once came out as
+  `undo_last(list_name='shopping')` and failed; arguments a tool doesn't have are now dropped.
+
 - **Inbox:** Gmail inside MyNotion (see Email above): Inbox and Filtered views, search, reading (HTML in a locked-down
   view, tracking images off until "Show images"), reply/new email with attachments, Archive, Remind me, Make event,
   an Outbox so nothing is lost offline or sent twice. First time: Inbox → connect with the address + app password.
