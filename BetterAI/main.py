@@ -528,6 +528,7 @@ class Aria:
         self.focus.start_watching()
         BatteryWatch(self._announce).start()
         self.files.start_indexing()
+        self._start_app_bridge()
 
     def _event_reminder_loop(self):
         """Keeps a heads-up reminder 15 min before each MyNotion event (picks up edits made in the app),
@@ -852,6 +853,48 @@ class Aria:
                 reply, _ = self.handle_turn(text, check_state=False)
             self.ui.set_state("listening" if getattr(self, "awake", False) else "sleeping")
         return tidy_reply(reply) or reply
+
+    def answer_app(self, text: str, on_text=None):
+        """A message typed in MyNotion's Aria panel (ui/app_bridge.py): a normal turn with every tool, but nothing
+        is spoken and she doesn't wake up. Returns (reply, tool names, the yes/no question now waiting or None)."""
+        with self._turn_lock():
+            reply, used = self.handle_turn(text, check_state=False, on_text=on_text)
+            self.ui.set_state("listening" if getattr(self, "awake", False) else "sleeping")
+            pending = self.confirm.pending
+        reply = tidy_reply(reply, keep_offers=bool(pending)) or reply
+        return reply, [name for name, _ in used], pending[0] if pending else None
+
+    def _app_answer(self, text, on_text):
+        try:
+            return self.answer_app(text, on_text)
+        except Exception as e:
+            Diagnostics.problem("app_turn", f"{text[:80]} -> {type(e).__name__}: {e}")
+            raise
+
+    def _start_app_bridge(self):
+        """MyNotion's Aria panel reaches her through this socket. A failure here never stops Aria from starting."""
+        self._app_server = None
+        try:
+            from ui import app_bridge
+            self._app_server = app_bridge.start(self._app_answer)
+            print("[App] MyNotion can reach me")
+        except Exception as e:
+            print(f"[App] MyNotion's panel won't work: {type(e).__name__}: {e}")
+        try:
+            if self.notion:
+                self.notion.set_launcher(str(Path(__file__).resolve().parent / "aria.sh"))
+        except Exception as e:
+            print(f"[App] couldn't tell MyNotion where my launcher is: {type(e).__name__}: {e}")
+
+    def _stop_app_bridge(self):
+        server, self._app_server = getattr(self, "_app_server", None), None
+        if server:
+            from ui import app_bridge
+            try:
+                server.close()
+                os.unlink(app_bridge.SOCKET_PATH)
+            except OSError:
+                pass
 
     def _turn_lock(self):
         """One turn at a time: the desk and the phone share history and pending yes/no questions."""
@@ -1214,6 +1257,7 @@ class Aria:
         self._shutting_down = True
         print("\nShutting down...")
         try:
+            self._stop_app_bridge()
             self.memory.end_session(self.session_id, self.session_msgs)
             self.reminders.stop()
             if getattr(self, "telegram", None):

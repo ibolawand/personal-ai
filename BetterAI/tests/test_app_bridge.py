@@ -180,3 +180,78 @@ def test_start_replaces_a_leftover_socket_file(serve, tmp_path):
     old.close()                                  # Aria crashed: the file is still there, nobody listens
     assert serve(hi_there) == path
     assert ask(client(path), {"id": "s", "type": "status"})[-1]["ready"] is True
+
+
+# ── Aria.answer_app: the turn behind a panel message ──────────────────────────
+
+import main  # noqa: E402,F401  (imported here, before the tests replace subprocess.Popen: see test_model.py)
+from conftest import FakeLLM  # noqa: E402
+
+
+def test_answer_app_runs_a_turn_without_voice(aria):
+    aria.llm = FakeLLM(replies=[("Sure thing.", [("add_note", "Added.")])])
+    spoken, states = [], []
+    aria.speak = lambda t: spoken.append(t)
+    aria.ui.set_state = states.append
+    pieces = []
+    reply, tools, confirm = aria.answer_app("note that I called the bank", pieces.append)
+    assert (reply, tools, confirm) == ("Sure thing.", ["add_note"], None)
+    assert "".join(pieces) == "Sure thing."
+    assert spoken == [] and aria.awake is False
+    assert states[0] == "thinking" and states[-1] == "sleeping"
+
+
+def test_answer_app_leaves_an_awake_aria_listening(aria):
+    aria.llm = FakeLLM(replies=[("Hey.", [])])
+    aria.awake = True
+    states = []
+    aria.ui.set_state = states.append
+    aria.answer_app("hi")
+    assert states[-1] == "listening" and aria.awake is True
+
+
+def test_answer_app_reports_pending_question_and_yes_resolves_it(aria):
+    class Asking(FakeLLM):
+        def chat_with_tools(self, *a, **k):
+            aria.confirm.request("delete the team meeting", lambda: "Deleted.")
+            return super().chat_with_tools(*a, **k)
+    aria.llm = Asking(replies=[("Should I delete the team meeting?", [("delete_event", "NEEDS CONFIRMATION")])])
+    reply, tools, confirm = aria.answer_app("delete the team meeting")
+    assert reply == "Should I delete the team meeting?"          # the question itself is never cut as an "offer"
+    assert confirm == "delete the team meeting"
+    assert aria.answer_app("yes") == ("Deleted.", ["confirmation"], None)
+
+
+def test_answer_app_waits_for_a_running_turn(aria):
+    aria.llm = FakeLLM(replies=[("Hey.", [])])
+    holding, release, result = threading.Event(), threading.Event(), {}
+
+    def other_turn():
+        with aria._turn_lock():
+            holding.set()
+            release.wait(5)
+    threading.Thread(target=other_turn, daemon=True).start()
+    holding.wait(5)
+    worker = threading.Thread(target=lambda: result.update(r=aria.answer_app("hi")), daemon=True)
+    worker.start()
+    worker.join(0.2)
+    assert worker.is_alive() and not result          # still waiting for the other turn
+    release.set()
+    worker.join(5)
+    assert result["r"][0] == "Hey."
+
+
+def test_answer_app_offers_all_tools(aria):
+    aria.llm = FakeLLM(replies=[("Hey.", [])])
+
+    def phone():
+        raise AssertionError("the panel must not be limited to the phone's tools")
+    aria.tools.phone = phone
+    assert aria.answer_app("hi")[0] == "Hey."
+
+
+def test_bridge_and_answer_app_together(aria, serve):
+    aria.llm = FakeLLM(replies=[("On it.", [("add_to_list", "Added milk.")])])
+    events = ask(client(serve(aria.answer_app)), {"id": "9", "type": "chat", "text": "add milk to my shopping list"})
+    assert events[-1] == {"id": "9", "type": "done", "reply": "On it.", "tools": ["add_to_list"], "confirm": None}
+    assert "".join(e["delta"] for e in events[:-1]) == "On it."

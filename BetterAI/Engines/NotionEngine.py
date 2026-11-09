@@ -370,6 +370,10 @@ class NotionEngine:
                       "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
                       (key, value))
 
+    def set_launcher(self, path: str):
+        """Where aria.sh is, so MyNotion's Aria panel can start her when she isn't running."""
+        self._set_state("aria_launcher", path)
+
     def open_note(self):
         """The note open in MyNotion right now (None if none is, or MyNotion isn't running)."""
         value = self._state("open_note")

@@ -205,3 +205,8 @@ def test_tables_toggles_and_scripts_are_read_in_order():
             '<details open=""><summary>Question</summary><div data-type="detailsContent"><p>Answer</p></div></details>'
             '<p>H<sub>2</sub>O and m<sup>2</sup></p>')
     assert html_to_text(note) == "Marks\nFach | Note\nBio | 5.5 (Test)\nQuestion\nAnswer\nH2O and m^2"
+
+
+def test_set_launcher_is_stored(notion):
+    notion.set_launcher("/x/aria.sh")
+    assert notion._state("aria_launcher") == "/x/aria.sh"
