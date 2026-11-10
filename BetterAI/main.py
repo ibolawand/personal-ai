@@ -1689,23 +1689,39 @@ class Aria:
                     break
 
 
+def already_running(hidden: bool, send=None) -> bool:
+    """Is an Aria running already? A normal start then opens her text box ("show"); a hidden start (MyNotion's
+    Start) only checks ("ping"), so the orb doesn't pop up."""
+    if send is None:
+        from ui import instance
+        send = instance.send
+    return send("ping" if hidden else "show")
+
+
+def _no_ui_command(aria, cmd):
+    """A command for a terminal-only Aria: only quit means anything."""
+    if cmd == "quit":
+        aria.shutdown()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Aria desk assistant")
     parser.add_argument("--voice", action="store_true", help="wake word + speech input instead of keyboard")
     parser.add_argument("--no-ui", action="store_true", help="terminal only, no floating overlay")
+    parser.add_argument("--hidden", action="store_true", help="start without showing the orb (MyNotion's Start)")
     # ARIA_ARGS in Engines/.env applies however she's started (aria.sh, autostart, PyCharm)
     args = parser.parse_args(sys.argv[1:] + os.getenv("ARIA_ARGS", "").split())
     option = 2 if args.voice else 1
 
     from ui import instance
-    if instance.send("show"):
-        print("Aria is already running — opened her text box instead.")
+    if already_running(args.hidden):
+        print("Aria is already running." if args.hidden else "Aria is already running — opened her text box instead.")
         sys.exit(0)
 
     if args.no_ui:
         aria = Aria(option=option)
-        instance.listen(lambda cmd: aria.shutdown() if cmd == "quit" else None)
+        instance.listen(lambda cmd: _no_ui_command(aria, cmd))
         aria.run()
     else:
         from ui.overlay import run_with_overlay
-        run_with_overlay(lambda bridge: Aria(option=option, ui=bridge))
+        run_with_overlay(lambda bridge: Aria(option=option, ui=bridge), visible=not args.hidden)

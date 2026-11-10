@@ -4,6 +4,7 @@
 #   aria.sh --toggle   show/hide the text box (the Ctrl+Alt+Space hotkey), starts Aria if needed
 #   aria.sh --capture  quick capture box (the Ctrl+Alt+N hotkey): type it, Aria files it, no conversation
 #   aria.sh --quit     shut Aria down
+#   aria.sh --hidden   start without showing the orb (MyNotion's Start button); the hotkey shows it later
 #   aria.sh --telegram text Aria from your phone: set up the private bot once
 #   aria.sh --untis    connect WebUntis (school timetable, homework, tests): asks for your login once
 #   aria.sh --report   how fast she answered and what went wrong (last 7 days; --report 30 for a month)
@@ -22,9 +23,10 @@ case "$1" in
   --report)        "$PY" -m Engines.Diagnostics "${2:-7}"; exit 0 ;;
   --untis)         "$PY" -m Engines.Untis; exit $? ;;
   --telegram)      "$PY" -m Engines.Telegram; exit $? ;;
+  --hidden)        ARGS="--hidden" ;;                                       # start below, orb hidden
 esac
 
-ARGS=""   # ARIA_ARGS from Engines/.env is read by main.py itself
+ARGS="${ARGS:-}"   # ARIA_ARGS from Engines/.env is read by main.py itself
 # keep the log from growing forever
 [ -f "$LOG" ] && [ "$(stat -c %s "$LOG")" -gt 5000000 ] && mv "$LOG" "$LOG.old"
 echo "=== Aria started $(date '+%F %T') args: $ARGS ===" >> "$LOG"
