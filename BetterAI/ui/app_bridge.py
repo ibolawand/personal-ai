@@ -8,7 +8,7 @@ closes; this one is a conversation: one JSON object per line, in both directions
                       (add "tools": false for an answer only, e.g. "Explain" for selected text)
                       {"id": "8", "type": "status"}
     Aria → MyNotion   {"id": "7", "type": "text", "delta": "Two "}            the reply, as it's written
-                      {"id": "7", "type": "done", "reply": "…", "tools": ["get_due"], "confirm": null}
+                      {"id": "7", "type": "done", "reply": "…", "tools": ["get_due"], "confirm": null, "quiz": false}
                       {"id": "8", "type": "status", "ready": true}
                       {"id": "7", "type": "error", "message": "…"}
 
@@ -17,8 +17,12 @@ closes; this one is a conversation: one JSON object per line, in both directions
                        "html": "<the selection>", "instruction": "", "title": "", "context": "", "previous": ""}
     Aria → MyNotion   {"id": "9", "type": "proposal", "html": "<her version>"}   or an "error" saying why not
 
+    The panel's study buttons, on the note open in MyNotion (answered with "text" … "done", like chat):
+    MyNotion → Aria   {"id": "12", "type": "study", "action": "quiz|explain|prep"}
+
 "done" carries the final reply (it replaces what was streamed) and, in "confirm", a yes/no question that is
-waiting for an answer. This module knows nothing about Aria: start() gets the function that runs a turn.
+waiting for an answer, and in "quiz" whether a quiz is running now (the panel then shows Hint, Skip and
+Stop). This module knows nothing about Aria: start() gets the function that runs a turn.
 """
 
 import json
@@ -31,11 +35,21 @@ MAX_TEXT = 4000         # characters in one message
 MAX_LINE = 65536        # bytes in one request line; a longer one closes the connection
 SORRY = "Something went wrong on my side."
 EDIT_ACTIONS = ("rewrite", "shorter", "spelling", "table", "custom")
+STUDY_ACTIONS = ("quiz", "explain", "prep")
 MAX_HTML = 40000        # characters of selected HTML (and of her previous version, for "Try again")
 EDIT_TEXTS = {"instruction": 500, "title": 200, "context": 2000, "previous": MAX_HTML}
 
 
-def _handle(line: bytes, answer, send, edit=None):
+def _done(rid, reply, tools, confirm, quiz_active):
+    try:
+        quiz = bool(quiz_active()) if quiz_active else False
+    except Exception as e:
+        print(f"[App] couldn't tell whether a quiz is running: {type(e).__name__}: {e}")
+        quiz = False
+    return {"id": rid, "type": "done", "reply": reply, "tools": list(tools), "confirm": confirm, "quiz": quiz}
+
+
+def _handle(line: bytes, answer, send, edit=None, study=None, quiz_active=None):
     """One request line → its events."""
     try:
         req = json.loads(line.decode("utf-8"))
@@ -49,6 +63,8 @@ def _handle(line: bytes, answer, send, edit=None):
         return send({"id": rid, "type": "status", "ready": True})
     if kind == "edit":
         return _handle_edit(rid, req, edit, send)
+    if kind == "study":
+        return _handle_study(rid, req, study, send, quiz_active)
     if kind != "chat":
         return send({"id": rid, "type": "error", "message": "I don't know that kind of request."})
     text = req.get("text")
@@ -64,7 +80,23 @@ def _handle(line: bytes, answer, send, edit=None):
     except Exception as e:
         print(f"[App] turn failed: {type(e).__name__}: {e}")
         return send({"id": rid, "type": "error", "message": SORRY})
-    send({"id": rid, "type": "done", "reply": reply, "tools": list(tools), "confirm": confirm})
+    send(_done(rid, reply, tools, confirm, quiz_active))
+
+
+def _handle_study(rid, req, study, send, quiz_active):
+    """A study button: the action in, her answer streamed out like a chat reply."""
+    if study is None:
+        return send({"id": rid, "type": "error", "message": "I can't help you study right now."})
+    action = req.get("action")
+    if action not in STUDY_ACTIONS:
+        return send({"id": rid, "type": "error", "message": "I don't know that study action."})
+    try:
+        on_text = lambda delta: delta and send({"id": rid, "type": "text", "delta": delta})
+        reply, tools, confirm = study(action, on_text)
+    except Exception as e:
+        print(f"[App] study turn failed: {type(e).__name__}: {e}")
+        return send({"id": rid, "type": "error", "message": SORRY})
+    send(_done(rid, reply, tools, confirm, quiz_active))
 
 
 def _handle_edit(rid, req, edit, send):
@@ -98,7 +130,7 @@ def _handle_edit(rid, req, edit, send):
     send({"id": rid, "type": "proposal", "html": new_html})
 
 
-def _serve(conn, answer, edit=None):
+def _serve(conn, answer, edit=None, study=None, quiz_active=None):
     lock = threading.Lock()
 
     def send(obj):
@@ -123,14 +155,15 @@ def _serve(conn, answer, edit=None):
                 if len(line) > MAX_LINE:
                     return
                 if line.strip():
-                    _handle(line, answer, send, edit)
+                    _handle(line, answer, send, edit, study, quiz_active)
             if len(buf) > MAX_LINE:
                 return
 
 
-def start(answer, path: str = SOCKET_PATH, edit=None):
+def start(answer, path: str = SOCKET_PATH, edit=None, study=None, quiz_active=None):
     """Listen in a daemon thread. answer(text, on_text) -> (reply, tool names, pending question or None);
-    edit(action=, html=, instruction=, title=, context=, previous=) -> (new html or None, why not)."""
+    edit(action=, html=, instruction=, title=, context=, previous=) -> (new html or None, why not);
+    study(action, on_text) -> like answer; quiz_active() -> whether a quiz is running (for "done")."""
     if os.path.exists(path):
         os.unlink(path)             # left over from a crash; a running Aria was ruled out before we got here
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -148,7 +181,7 @@ def start(answer, path: str = SOCKET_PATH, edit=None):
                 conn, _ = server.accept()
             except OSError:
                 return
-            threading.Thread(target=_serve, args=(conn, answer, edit), daemon=True).start()
+            threading.Thread(target=_serve, args=(conn, answer, edit, study, quiz_active), daemon=True).start()
 
     threading.Thread(target=loop, daemon=True).start()
     return server

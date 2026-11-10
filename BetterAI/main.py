@@ -1017,7 +1017,9 @@ class Aria:
             print(f"[App] can't follow the orb's state: {type(e).__name__}: {e}")
         try:
             from ui import app_bridge
-            self._app_server = app_bridge.start(self._app_answer, edit=self.edit_app)
+            self._app_server = app_bridge.start(
+                self._app_answer, edit=self.edit_app, study=self._app_study,
+                quiz_active=lambda: bool(getattr(self, "quiz", None) and self.quiz.active))
             print("[App] MyNotion can reach me")
         except Exception as e:
             print(f"[App] MyNotion's panel won't work: {type(e).__name__}: {e}")

@@ -291,6 +291,8 @@ checks for that: quiet hours, a locked screen, something fullscreen, another app
 - Say "skip" or "I don't know" to hear the answer, "hint" for the first letter, "repeat" for the question again, and
   "stop" to end. You get your score at the end.
 - Missed questions are kept: "quiz me on my mistakes" asks them again, and the ones you get right are dropped.
+- In MyNotion's Aria panel, **Quiz me** quizzes you on the open note with one click (no need to name it), and
+  **Hint**, **Skip** and **Stop** buttons replace typing the words while it runs.
 
 ## Dictation — `Engines/Dictation.py`
 
@@ -498,6 +500,19 @@ mail from `noted.db` and talks to Gmail herself to send, archive and check when 
     Previews (accept / reject) and select-text actions are planned next.
   - Tested: `tests/test_app_bridge.py`, MyNotion's `note/src/aria.test.ts` and `aria-panel.spec.ts`, and live in the
     built app on a copy of the database (streaming, the open note, lists, Yes/No, undo, a dropped connection, Start).
+- **Study buttons in the Aria panel** (`Aria.study_app`, `Quiz.start_on`, `ui/app_bridge.py` "study" requests; in
+  MyNotion `aria-panel/`). When a note with text is open, three buttons sit above the text box:
+  - **Quiz me**: 5 short questions from this note, answered by typing. While it runs the buttons become **Hint**,
+    **Skip** and **Stop** (every panel reply tells MyNotion whether a quiz is running). Missed ones still go into
+    "quiz me on my mistakes".
+  - **Explain simply**: the note's main ideas in plain language, short, with an everyday example.
+  - **Test prep**: the 5–8 most important things to know, then 3 questions a teacher would likely ask.
+  - The open note is read in code (the quiz used to find notes by title only, so "this note" didn't work). Explain
+    and Test prep get the whole note up to 12,000 characters, without tools, so nothing in the note changes; past
+    that they cover the first part and say so. The note text isn't kept in the conversation, so follow-up questions
+    work but history stays small.
+  - Pressing a study button during a quiz ends that quiz. A waiting yes/no question is left alone.
+  - Tested: `tests/test_study.py`, `tests/test_app_bridge.py`, MyNotion's `aria.test.ts` and `aria-panel.spec.ts`.
 - **Select text, ask Aria** (`NoteWriter.rework`, `Aria.edit_app`; in MyNotion `text-editor/aria-edit/` and
   `aria-range.ts`). Select text in a note: the small toolbar has an **Aria** button. It opens a card under the
   selection with **Rewrite**, **Shorter**, **Fix spelling**, **Make a table**, **Explain**, and a box for your own

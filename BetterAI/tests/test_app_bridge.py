@@ -67,7 +67,8 @@ def test_chat_streams_text_then_done(serve):
     events = ask(sock, {"id": "1", "type": "chat", "text": "hello"})
     assert [e["type"] for e in events] == ["text", "text", "done"]
     assert [e["delta"] for e in events[:2]] == ["Hi ", "there"]
-    assert events[-1] == {"id": "1", "type": "done", "reply": "Hi there", "tools": ["add_note"], "confirm": None}
+    assert events[-1] == {"id": "1", "type": "done", "reply": "Hi there", "tools": ["add_note"], "confirm": None,
+                          "quiz": False}
 
 
 def test_done_carries_pending_question(serve):
@@ -254,7 +255,8 @@ def test_answer_app_offers_all_tools(aria):
 def test_bridge_and_answer_app_together(aria, serve):
     aria.llm = FakeLLM(replies=[("On it.", [("add_to_list", "Added milk.")])])
     events = ask(client(serve(aria.answer_app)), {"id": "9", "type": "chat", "text": "add milk to my shopping list"})
-    assert events[-1] == {"id": "9", "type": "done", "reply": "On it.", "tools": ["add_to_list"], "confirm": None}
+    assert events[-1] == {"id": "9", "type": "done", "reply": "On it.", "tools": ["add_to_list"], "confirm": None,
+                          "quiz": False}
     assert "".join(e["delta"] for e in events[:-1]) == "On it."
 
 
@@ -605,3 +607,84 @@ def test_the_bridge_passes_no_tools_on(serve):
     ask(sock, {"id": "2", "type": "chat", "text": "hello"})
     ask(sock, {"id": "3", "type": "chat", "text": "hello", "tools": "no"})      # only a real false switches them off
     assert got == [False, True, True]
+
+
+# ── the panel's study buttons: the study request, and the quiz flag on every reply ──
+
+@pytest.fixture
+def serve_study(tmp_path):
+    """serve_study(study, quiz_active=None) → socket path of a bridge that can study."""
+    servers = []
+
+    def start(study, quiz_active=None):
+        path = str(tmp_path / f"s{len(servers)}.sock")
+        servers.append(app_bridge.start(hi_there, path, study=study, quiz_active=quiz_active))
+        return path
+    yield start
+    for s in servers:
+        s.close()
+
+
+def prep(action, on_text):
+    on_text("Point one. ")
+    return "Point one. Point two.", [], None
+
+
+def test_study_request_streams_and_finishes(serve_study):
+    events = ask(client(serve_study(prep, lambda: False)), {"id": "s1", "type": "study", "action": "prep"})
+    assert events[0] == {"id": "s1", "type": "text", "delta": "Point one. "}
+    assert events[-1] == {"id": "s1", "type": "done", "reply": "Point one. Point two.", "tools": [],
+                          "confirm": None, "quiz": False}
+
+
+def test_study_passes_the_action(serve_study):
+    got = []
+    path = serve_study(lambda action, on_text: got.append(action) or ("Quiz on X.", ["start_quiz"], None),
+                       lambda: True)
+    events = ask(client(path), {"id": "s2", "type": "study", "action": "quiz"})
+    assert got == ["quiz"]
+    assert events[-1]["quiz"] is True and events[-1]["tools"] == ["start_quiz"]
+
+
+@pytest.mark.parametrize("action", ["summarise", None, 3])
+def test_unknown_study_action_is_refused(serve_study, action):
+    got = []
+    sock = client(serve_study(lambda a, on_text: got.append(a) or ("x", [], None)))
+    events = ask(sock, {"id": "s3", "type": "study", "action": action})
+    assert events == [{"id": "s3", "type": "error", "message": "I don't know that study action."}]
+    assert got == []
+
+
+def test_study_on_an_aria_that_cannot_study(serve):
+    events = ask(client(serve(hi_there)), {"id": "s4", "type": "study", "action": "explain"})
+    assert [e["type"] for e in events] == ["error"]
+
+
+def test_study_that_raises_gives_a_plain_error(serve_study):
+    def broken(action, on_text):
+        raise RuntimeError("boom")
+    events = ask(client(serve_study(broken)), {"id": "s5", "type": "study", "action": "explain"})
+    assert events == [{"id": "s5", "type": "error", "message": app_bridge.SORRY}]
+
+
+def test_done_reports_quiz_state_after_a_chat(serve_study):
+    events = ask(client(serve_study(prep, lambda: True)), {"id": "c1", "type": "chat", "text": "skip"})
+    assert events[-1]["type"] == "done" and events[-1]["quiz"] is True
+
+
+def test_quiz_flag_is_false_when_the_check_fails(serve_study):
+    def broken():
+        raise RuntimeError("boom")
+    events = ask(client(serve_study(prep, broken)), {"id": "c2", "type": "chat", "text": "hi"})
+    assert events[-1]["type"] == "done" and events[-1]["quiz"] is False
+
+
+def test_aria_wires_study_and_the_quiz_flag(aria, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(app_bridge, "start", lambda answer, path=None, **kw: seen.update(kw))
+    aria.notion = None
+    aria._start_app_bridge()
+    assert seen["study"] == aria._app_study
+    assert seen["quiz_active"]() is False
+    aria.quiz = types.SimpleNamespace(active={"i": 0})
+    assert seen["quiz_active"]() is True
