@@ -121,6 +121,17 @@ MUSIC_TOOLS = {"play_song", "play_artist", "play_playlist", "play_genre"}
 CLIPBOARD_RE = re.compile(r"\b(copied|clipboard|i just copied|what i copied)\b", re.I)
 _TURN_LOCK_SETUP = threading.Lock()
 OPEN_NOTE_CHARS = 2500      # how much of the note open in MyNotion goes along with a message from its Aria panel
+STUDY_NOTE_CHARS = 12000    # how much of the open note "Explain simply" / "Test prep" work on
+STUDY_CUT = "(I only covered the first part of this note, it's long.)"
+# the panel's study buttons: what's kept in the conversation, and what the model is asked (decided here, not by it)
+STUDY_ASKS = {
+    "explain": ("Explain this note simply",
+                "Explain the main ideas of this note in plain, simple language, like to a classmate. Keep it short, "
+                "use an everyday example where it helps. Don't add facts that aren't in the note."),
+    "prep": ("Test prep for this note",
+             "From this note, list the 5 to 8 most important things to know for a test, one short line each. Then "
+             "write 3 questions a teacher would likely ask about it. Only use what is in the note."),
+}
 # "open my calendar" / "show me the shopping list" -> MyNotion, decided in code (the model
 # tends to read the list aloud instead, especially right after talking about it)
 OPEN_IN_NOTION_RE = re.compile(r"^\s*(?:aria,?\s*)?(?:please\s+)?(?:open|show(?: me)?|pull up|bring up)\s+"
@@ -867,14 +878,63 @@ class Aria:
             before = getattr(self, "_ui_state", None)
             reply, used = self.handle_turn(text, check_state=False, on_text=on_text, extra=self._open_note_context(),
                                            use_tools=tools)
-            if before is None:
-                self.ui.set_state("listening" if getattr(self, "awake", False) else "sleeping")
-            elif self._ui_state == "thinking":
-                self.ui.set_state(before)       # what the orb showed before (she may still be speaking a voice reply)
-            # else: it changed meanwhile (the voice reply ended, she fell asleep): that's the current truth
+            self._restore_orb(before)
             pending = self.confirm.pending
         reply = tidy_reply(reply, keep_offers=bool(pending)) or reply
         return reply, [name for name, _ in used], pending[0] if pending else None
+
+    def _restore_orb(self, before):
+        """After a panel turn: the orb goes back to what it showed before."""
+        if before is None:
+            self.ui.set_state("listening" if getattr(self, "awake", False) else "sleeping")
+        elif self._ui_state == "thinking":
+            self.ui.set_state(before)       # what the orb showed before (she may still be speaking a voice reply)
+        # else: it changed meanwhile (the voice reply ended, she fell asleep): that's the current truth
+
+    def study_app(self, action: str, on_text=None):
+        """A study button in MyNotion's Aria panel, on the open note: "quiz", "explain" or "prep". The note is read
+        here, in code. Returns (reply, tool names, None), like answer_app."""
+        dictation = getattr(self, "dictation", None)
+        if dictation and dictation.active:
+            return "You're dictating right now. Say \"stop dictation\" first, then ask me again.", [], None
+        note = self.notion.open_note() if self.notion else None
+        if not note:
+            return "Open a note first, then I can help you study it.", [], None
+        title = note["title"] or "Untitled note"
+        text = html_to_text(note["content"] or "").strip()
+        if not text:
+            return "This note is empty, there's nothing to study yet.", [], None
+        quiz = getattr(self, "quiz", None)
+        with self._turn_lock():
+            if quiz:
+                quiz.active = None          # a button press is never an answer to a running quiz: it starts over
+            if action == "quiz":
+                if not quiz:
+                    return "I can't run quizzes right now.", [], None
+                reply = quiz.start_on(title, text)
+                if reply.startswith(FINAL_PREFIX):
+                    reply = reply[len(FINAL_PREFIX):]
+                self._save_turn("Quiz me on this note", reply)
+                self._recent.append([{"role": "user", "content": "Quiz me on this note"},
+                                     {"role": "assistant", "content": reply}])
+                return reply, ["start_quiz"], None
+            label, instruction = STUDY_ASKS[action]
+            cut = len(text) > STUDY_NOTE_CHARS
+            if cut:
+                text = text[:STUDY_NOTE_CHARS].rsplit("\n", 1)[0]
+            extra = f'\n[The note "{title}":\n{text}\n]\n{instruction}'
+            before = getattr(self, "_ui_state", None)
+            pending, self.confirm.pending = self.confirm.pending, None   # a button press doesn't answer a yes/no
+            try:
+                reply, _ = self.handle_turn(label, check_state=False, on_text=on_text, extra=extra, use_tools=False)
+            finally:
+                if self.confirm.pending is None:
+                    self.confirm.pending = pending
+                self._restore_orb(before)
+        reply = tidy_reply(reply) or reply
+        if cut:
+            reply = f"{reply}\n\n{STUDY_CUT}"
+        return reply, [], None
 
     def _open_note_context(self) -> str:
         """The note open in MyNotion, as text for the model. In the panel "this note" is the one on screen, and the
@@ -922,6 +982,13 @@ class Aria:
                     self.ui.set_state("listening" if getattr(self, "awake", False) else "sleeping")
                 elif self._ui_state == "thinking":
                     self.ui.set_state(before)
+
+    def _app_study(self, action, on_text):
+        try:
+            return self.study_app(action, on_text)
+        except Exception as e:
+            Diagnostics.problem("app_study", f"{action} -> {type(e).__name__}: {e}")
+            raise
 
     def _app_answer(self, text, on_text, tools=True):
         try:
