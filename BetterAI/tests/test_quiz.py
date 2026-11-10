@@ -4,6 +4,7 @@ import json
 import pytest
 
 import Engines.Quiz as Q
+from Engines.NotionEngine import html_to_text
 import main  # noqa: F401  (imported at collection, before the subprocess guard is in place)
 
 NOTE = ("<h2>Normal forms</h2><p>First normal form means every column holds one value. Second normal form removes "
@@ -129,3 +130,18 @@ def test_quiz_answers_bypass_the_model_in_handle_turn(aria, quiz):
                                        ("Func<T, TResult>", False), ("one two three four five six seven", False)])
 def test_only_speakable_answers(answer, ok):
     assert Q.speakable(answer) is ok
+
+
+NOTE_TEXT = html_to_text(NOTE)
+
+
+def test_start_on_uses_the_given_text_without_searching(quiz):
+    out = quiz.start_on("Kapitel 3 (untitled-ish)", NOTE_TEXT, 3)   # a title the search would never match
+    assert out.startswith(Q.FINAL_PREFIX + "Quiz on Kapitel 3 (untitled-ish), 3 questions.")
+    assert quiz.active["title"] == "Kapitel 3 (untitled-ish)"
+    assert "transitive dependencies" in quiz.calls[0]
+
+
+def test_start_on_a_tiny_text_says_so(quiz):
+    assert quiz.start_on("Stub", "just a heading") == "'Stub' doesn't have enough in it to quiz you on yet."
+    assert quiz.active is None

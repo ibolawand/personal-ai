@@ -230,6 +230,14 @@ thing is not)? Reply ONLY with JSON: {{"correct": true or false}}"""
         if not source:
             return f"I couldn't find a note or document about '{topic}'."
         title, text = source
+        return self.start_on(title, text, count)
+
+    def start_on(self, title: str, text: str, count=5):
+        """A quiz on this text (MyNotion's "Quiz me" button gives the open note; no searching)."""
+        try:
+            count = max(1, min(10, int(float(count or 5))))
+        except (TypeError, ValueError):
+            count = 5
         chunk = self.pick_chunk(text)
         if len(chunk.split()) < 25:
             return f"'{title}' doesn't have enough in it to quiz you on yet."
