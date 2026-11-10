@@ -498,6 +498,28 @@ mail from `noted.db` and talks to Gmail herself to send, archive and check when 
     Previews (accept / reject) and select-text actions are planned next.
   - Tested: `tests/test_app_bridge.py`, MyNotion's `note/src/aria.test.ts` and `aria-panel.spec.ts`, and live in the
     built app on a copy of the database (streaming, the open note, lists, Yes/No, undo, a dropped connection, Start).
+- **Select text, ask Aria** (`NoteWriter.rework`, `Aria.edit_app`; in MyNotion `text-editor/aria-edit/` and
+  `aria-range.ts`). Select text in a note: the small toolbar has an **Aria** button. It opens a card under the
+  selection with **Rewrite**, **Shorter**, **Fix spelling**, **Make a table**, **Explain**, and a box for your own
+  instruction ("make this more formal", "turn into bullet points", "translate into German").
+  - The card shows **Aria's version**, drawn as it will look in the note (lists, tables, formulas, highlights), with
+    **Accept**, **Try again**, **Reject**, and a box to steer ("keep the exercise numbers" → Redo).
+  - **The note only changes on Accept.** It goes in like a paste over the selection, so part of a sentence stays part
+    of it, a list item stays in its list, and Ctrl+Z takes it back. Aria herself never writes to the note for this.
+  - Only the selection goes to the model (plus the note's title and some text around it as context), so a paragraph
+    takes a few seconds. At most about 4,500 characters at once.
+  - The selected text stays marked green while the card is open. If you change that text meanwhile, her version is
+    dropped ("The text changed, so I dropped my version."); typing elsewhere is fine.
+  - Checked in code before anything is offered, with one more try if a check fails: pictures, highlights and
+    formulas are still there; Fix spelling only made small corrections; Shorter is shorter; a table keeps every
+    word; the old lines aren't kept next to the new ones; she didn't write your instruction into the text; Try again
+    differs from the last version. Otherwise the card says why ("I found no mistakes in that part.").
+  - **Explain** changes nothing: it opens the Aria panel and she explains the selected text there. That message is
+    sent without any tools, because in a test run the model answered "explain this" by translating the whole note.
+  - Known limit: on a very short selection (two or three words) the small model sometimes returns it unchanged for
+    an own instruction; the card then says so.
+  - Tested: `tests/test_note_writer.py` (rework), `tests/test_app_bridge.py` (edit requests), MyNotion's
+    `aria-edit.spec.ts`, `aria-range.spec.ts`, `aria.test.ts`, and live in the built app on a copy of the database.
 - **Made-up tool arguments are ignored** (`ToolEngine.execute`): "undo that" once came out as
   `undo_last(list_name='shopping')` and failed; arguments a tool doesn't have are now dropped.
 

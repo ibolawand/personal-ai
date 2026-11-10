@@ -972,12 +972,15 @@ Reply with the new Markdown for this part only.
             return None, "There's no text in what you selected."
         if len(md) > CHUNK_CHARS:
             return None, "That's too much at once. Select a smaller part."
-        task = self.REWORKS.get(action) or (f'Change this part like this: "{instruction}". Change only what that '
+        # (as 'Change this part like this: "translate into German"' the small model wrote the instruction into the
+        # text; named as a task it carries it out)
+        task = self.REWORKS.get(action) or (f"Task: {instruction}\nCarry out this task on the part below. The task "
+                                           "is an instruction to you, not text for the note. Change only what it "
                                            "asks for and keep anything it doesn't touch.")
         if action != "custom" and instruction:
             task += f' Also: "{instruction}".'
         prompt = f"""{task}
-This is a part of a student's note{f' titled "{title.strip()}"' if (title or "").strip() else ""}. Keep its language.
+This is a part of a student's note{f' titled "{title.strip()}"' if (title or "").strip() else ""}.{"" if action == "custom" else " Keep its language."}
 Your reply REPLACES this part completely, so never keep the old lines next to their new version.
 {KEEP_RULES}
 {FORMAT_HELP if action in ("custom", "table") else "Keep the formatting (Markdown)."}

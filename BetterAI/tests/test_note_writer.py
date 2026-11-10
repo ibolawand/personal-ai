@@ -488,3 +488,13 @@ def test_rework_try_again_must_differ_from_the_last_version():
     w, _ = rework("Mitochondria power the cell.", "Mitochondria power the cell.")
     html, why = w.rework(PARA, "shorter", previous="<p>Mitochondria power the cell.</p>")
     assert html is None and "different" in why
+
+
+def test_rework_an_own_instruction_may_change_the_language():
+    """"translate into German" came back unchanged: the prompt also said to keep the language."""
+    w, model = rework("zweiter Punkt bleibt")
+    w.rework("second item stays", "custom", instruction="translate into German")
+    assert "Keep its language" not in model.prompts[0]
+    w, model = rework("Mitochondria power the cell.")
+    w.rework(PARA, "shorter")
+    assert "Keep its language" in model.prompts[0]
