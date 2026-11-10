@@ -149,3 +149,31 @@ def test_study_leaves_a_pending_question_alone(aria, open_note):
     aria.llm = FakeLLM(replies=[("Explained.", [])])
     aria.study_app("explain")
     assert aria.confirm.pending
+
+
+# ── fixes from the final review ──
+
+def test_a_waiting_question_comes_back_with_the_study_reply(aria, open_note):
+    """The panel drops Yes/No when a button is pressed; if the question is still waiting, it must be shown again."""
+    open_note("Zelle", "<p>Mitochondria make ATP for the cell.</p>")
+    aria.confirm.request("delete the event Test", lambda: "Deleted.")
+    aria.llm = FakeLLM(replies=[("Explained.", [])])
+    assert aria.study_app("explain")[2] == "delete the event Test"
+
+
+def test_test_prep_keeps_its_lines(aria, open_note):
+    open_note("Zelle", "<p>Mitochondria make ATP for the cell.</p>")
+    aria.llm = FakeLLM(replies=[("Key points:\n1. Mitochondria make ATP.\n2. The cell needs energy.\n\n"
+                                 "Questions:\n1. What makes ATP?", [])])
+    reply = aria.study_app("prep")[0]
+    assert reply == ("Key points:\n1. Mitochondria make ATP.\n2. The cell needs energy.\n\n"
+                     "Questions:\n1. What makes ATP?")
+
+
+def test_a_button_during_a_quiz_keeps_the_missed_questions(aria, open_note, study_quiz):
+    open_note("Kapitel 3", NOTE)
+    aria.study_app("quiz")
+    aria.answer_app("skip")
+    aria.llm = FakeLLM(replies=[("Simple version.", [])])
+    aria.study_app("explain")
+    assert [m["q"] for m in study_quiz._load()["misses"]] == [QUESTIONS[0]["q"]]

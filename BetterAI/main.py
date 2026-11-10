@@ -295,16 +295,25 @@ def _norm_reply(text: str) -> str:
     return " ".join(re.sub(r"[^a-z0-9 ]", " ", (text or "").lower()).split())
 
 
+def _sentences(text: str):
+    """Sentences with the space after each one, so line breaks survive (Test prep's lists)."""
+    parts = re.split(r"(?<=[.!?])(\s+)", text)
+    return [(parts[i], parts[i + 1] if i + 1 < len(parts) else "") for i in range(0, len(parts), 2)]
+
+
+def _join(pairs) -> str:
+    return "".join(s + (sep if "\n" in sep else " ") for s, sep in pairs).strip()
+
+
 def drop_offers(text: str) -> str:
     """Remove "want me to…?" offers, unless that's all the reply is."""
-    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
     kept, dropped = [], False
-    for x in sentences:
+    for x, sep in _sentences(text.strip()):
         if OFFER_RE.search(x) or PROMISE_RE.search(x) or (dropped and DANGLING_RE.search(x)):
             dropped = True
             continue
-        kept.append(x)
-    return " ".join(kept).strip() if kept else text.strip()
+        kept.append((x, sep))
+    return _join(kept) if kept else text.strip()
 
 
 def tidy_reply(text: str, keep_offers: bool = False) -> str:
@@ -313,11 +322,10 @@ def tidy_reply(text: str, keep_offers: bool = False) -> str:
     if not keep_offers:
         text = drop_offers(text)
     for _ in range(2):
-        sentences = re.split(r"(?<=[.!?])\s+", text)
-        if len(sentences) > 1 and FILLER_RE.search(sentences[-1]):
-            text = " ".join(sentences[:-1]).strip()
-    kept = [x for x in re.split(r"(?<=[.!?])\s+", text) if not ROBOTIC_RE.search(x)]
-    text = " ".join(kept).strip()
+        sentences = _sentences(text)
+        if len(sentences) > 1 and FILLER_RE.search(sentences[-1][0]):
+            text = _join(sentences[:-1])
+    text = _join((x, sep) for x, sep in _sentences(text) if not ROBOTIC_RE.search(x))
     text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)          # **bold**
     text = re.sub(r"(?<!`)`([^`\n]+)`(?!`)", r"\1", text)   # `inline code`
     text = re.sub(r"^\s*[-*•]\s+", "", text, flags=re.M)    # bullet markers
@@ -906,8 +914,8 @@ class Aria:
             return "This note is empty, there's nothing to study yet.", [], None
         quiz = getattr(self, "quiz", None)
         with self._turn_lock():
-            if quiz:
-                quiz.active = None          # a button press is never an answer to a running quiz: it starts over
+            if quiz and quiz.active:
+                quiz.stop()                 # a button press is never an answer to a running quiz: it ends it
             if action == "quiz":
                 if not quiz:
                     return "I can't run quizzes right now.", [], None
@@ -931,10 +939,12 @@ class Aria:
                 if self.confirm.pending is None:
                     self.confirm.pending = pending
                 self._restore_orb(before)
-        reply = tidy_reply(reply) or reply
+            pending = self.confirm.pending
+        reply = tidy_reply(reply, keep_offers=bool(pending)) or reply
         if cut:
             reply = f"{reply}\n\n{STUDY_CUT}"
-        return reply, [], None
+        # the panel drops Yes/No when a button is pressed: a question still waiting is shown again
+        return reply, [], pending[0] if pending else None
 
     def _open_note_context(self) -> str:
         """The note open in MyNotion, as text for the model. In the panel "this note" is the one on screen, and the

@@ -300,6 +300,10 @@ thing is not)? Reply ONLY with JSON: {{"correct": true or false}}"""
             return f"{said} {lead}: {nxt['q']}"
         return f"{said} {self._finish()}"
 
+    def stop(self):
+        """End a running quiz the way "stop" does (missed questions are kept); returns what to say, or None."""
+        return self._finish(stopped=True) if self.active else None
+
     def _finish(self, stopped=False):
         a, self.active = self.active, None
         asked = a["i"]
