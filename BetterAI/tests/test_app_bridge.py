@@ -688,3 +688,48 @@ def test_aria_wires_study_and_the_quiz_flag(aria, monkeypatch):
     assert seen["quiz_active"]() is False
     aria.quiz = types.SimpleNamespace(active={"i": 0})
     assert seen["quiz_active"]() is True
+
+
+# ── a panel turn's cards don't pop up a hidden orb ──
+
+class QuietUI(main.NullUI):
+    def __init__(self):
+        self.quiet = 0
+        self.seen = []
+
+    def panel_turn(self):
+        import contextlib
+        ui = self
+
+        @contextlib.contextmanager
+        def turn():
+            ui.quiet += 1
+            try:
+                yield
+            finally:
+                ui.quiet -= 1
+        return turn()
+
+
+class CardLLM(FakeLLM):
+    def __init__(self, ui, **k):
+        super().__init__(**k)
+        self.ui = ui
+
+    def chat_with_tools(self, *a, **k):
+        self.ui.seen.append(self.ui.quiet)
+        return super().chat_with_tools(*a, **k)
+
+
+@pytest.mark.parametrize("call", [lambda a: a.answer_app("add eggs"), lambda a: a.study_app("explain")])
+def test_panel_turns_are_quiet_for_cards(aria, open_note, call):
+    open_note("Zelle", "<p>Mitochondria make ATP for the cell.</p>")
+    aria.ui = QuietUI()
+    aria.llm = CardLLM(aria.ui, replies=[("Done.", [])])
+    call(aria)
+    assert aria.ui.seen and set(aria.ui.seen) == {1} and aria.ui.quiet == 0   # a retry is quiet too
+
+
+def test_a_ui_without_panel_turns_still_works(aria):
+    aria.llm = FakeLLM(replies=[("Hi.", [])])
+    assert aria.answer_app("hi")[0] == "Hi."

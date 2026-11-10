@@ -133,6 +133,22 @@ class OverlayBridge(QObject):
         self._clip_done = threading.Event()
         self._clip_result = None
         self._clipRequest.connect(self._clip_slot, Qt.QueuedConnection)
+        self._panel = threading.local()     # set while this thread runs a turn for MyNotion's panel
+
+    def panel_turn(self):
+        """While a MyNotion panel turn runs in this thread, its cards don't pop up a hidden orb (she was started from
+        MyNotion without it). A card shown anyway on a visible orb, and cards from other threads (reminders), as usual."""
+        import contextlib
+        local = self._panel
+
+        @contextlib.contextmanager
+        def turn():
+            local.depth = getattr(local, "depth", 0) + 1
+            try:
+                yield
+            finally:
+                local.depth -= 1
+        return turn()
 
     # Called by Aria (from any thread). Qt queues signals onto the UI thread.
     def set_state(self, state):
@@ -183,6 +199,8 @@ class OverlayBridge(QObject):
     #        {"type": "agenda", "title", "days": [{"label", "events": [{"time", "title", "repeat"}]}]}
     #        {"type": "confirm", "text"}
     def show_card(self, card):
+        if getattr(self._panel, "depth", 0):
+            card = {**card, "quiet": True}
         self.cardRequested.emit(card)
 
     def clear_card(self, kind=None):
@@ -517,6 +535,8 @@ class Overlay(QWidget):
             if self.card and (card.get("kind") in (None, self.card.kind)):
                 self._close_card()
             return
+        if card.get("quiet") and not self.isVisible():
+            return                      # from a MyNotion panel turn: the panel shows it, the hidden orb stays away
         self._close_card()
         self.card = Card(self, card, self._card_action)
         self.card.move(self._card_pos())
@@ -559,6 +579,9 @@ class Overlay(QWidget):
     # ── Animation ──
 
     def _tick(self):
+        if not self.isVisible():
+            self._last_tick = time.monotonic()      # started hidden from MyNotion: nothing to draw, no CPU spent
+            return
         now = time.monotonic()
         dt = min(0.05, now - self._last_tick)
         self._last_tick = now

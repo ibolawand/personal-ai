@@ -492,7 +492,9 @@ mail from `noted.db` and talks to Gmail herself to send, archive and check when 
   - If she stops mid-answer, what she wrote so far stays, marked "Aria stopped answering", with **Retry**.
   - If Aria isn't running, the panel says so and **Start** launches her **without the orb** (`aria.sh --hidden`): the
     full Aria (reminders, mail, voice if set up), just not on screen. Ctrl+Alt+Space or the menu shows the orb of that
-    same Aria, and a reminder or yes/no card brings it up too. Starting her yourself still shows the orb right away.
+    same Aria, and a reminder or timer card brings it up too. Cards from your panel messages (a list, the agenda, a
+    yes/no) stay in the panel and don't pop up a hidden orb, and the hidden orb doesn't animate (no CPU spent).
+    Starting her yourself still shows the orb right away.
     For Start to work, she writes where `aria.sh` is into the shared `app_state` table each time she starts, so she
     has to have run once. A message typed meanwhile is kept.
   - It talks to Aria over a private socket (`$XDG_RUNTIME_DIR/aria-<uid>-app.sock`, only your user can open it);

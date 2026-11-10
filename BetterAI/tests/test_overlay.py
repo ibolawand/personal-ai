@@ -108,3 +108,46 @@ def test_a_card_shows_a_hidden_orb(overlay, app):
                               "items": [{"text": "eggs", "checked": False}]})
     app.processEvents()
     assert overlay.isVisible()
+
+
+# ── a hidden Aria (fixes from the review) ──
+
+LIST_CARD = {"type": "list", "note_id": 7, "title": "Shopping list", "items": [{"text": "eggs", "checked": False}]}
+
+
+def test_a_card_from_a_panel_turn_leaves_a_hidden_orb_hidden(overlay, app):
+    overlay.hide()
+    with overlay.bridge.panel_turn():
+        overlay.bridge.show_card(dict(LIST_CARD))
+    app.processEvents()
+    assert not overlay.isVisible() and overlay.card is None
+
+
+def test_a_card_from_a_panel_turn_still_shows_on_a_visible_orb(overlay, app):
+    overlay.show()
+    with overlay.bridge.panel_turn():
+        overlay.bridge.show_card(dict(LIST_CARD))
+    app.processEvents()
+    assert overlay.card is not None
+
+
+def test_only_the_panel_thread_is_quiet(overlay, app):
+    import threading
+    got = []
+    overlay.bridge.cardRequested.connect(lambda c: got.append(c.get("quiet", False)))
+    with overlay.bridge.panel_turn():
+        t = threading.Thread(target=overlay.bridge.show_card, args=({"type": "reminder", "text": "Call"},))
+        t.start(); t.join()                              # a reminder from another thread meanwhile
+        overlay.bridge.show_card(dict(LIST_CARD))
+    overlay.bridge.show_card(dict(LIST_CARD))
+    app.processEvents()
+    assert sorted(got) == [False, False, True]
+
+
+def test_a_hidden_orb_does_not_animate(overlay, monkeypatch):
+    overlay.hide()
+    painted = []
+    monkeypatch.setattr(overlay, "update", lambda *a: painted.append(1))
+    monkeypatch.setattr(overlay, "_update_mask", lambda *a: painted.append(1))
+    overlay._tick()
+    assert painted == []

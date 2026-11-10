@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import os
 import queue
 import random
@@ -884,12 +885,18 @@ class Aria:
             return "You're dictating right now. Say \"stop dictation\" first, then ask me again.", [], None
         with self._turn_lock():
             before = getattr(self, "_ui_state", None)
-            reply, used = self.handle_turn(text, check_state=False, on_text=on_text, extra=self._open_note_context(),
-                                           use_tools=tools)
+            with self._panel_cards():
+                reply, used = self.handle_turn(text, check_state=False, on_text=on_text,
+                                               extra=self._open_note_context(), use_tools=tools)
             self._restore_orb(before)
             pending = self.confirm.pending
         reply = tidy_reply(reply, keep_offers=bool(pending)) or reply
         return reply, [name for name, _ in used], pending[0] if pending else None
+
+    def _panel_cards(self):
+        """A turn for MyNotion's panel: cards it raises don't pop up a hidden orb (see OverlayBridge.panel_turn)."""
+        turn = getattr(self.ui, "panel_turn", None)
+        return turn() if turn else contextlib.nullcontext()
 
     def _restore_orb(self, before):
         """After a panel turn: the orb goes back to what it showed before."""
@@ -934,7 +941,9 @@ class Aria:
             before = getattr(self, "_ui_state", None)
             pending, self.confirm.pending = self.confirm.pending, None   # a button press doesn't answer a yes/no
             try:
-                reply, _ = self.handle_turn(label, check_state=False, on_text=on_text, extra=extra, use_tools=False)
+                with self._panel_cards():
+                    reply, _ = self.handle_turn(label, check_state=False, on_text=on_text, extra=extra,
+                                                use_tools=False)
             finally:
                 if self.confirm.pending is None:
                     self.confirm.pending = pending
