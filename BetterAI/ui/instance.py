@@ -9,6 +9,7 @@ which would fight over the camera and mic. It sends a command to the running one
     show    open the text box
     quit    shut Aria down
     capture open the quick capture box (Ctrl+Alt+N)
+    ping    nothing; only checks that Aria is running (MyNotion's Start: she starts without the orb)
 """
 
 import os
@@ -16,7 +17,7 @@ import socket
 import threading
 
 SOCKET_PATH = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", f"aria-{os.getuid()}.sock")
-COMMANDS = ("toggle", "show", "quit", "capture")
+COMMANDS = ("toggle", "show", "quit", "capture", "ping")
 
 
 def send(command: str) -> bool:

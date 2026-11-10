@@ -72,3 +72,39 @@ def test_list_card_checkbox(overlay, app):
     import time
     time.sleep(0.2)
     assert ("toggle", 7, "eggs", True) in overlay.sent
+
+
+# ── starting hidden (MyNotion's Start button): only the hotkey, the menu or a card shows the orb ──
+
+def test_ping_is_an_instance_command():
+    from ui import instance
+    assert "ping" in instance.COMMANDS
+
+
+def test_ping_leaves_a_hidden_overlay_alone(overlay):
+    overlay.hide()
+    overlay._on_remote("ping")
+    assert not overlay.isVisible() and not overlay.input.isVisible()
+
+
+def test_ping_leaves_an_open_text_box_open(overlay):
+    overlay.show()
+    overlay._on_remote("show")
+    assert overlay.input.isVisible()
+    overlay._on_remote("ping")
+    assert overlay.input.isVisible()
+
+
+@pytest.mark.parametrize("cmd", ["show", "toggle"])
+def test_the_hotkey_shows_a_hidden_orb(overlay, cmd):
+    overlay.hide()
+    overlay._on_remote(cmd)
+    assert overlay.isVisible()
+
+
+def test_a_card_shows_a_hidden_orb(overlay, app):
+    overlay.hide()
+    overlay.bridge.show_card({"type": "list", "note_id": 7, "title": "Shopping list",
+                              "items": [{"text": "eggs", "checked": False}]})
+    app.processEvents()
+    assert overlay.isVisible()

@@ -482,6 +482,8 @@ class Overlay(QWidget):
         if cmd == "quit":
             quit_app()
             return
+        if cmd == "ping":
+            return                      # only checks she's running: the orb stays as it is
         if not self.isVisible():
             self.show()
         self._add_wave(0.6)
@@ -1132,15 +1134,17 @@ def quit_app():
         QApplication.quit()
 
 
-def run_with_overlay(make_aria):
-    """make_aria(bridge) -> Aria. Builds Aria in a worker thread so the orb appears instantly."""
+def run_with_overlay(make_aria, visible: bool = True):
+    """make_aria(bridge) -> Aria. Builds Aria in a worker thread so the orb appears instantly.
+    visible=False (MyNotion's Start): the orb stays hidden until the hotkey, the menu or a card shows it."""
     global _bridge
     app = QApplication.instance() or QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
 
     _bridge = OverlayBridge()
     overlay = Overlay(_bridge)
-    overlay.show()
+    if visible:
+        overlay.show()
 
     from ui import instance
     instance.listen(_bridge.remoteCommand.emit)
