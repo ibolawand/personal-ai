@@ -498,3 +498,40 @@ def test_rework_an_own_instruction_may_change_the_language():
     w, model = rework("Mitochondria power the cell.")
     w.rework(PARA, "shorter")
     assert "Keep its language" in model.prompts[0]
+
+
+# ── columns made with Tab / many spaces ──
+
+M = lambda tex: f'<span data-latex="{tex}" data-type="inline-math"></span>'
+TABBED = (
+    '<h2>Trennen der Variablen</h2>'
+    '<p>4.26) a)' + ' ' * 40 + '4.26b)</p>'
+    f'<p>{M("y=3x")} → {M("f(x)=3x")} \t\t\t\t      {M("y=2x")} ; {M("y(0)=5")}</p>'
+    f'<p>{M("C=4")}\t\t\t\t\t\t   {M("y=e^x")}</p>'
+    f'<p>\t\t\t\t\t\t\t\t   {M("C=3")}</p>'
+    '<p></p><p>Danach normal weiter</p>'
+)
+
+
+def test_lines_with_tab_gaps_become_columns_when_organising(writer, notion):
+    nid = notion._create_note("Diff", TABBED)
+    model = say(writer, "")                                  # the model gives nothing usable: columns still made
+    msg = writer.organize_note("Diff")
+    content = notion._note_by_id(nid)["content"]
+    assert "<table" in content, msg
+    rows = content.split("<tr>")[1:]
+    assert len(rows) == 4
+    assert "4.26) a)" in rows[0] and "4.26b)" in rows[0]
+    left, right = rows[1].split("</td>")[:2] if "<td" in rows[1] else rows[1].split("</th>")[:2]
+    assert 'data-latex="y=3x"' in left and 'data-latex="f(x)=3x"' in left and "→" in left
+    assert 'data-latex="y=2x"' in right and 'data-latex="y(0)=5"' in right
+    assert 'data-latex="C=3"' in rows[3].split("</td>")[1]  # a line that starts with the gap is the right column
+    assert "\t" not in content
+    assert "Danach normal weiter" in content and "Trennen der Variablen" in content
+    assert "4.26b)" not in model.prompts[0]                  # the model never gets to change the columns
+    assert msg.startswith("Made columns in 'Diff'.") and "Tab" in msg
+
+
+def test_a_normal_line_with_one_tab_is_not_a_table():
+    md, _ = html_to_md("<p>Name:\tLala</p><p>a b c</p>")
+    assert "|" not in md

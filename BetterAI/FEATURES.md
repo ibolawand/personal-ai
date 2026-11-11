@@ -392,8 +392,12 @@ database: text, formulas, pictures, highlights).
 - **"This note":** MyNotion tells Aria which note is open (the `app_state` table in the shared database), so
   "organise this note", "read this note", "add … to this note" work without naming it. When MyNotion is closed,
   nothing counts as open.
-- **Organise a note:** "organise this note", "tidy up my biology note". She groups lines, adds a few short
-  headings, makes lists, to-dos and tables. **Nothing gets lost:** before saving, the code checks the version
+- **Organise a note:** "organise this note", "tidy up my biology note", "ordne die Spalten". She groups lines, adds a few short
+  headings, makes lists, to-dos and tables. Lines lined up side by side with Tab or many spaces ("4.26 a) ⇥⇥⇥ 4.26 b)")
+  become a table with one column each. The code finds the columns from the gaps, not the model, and the model can't
+  change that table. A gap is two Tabs, a Tab next to spaces, or four spaces; it takes two such lines in a row, and a
+  line that starts with the gap goes in the right column. Even if the model's tidy-up fails, the columns are still made
+  (`NoteWriter._group_columns`). **Nothing gets lost:** before saving, the code checks the version
   exactly as MyNotion will get it:
   - every word is still there, including exercise numbers like "5.2" (as whole tokens, so other 5s and 2s can't
     stand in), every formula, every picture and highlight on the same words, and every box, toggle and

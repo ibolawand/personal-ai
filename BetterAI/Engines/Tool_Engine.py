@@ -126,7 +126,7 @@ class ToolEngine:
                    r"old version|bring back|undelete|recover|backup|due|deadline|overdue|by (?:mon|tue|wed|thu|fri|sat|sun)\w*|"
                    r"hand in|submit|write|wrote|organi[sz]e|tidy|structure|sort|summary|summari[sz]e|translate|"
                    r"spelling|typos?|grammar|section|part|heading|study sheet|cheat sheet|rewrite|reformat|format|"
-                   r"table|shorter|longer|simpler)\b",
+                   r"table|shorter|longer|simpler|columns?|organisier\w*|ordne\w*|spalten?)\b",
                    {"write_note", "organize_note", "edit_note", "add_note", "save_as_note", "read_note", "search_notes", "list_notes", "add_to_list",
                     "remove_from_list", "check_off", "clear_list", "get_events", "add_event", "move_event",
                     "delete_event", "open_mynotion", "daily_briefing", "restore_note", "add_todo", "set_due", "get_due"}),
@@ -360,8 +360,9 @@ class ToolEngine:
                       from_last_answer=("boolean", "true to turn your previous answer into the note")),
                 _tool("organize_note",
                       "Reorganise an existing MyNotion note: groups what belongs together, adds headings, lists, "
-                      "to-dos and tables; never removes words ('organise this note', 'tidy up my biology note', "
-                      "'structure my notes on the war'). 'this' = the note open in MyNotion.",
+                      "to-dos and tables; lines lined up side by side with Tab become columns (a table); never removes "
+                      "words ('organise this note', 'tidy up my biology note', 'structure my notes on the war', "
+                      "'put the Tab columns in a table'). 'this' = the note open in MyNotion.",
                       wr.organize_note, optional=("title",),
                       title=("string", "the note's title, or 'this' for the note open in MyNotion")),
                 _tool("edit_note",

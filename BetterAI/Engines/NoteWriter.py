@@ -87,11 +87,16 @@ def _kids(node, *tags):
 # ── HTML -> Markdown ──────────────────────────────────────────────────────────
 
 class _ToMarkdown:
-    def __init__(self):
+    def __init__(self, columns=False):
         self.keep = []          # HTML of the parts the model sees as {{n}}
+        self.columns = columns  # lines laid out in columns with Tab / many spaces become a table
+        self.made_columns = 0
 
     def marker(self, node) -> str:
-        self.keep.append(_outer(node))
+        return self.marker_html(_outer(node))
+
+    def marker_html(self, html_: str) -> str:
+        self.keep.append(html_)
         return "{{" + str(len(self.keep) - 1) + "}}"
 
     # inline
@@ -153,7 +158,14 @@ class _ToMarkdown:
                     out.append(self._line_start(t))
                 loose.clear()
 
+        if self.columns:
+            nodes = _group_columns(nodes)
         for n in nodes:
+            if isinstance(n, dict) and n["tag"] == "columns":
+                flush()
+                self.made_columns += 1
+                out.append(self.marker_html(_columns_table(n["rows"])))
+                continue
             if isinstance(n, str) or n["tag"] not in BLOCK_TAGS | {"p"}:
                 if isinstance(n, str) and not n.strip():
                     continue
@@ -253,10 +265,84 @@ def _find_all(node, tag):
     return out
 
 
-def html_to_md(content: str) -> tuple[str, list]:
-    """(Markdown, the HTML behind each {{n}} marker)."""
-    conv = _ToMarkdown()
+# ── lines laid out in columns with Tab / spaces ──
+# Students line up two exercises side by side with Tab ("4.26 a)  <tabs>  4.26 b)"). That only looks right at one
+# window width: narrower, and the right column wraps to the left edge. When a note is organised, such lines become
+# a table, decided here in code from where the gaps are (a small model can't tell which formula is in which column).
+
+COLUMN_GAP = re.compile(r"[ \t]*(?:\t[ \t]*\t|\t {2,}| {2,}\t| {4,})[ \t]*")
+
+
+def _column_cells(p) -> list | None:
+    """A paragraph split at its wide gaps: one list of nodes per cell, or None without such a gap."""
+    cells, cur, gaps = [], [], 0
+    for c in p["children"]:
+        if not isinstance(c, str):
+            cur.append(c)
+            continue
+        pieces = COLUMN_GAP.split(c)
+        gaps += len(pieces) - 1
+        for i, piece in enumerate(pieces):
+            if i:
+                cells.append(cur)
+                cur = []
+            if piece:
+                cur.append(piece)
+    cells.append(cur)
+    if not gaps:
+        return None
+    if not any(_text(n).strip() if isinstance(n, dict) else n.strip() for n in cells[-1]) and \
+            not any(isinstance(n, dict) for n in cells[-1]):
+        cells.pop()                                  # a gap at the very end is no extra column
+    return cells if len(cells) > 1 else None
+
+
+def _group_columns(nodes) -> list:
+    """Runs of two or more paragraphs with column gaps become one {"tag": "columns"} node."""
+    out, run = [], []
+
+    def end():
+        if len(run) >= 2:
+            out.append({"tag": "columns", "attrs": {}, "children": [], "rows": [c for _, c in run]})
+        else:
+            out.extend(n for n, _ in run)
+        run.clear()
+
+    for n in nodes:
+        cells = _column_cells(n) if isinstance(n, dict) and n["tag"] == "p" else None
+        if cells:
+            run.append((n, cells))
+            continue
+        if isinstance(n, str) and not n.strip() and run:
+            continue
+        end()
+        out.append(n)
+    end()
+    return out
+
+
+def _cell_html(nodes) -> str:
+    parts = [_outer(n) for n in nodes]
+    return "".join(parts).strip()
+
+
+def _columns_table(rows) -> str:
+    width = max(len(r) for r in rows)
+    rows = [r + [[]] * (width - len(r)) for r in rows]
+    head_is_text = not any(isinstance(n, dict) for cell in rows[0] for n in cell)
+    lines = []
+    for i, r in enumerate(rows):
+        tag = "th" if i == 0 and head_is_text else "td"
+        lines.append("<tr>" + "".join(f"<{tag}><p>{_cell_html(c)}</p></{tag}>" for c in r) + "</tr>")
+    return "<table><tbody>" + "".join(lines) + "</tbody></table>"
+
+
+def html_to_md(content: str, columns: bool = False) -> tuple[str, list]:
+    """(Markdown, the HTML behind each {{n}} marker). columns: Tab-aligned lines become a table (kept as a marker)."""
+    conv = _ToMarkdown(columns)
     md = "\n\n".join(conv.blocks(_parse(content)["children"]))
+    if columns:
+        return md.strip(), conv.keep, conv.made_columns
     return md.strip(), conv.keep
 
 
@@ -723,8 +809,13 @@ Reply with the Markdown only."""
             return err
         with self.notion.editing(note["id"]):
             note = self.notion._note_by_id(note["id"])
-            md, keep = html_to_md(note["content"] or "")
-            if len(facts(md)["words"]) < 8:
+            md, keep, made_columns = html_to_md(note["content"] or "", columns=True)
+            if made_columns:
+                # the columns are a table now; compare against that, not against the Tab version
+                ref_md, ref_keep = html_to_md(md_to_html(md, keep))
+            else:
+                ref_md, ref_keep = md, keep
+            if len(facts(ref_md)["words"]) < 8 and not made_columns:
                 return f"'{note['title']}' is too short to organise."
             parts, kept_as_is = [], []
             for i, part in enumerate(chunks(md)):
@@ -734,15 +825,20 @@ Reply with the Markdown only."""
                     kept_as_is.append(_part_name(part, i))
                 else:
                     parts.append(new)
-            if len(kept_as_is) == len(parts):
+            if len(kept_as_is) == len(parts) and not made_columns:
                 return (f"I couldn't reorganise '{note['title']}' without leaving something out, so I left it "
                         "as it was.")
             new_md = "\n\n".join(parts)
             saved_md, saved_keep = html_to_md(md_to_html(new_md, keep))     # exactly what MyNotion will get
-            if not nothing_missing(missing(md, saved_md, keep, saved_keep)):  # never save one with something missing
+            if not nothing_missing(missing(ref_md, saved_md, ref_keep, saved_keep)):  # never save with something missing
                 return f"Something went wrong while organising '{note['title']}', so I left it as it was."
             done = f"Organised '{note['title']}'."
-            if kept_as_is:
+            if made_columns:
+                done += (" The lines you had lined up with Tab are a table now, one column each"
+                         f" ({made_columns} {'table' if made_columns == 1 else 'tables'}).")
+            if kept_as_is and len(kept_as_is) == len(parts):
+                done = done.replace("Organised", "Made columns in", 1)
+            elif kept_as_is:
                 done += f" I left {', '.join(kept_as_is)} as it was, because I couldn't do it without losing something."
             return self._save(note, note["content"], new_md, keep, done + " Say 'undo that' to get the old version back.")
 
