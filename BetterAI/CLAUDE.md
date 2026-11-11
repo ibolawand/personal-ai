@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Aria: a local, always-on desktop assistant for Linux Mint (Python). It is a general-purpose assistant, not school-only. A local LLM (Ollama, `qwen3:8b`, native tool calling) drives about 80 tools: MyNotion notes and calendar, reminders, Spotify, laptop control, files, mail, WebUntis, Telegram, weather, web search (SearXNG), an Arduino LED strip and Home Assistant. It has a PySide6 overlay orb, optional wake word + Whisper STT + Kokoro TTS, and face recognition through the camera.
+Aria: a local, always-on desktop assistant for Linux Mint (Python). It is a general-purpose assistant, not school-only. A local LLM (Ollama, `qwen3:8b`, native tool calling) drives about 110 tools: MyNotion notes and calendar, reminders, Spotify, laptop control, files, mail, WebUntis, Telegram, weather, web search (SearXNG), an Arduino LED strip and Home Assistant. It has a PySide6 overlay orb, optional wake word + Whisper STT + Kokoro TTS, and face recognition through the camera.
 
 `FEATURES.md` describes every feature with example phrases and the file that implements it. **Update it whenever a feature is added or changed.** `IMPROVEMENTS.md` logs past autonomous improvements and known open items. Propose new functionality to the user and wait for an OK before building it.
 
@@ -32,7 +32,7 @@ Run the `-m model` checks after changing the system prompt (`BASE_PROMPT` in `ma
 
 ## Configuration
 
-Settings come from `Engines/.env` (gitignored), which `main.py` loads explicitly. The root `.env` is not the one main.py reads. Keys include `DB_PATH` (MyNotion's SQLite DB, `../MyNotion/note/noted.db`), Spotify keys, `ARIA_OWNER`, `FILE_ROOTS`, `CAMERA_INDEX`, `VISION_MODEL`, `LLM_NUM_CTX`, `ARIA_ARGS` (e.g. `--voice`) and `ARIA_*` behaviour toggles. `aria_memory.db` in the repo root holds Aria's own long-term memory and message history (`database.py`).
+Settings come from `Engines/.env` (gitignored), which `main.py` loads explicitly. The root `.env` is not the one main.py reads. Keys include `DB_PATH` (MyNotion's SQLite DB; currently `~/.config/MyNotion/noted.db`, older docstrings still say `../MyNotion/note/noted.db`), Spotify keys, `ARIA_OWNER`, `FILE_ROOTS`, `CAMERA_INDEX`, `VISION_MODEL`, `LLM_NUM_CTX`, `ARIA_ARGS` (e.g. `--voice`) and `ARIA_*` behaviour toggles. `aria_memory.db` in the repo root holds Aria's own long-term memory and message history (`database.py`).
 
 ## Architecture
 
@@ -51,7 +51,7 @@ The project's guiding pattern is to **decide things in code instead of trusting 
 
 **Prompt layout:** `ContextBuilder.build_system_prompt` gives a stable system prompt. Anything that changes per turn (time, presence, "[Right now: …]", clipboard) is appended to the *user* message, so Ollama can reuse its prompt cache. Keep that split.
 
-**MyNotion integration** (`Engines/NotionEngine.py`, `NoteWriter.py`, `MemoryNote.py`) writes directly into the separate MyNotion app's SQLite DB (sibling repo `../MyNotion`). The tables are `notes`, `FOLDERS`, `EVENTS` and `USERS`; `tests/conftest.py` has the schema. The note "What Aria knows about me" is synced both ways with `aria_memory.db`.
+**MyNotion integration** (`Engines/NotionEngine.py`, `NoteWriter.py`, `MemoryNote.py`) writes directly into the separate MyNotion app's SQLite DB (the path in `DB_PATH`). MyNotion's source is at `../../MyNotion`. The `BetterAI/MyNotion/` folder is an empty, root-owned stray directory, not the app or its DB. The git root is the parent `personal-ai/`; this project is the `BetterAI/` subfolder of it. The tables are `notes`, `FOLDERS`, `EVENTS` and `USERS`; `tests/conftest.py` has the schema. The note "What Aria knows about me" is synced both ways with `aria_memory.db`.
 
 **UI threading:** Qt owns the main thread (`ui/overlay.py`). Aria runs in a worker thread and talks to the UI through `OverlayBridge` signals. `NullUI` in `main.py` defines the UI interface (`set_state`, `message`, `show_card`, …). `ui/instance.py` enforces a single running instance through a Unix socket; `aria.sh --toggle/--capture/--quit` send commands over that socket.
 
