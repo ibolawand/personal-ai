@@ -157,6 +157,15 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
   `sudo mkdir -p /etc/systemd/system/ollama.service.d && printf '[Service]\nEnvironment="OLLAMA_FLASH_ATTENTION=1"\nEnvironment="OLLAMA_KV_CACHE_TYPE=q8_0"\nEnvironment="OLLAMA_GPU_OVERHEAD=1300000000"\n' | sudo tee /etc/systemd/system/ollama.service.d/aria.conf && sudo systemctl daemon-reload && sudo systemctl restart ollama`
 
 - Wake word, speech-to-text with live mic level shown on the orb, text-to-speech with the voice level driving the orb.
+- **She listens only when you type it** (typing mode, the default; `Aria._ears_command`, `tests/test_listen.py`).
+  The microphone is closed and the wake word doesn't run. Type `listen` (also `listen to me`, `start listening`,
+  `voice on`, `mic on`, `hör zu`) in the orb's text box, the terminal or MyNotion's Aria panel: she answers
+  "I'm listening." and from then on hears what you say and answers, and typing still works. The microphone closes
+  when she goes back to sleep (about 20 seconds of silence, "go to sleep") or at once on `stop listening`
+  (`voice off`, `mic off`), typed or said. To talk again, type `listen` again. It has to be the whole message
+  ("listen to this song" is an ordinary message), a message from the phone can't open the microphone, and while
+  you dictate the words are written down like any others. Everything below about hearing you applies while she
+  listens; the wake word only in voice mode.
 - **"Hey Aria"** (voice mode: `ARIA_ARGS=--voice` in `Engines/.env`): a small openWakeWord model trained on this
   laptop from synthetic voices (`tools/train_wakeword.py`, the model is `models/hey_aria.onnx`). When it fires,
   Whisper checks the last 2.5 seconds and only a real "Aria" wakes her, so TV and YouTube don't. Rejected ones show

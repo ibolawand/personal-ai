@@ -346,6 +346,16 @@ SLEEP_NOT_RE = re.compile(r"\b(?:remind|reminder|timer|alarm|at \d|in \d+|how mu
 SLEEP_MAX_WORDS = 7
 
 
+# "listen" / "stop listening": the microphone opens only when Lala says so (whole message, matched in code)
+_EARS_LEAD = r"(?:(?:hey )?aria )?(?:please )?"
+LISTEN_RE = re.compile(_EARS_LEAD + r"(?:listen(?: to me)?|start listening|(?:voice|mic|microphone) on|"
+                       r"turn on the (?:mic|microphone)|turn the (?:mic|microphone) on|h(?:ö|oe)r(?: mir)? zu)"
+                       r"(?: please)?", re.I)
+STOP_LISTEN_RE = re.compile(_EARS_LEAD + r"(?:stop listening|(?:voice|mic|microphone) off|"
+                            r"turn off the (?:mic|microphone)|turn the (?:mic|microphone) off|"
+                            r"h(?:ö|oe)r auf zuzuh(?:ö|oe)ren|nicht mehr zuh(?:ö|oe)ren)(?: please)?", re.I)
+
+
 def wants_sleep(text: str) -> bool:
     """Lala wants Aria to stop and sleep: the exact phrases, or a short message that clearly says so."""
     if matches_phrase(SLEEP_PHRASES, text):
@@ -418,10 +428,11 @@ class NullUI:
 
 
 class Aria:
-    def __init__(self, option=1, ui=None):
+    def __init__(self, option=0, ui=None):
         self.option = option
         self.ui = ui or NullUI()
         self.muted = False
+        self._ears = False              # typing mode: the microphone is open because Lala typed "listen"
         self.text_inputs = queue.Queue()   # text typed in the overlay
         self._name_answer = queue.Queue()  # overlay text while Aria is asking an unknown person's name
         self._awaiting_name = False
@@ -1146,6 +1157,10 @@ class Aria:
                 self._recent.append([{"role": "user", "content": user_input},
                                      {"role": "assistant", "content": handled}])
                 return handled, [("quiz", handled)]
+        ears = self._ears_command(user_input)
+        if ears is not None:
+            self._save_turn(user_input, ears)
+            return ears, [("listen", ears)]
         dictation = getattr(self, "dictation", None)
         if dictation and dictation.active:
             # while dictating, what's said is written down, not answered (the chunks aren't kept as conversation)
@@ -1477,7 +1492,33 @@ class Aria:
     def _dictating(self) -> bool:
         return bool(getattr(self, "dictation", None) and self.dictation.active)
 
+    def _uses_mic(self) -> bool:
+        """She transcribes what is said: always in --voice mode, otherwise only after a typed "listen"."""
+        return getattr(self, "option", 1) == 2 or bool(getattr(self, "_ears", False))
+
+    def _ears_command(self, text: str):
+        """Typing mode: "listen" opens the microphone until she sleeps, "stop listening" closes it now. Returns
+        what to say, or None when the message is something else. Never from the phone, and not in --voice mode,
+        where she listens anyway."""
+        if getattr(self, "option", 1) == 2 or getattr(getattr(self, "tools", None), "_phone", False):
+            return None
+        if getattr(getattr(self, "dictation", None), "active", False):
+            return None                 # while dictating, every sentence belongs in the note
+        said = re.sub(r"[^\w ]", " ", text or "")
+        said = " ".join(said.split())
+        if STOP_LISTEN_RE.fullmatch(said):
+            was_on, self._ears = bool(getattr(self, "_ears", False)), False
+            return "Okay, the microphone is off." if was_on else "The microphone is already off."
+        if LISTEN_RE.fullmatch(said):
+            self._ears = True
+            wake = getattr(self, "_wake_event", None)
+            if wake:
+                wake.set()              # typed in MyNotion's panel while she sleeps: she has to wake up to hear
+            return "I'm listening."
+        return None
+
     def _go_to_sleep(self, line=None):
+        self._ears = False                       # the microphone never stays open past a conversation
         if self._dictating():
             saved = self.dictation.finish()      # never lose what was dictated
             print(f"Aria: {saved}")
@@ -1651,7 +1692,7 @@ class Aria:
                 self.arduino.startup_animation()
 
             timeout = SLEEP_TIMEOUT
-            if self.announcements.empty() and self.text_inputs.empty():
+            if self.announcements.empty() and self.text_inputs.empty() and not self._ears:
                 # only greet when nothing is waiting — a reminder or a typed question goes first,
                 # and generating a greeting nobody hears would just delay the answer
                 opening = tidy_reply(self.llm.chat(self._greeting_prompt(), [], self._base_prompt())) or "Hey!"
@@ -1678,7 +1719,7 @@ class Aria:
                     if not said_anything and self.option == 2:
                         Diagnostics.problem("woke_for_nothing")
                     # say it in voice mode; in text mode the orb dimming is enough
-                    self._go_to_sleep("Going to sleep." if self.option == 2 else None)
+                    self._go_to_sleep("Going to sleep." if self._uses_mic() else None)
                     break
 
                 # ── Get input ──
@@ -1687,7 +1728,7 @@ class Aria:
                     user_input, pending_input = pending_input, None
                 elif not self.text_inputs.empty():
                     user_input = fix_typos(self.text_inputs.get())     # typed: 'ope n notes' -> 'open notes'
-                elif self.option == 1:
+                elif not self._uses_mic():
                     if not prompted and HAS_TERMINAL:
                         print("You > ", end="", flush=True)
                         prompted = True
