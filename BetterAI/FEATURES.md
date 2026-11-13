@@ -392,6 +392,14 @@ database: text, formulas, pictures, highlights).
 - **"This note":** MyNotion tells Aria which note is open (the `app_state` table in the shared database), so
   "organise this note", "read this note", "add … to this note" work without naming it. When MyNotion is closed,
   nothing counts as open.
+- **Check my maths:** "is my solution right?", "check exercise 4.15", "stimmt mein Rechenweg?". For worked
+  differential equations in a note (the open one, or by name). Exact maths in code (SymPy), never the model: the
+  code finds the equation (y' = …, y'' = …), the conditions (y(0) = 1) and your final y = …, derives your answer and
+  puts it in. She says what fits and what doesn't, with the real value ("y(2) is 2.583, not 1") and the right
+  solution. Her answer is the code's sentence, word for word. Needs numbered exercises ("4.15)"). Two exercises side
+  by side in Tab columns or a table are checked one by one; two mixed in one line get no verdict. Reads formulas with
+  fractions, powers, roots, e^…, ln, sin/cos/tan and constants; integrals and pictures are skipped. Only reads the
+  note, never changes it (`Engines/MathCheck.py`).
 - **Organise a note:** "organise this note", "tidy up my biology note", "ordne die Spalten". She groups lines, adds a few short
   headings, makes lists, to-dos and tables. Lines lined up side by side with Tab or many spaces ("4.26 a) ⇥⇥⇥ 4.26 b)")
   become a table with one column each. The code finds the columns from the gaps, not the model, and the model can't

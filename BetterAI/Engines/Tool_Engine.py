@@ -126,8 +126,9 @@ class ToolEngine:
                    r"old version|bring back|undelete|recover|backup|due|deadline|overdue|by (?:mon|tue|wed|thu|fri|sat|sun)\w*|"
                    r"hand in|submit|write|wrote|organi[sz]e|tidy|structure|sort|summary|summari[sz]e|translate|"
                    r"spelling|typos?|grammar|section|part|heading|study sheet|cheat sheet|rewrite|reformat|format|"
-                   r"table|shorter|longer|simpler|columns?|organisier\w*|ordne\w*|spalten?)\b",
-                   {"write_note", "organize_note", "edit_note", "add_note", "save_as_note", "read_note", "search_notes", "list_notes", "add_to_list",
+                   r"table|shorter|longer|simpler|columns?|organisier\w*|ordne\w*|spalten?|solution|solved?|exercise|"
+                   r"correct(?:ly)?|stimmt|richtig|rechenweg|l(?:ö|oe)sung|aufgabe)\b",
+                   {"write_note", "organize_note", "edit_note", "check_solution", "add_note", "save_as_note", "read_note", "search_notes", "list_notes", "add_to_list",
                     "remove_from_list", "check_off", "clear_list", "get_events", "add_event", "move_event",
                     "delete_event", "open_mynotion", "daily_briefing", "restore_note", "add_todo", "set_due", "get_due"}),
         "screen": (r"\b(screen|see|look|looking|copied|clipboard|this error|error|camera|who'?s|who is|in front)\b",
@@ -511,6 +512,14 @@ class ToolEngine:
                 _tool("read_note", "Read one MyNotion note or list ALOUD, e.g. 'what's on my shopping list', 'read my packing list'. "
                       "If Lala says OPEN / show / pull up a note, use open_mynotion instead.", nt.read_note,
                       title=("string", "note or list name, e.g. 'shopping list'")),
+                _tool("check_solution",
+                      "CHECK Lala's worked maths in a MyNotion note with exact maths: is the solution of a "
+                      "differential equation right? ('is my solution right?', 'check exercise 4.15', 'did I solve "
+                      "4.3 correctly?', 'stimmt mein Rechenweg?'). Never judge a solution yourself; always call this.",
+                      lambda title="this", exercise="": __import__("Engines.MathCheck", fromlist=["check_in_note"])
+                      .check_in_note(nt, title, exercise), optional=("title", "exercise"),
+                      title=("string", "the note's title, or 'this' for the note open in MyNotion"),
+                      exercise=("string", "the exercise number if Lala names one, e.g. '4.15' or '4.26 a'")),
                 _tool("search_notes",
                       "Search Lala's MyNotion notes. Use for questions about Lala's own life or things they wrote down "
                       "(birthdays, plans, passwords hints, exam topics, ideas) before saying you don't know.",

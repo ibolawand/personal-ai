@@ -97,6 +97,8 @@ COMMANDS = [
     ("reply to Sara that I'm in", "draft_reply"),
     ("organise this note", "organize_note"), ("tidy up my biology note", "organize_note"),
     ("organisiere diese Notiz", "organize_note"), ("mach aus den Tab-Spalten eine Tabelle", "organize_note"),
+    ("is my solution for 4.15 right?", "check_solution"), ("check exercise 4.3 in this note", "check_solution"),
+    ("stimmt mein Rechenweg bei 4.15?", "check_solution"),
     ("write a study sheet on the french revolution", "write_note"),
     ("make a note with the formulas for circles", "write_note"),
     ("add a section about mitosis to my biology note", "edit_note"),
