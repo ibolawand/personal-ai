@@ -33,7 +33,7 @@ def read_events(sock):
             buf += chunk
         line, buf = buf.split(b"\n", 1)
         events.append(json.loads(line.decode()))
-        if events[-1]["type"] in ("done", "status", "error"):
+        if events[-1]["type"] in ("done", "status", "error", "tests"):
             return events
 
 
@@ -733,3 +733,78 @@ def test_panel_turns_are_quiet_for_cards(aria, open_note, call):
 def test_a_ui_without_panel_turns_still_works(aria):
     aria.llm = FakeLLM(replies=[("Hi.", [])])
     assert aria.answer_app("hi")[0] == "Hi."
+
+
+@pytest.fixture
+def serve_tests(tmp_path):
+    """serve_tests(answer, study=None, tests=None) → a connected client socket of a bridge with test cards."""
+    servers, socks = [], []
+
+    def start(answer, study=None, tests=None):
+        path = str(tmp_path / f"t{len(servers)}.sock")
+        servers.append(app_bridge.start(answer, path, study=study, tests=tests))
+        socks.append(client(path))
+        return socks[-1]
+    yield start
+    for c in socks:
+        c.close()
+    for s in servers:
+        s.close()
+
+
+CARDS = {"cards": [{"id": "20261117-DBI-0800", "subject": "DBI"}], "notebooks": [{"id": 12, "name": "Databases"}]}
+
+
+def test_tests_request_returns_cards_and_notebooks(serve_tests):
+    seen = []
+    sock = serve_tests(hi_there, tests=lambda m: seen.append(m) or CARDS)
+    assert ask(sock, {"id": "1", "type": "tests"}) == [{"id": "1", "type": "tests", **CARDS}]
+    assert ask(sock, {"id": "2", "type": "tests", "map": {"subject": "DBI", "notebook": 12}})[0]["cards"] == CARDS["cards"]
+    assert seen == [None, ("DBI", 12)]
+
+
+def test_tests_request_without_test_prep_is_empty(serve_tests):
+    assert ask(serve_tests(hi_there), {"id": "1", "type": "tests"}) == [{"id": "1", "type": "tests", "cards": [], "notebooks": []}]
+
+
+@pytest.mark.parametrize("bad", [{}, "DBI", {"subject": "", "notebook": 1}, {"subject": "DBI", "notebook": "1"},
+                                 {"subject": "DBI", "notebook": True}, {"subject": "x" * 41, "notebook": 1}])
+def test_a_bad_map_is_refused_and_nothing_is_saved(serve_tests, bad):
+    seen = []
+    sock = serve_tests(hi_there, tests=lambda m: seen.append(m) or CARDS)
+    assert ask(sock, {"id": "1", "type": "tests", "map": bad}) == [
+        {"id": "1", "type": "error", "message": "That wasn't a valid notebook choice."}]
+    assert seen == []
+
+
+def test_an_unknown_notebook_and_a_crash(serve_tests):
+    def gone(m): raise LookupError()
+    def boom(m): raise RuntimeError("login s3cret-pw")
+    assert ask(serve_tests(hi_there, tests=gone), {"id": "1", "type": "tests", "map": {"subject": "DBI", "notebook": 9}}) == [
+        {"id": "1", "type": "error", "message": "I couldn't find that notebook."}]
+    assert ask(serve_tests(hi_there, tests=boom), {"id": "1", "type": "tests"}) == [
+        {"id": "1", "type": "error", "message": app_bridge.SORRY}]
+
+
+def test_study_test_passes_the_id_and_answers_like_chat(serve_tests):
+    seen = []
+    def study(action, on_text, test=None):
+        seen.append((action, test)); return "Quiz for your DBI test…", ["start_quiz"], None
+    sock = serve_tests(hi_there, study=study)
+    events = ask(sock, {"id": "1", "type": "study", "action": "test", "test": "20261117-DBI-0800"})
+    assert events[-1]["type"] == "done" and events[-1]["reply"] == "Quiz for your DBI test…"
+    assert seen == [("test", "20261117-DBI-0800")]
+
+
+@pytest.mark.parametrize("test_id", [None, "", 7, "x" * 61])
+def test_study_test_needs_an_id(serve_tests, test_id):
+    sock = serve_tests(hi_there, study=lambda *a, **k: ("x", [], None))
+    assert ask(sock, {"id": "1", "type": "study", "action": "test", "test": test_id}) == [
+        {"id": "1", "type": "error", "message": "I don't know which test you mean."}]
+
+
+def test_the_old_study_actions_are_still_called_without_a_test(serve_tests):
+    seen = []
+    sock = serve_tests(hi_there, study=lambda action, on_text: seen.append(action) or ("ok", [], None))
+    ask(sock, {"id": "1", "type": "study", "action": "explain"})
+    assert seen == ["explain"]

@@ -177,3 +177,64 @@ def test_a_button_during_a_quiz_keeps_the_missed_questions(aria, open_note, stud
     aria.llm = FakeLLM(replies=[("Simple version.", [])])
     aria.study_app("explain")
     assert [m["q"] for m in study_quiz._load()["misses"]] == [QUESTIONS[0]["q"]]
+
+
+class Prep:
+    def __init__(self, quiz, reply=("Quiz for your DBI test, 2 questions. First one: Q?", "DBI"), start=True):
+        self.quiz, self.reply, self.start, self.asked = quiz, reply, start, []
+
+    def start_quiz(self, test_id):
+        self.asked.append(test_id)
+        if self.start:
+            self.quiz._begin("DBI test", [dict(q) for q in QUESTIONS])
+            return main.FINAL_PREFIX + self.reply[0], self.reply[1]
+        return self.reply
+
+
+def test_test_quiz_needs_no_open_note_and_is_kept_in_the_conversation(aria, study_quiz):
+    aria.test_prep = Prep(study_quiz)
+    reply, tools, confirm = aria.study_app("test", test="20261117-DBI-0800")
+    assert reply == "Quiz for your DBI test, 2 questions. First one: Q?" and tools == ["start_quiz"] and confirm is None
+    assert aria.test_prep.asked == ["20261117-DBI-0800"] and study_quiz.active
+    assert aria._recent[-1][0] == {"role": "user", "content": "Quiz me for my DBI test"}
+
+
+def test_test_quiz_that_cannot_start_claims_no_tool(aria, study_quiz):
+    aria.test_prep = Prep(study_quiz, reply=("That test isn't coming up any more.", ""), start=False)
+    before = len(aria._recent)
+    assert aria.study_app("test", test="gone") == ("That test isn't coming up any more.", [], None)
+    assert len(aria._recent) == before
+
+
+def test_test_quiz_ends_a_running_quiz_first(aria, open_note, study_quiz):
+    open_note("Databases", NOTE)
+    aria.study_app("quiz")
+    aria.answer_app("skip")
+    aria.test_prep = Prep(study_quiz)
+    aria.study_app("test", test="20261117-DBI-0800")
+    assert [m["q"] for m in study_quiz._load()["misses"]] == [QUESTIONS[0]["q"]]   # the first quiz was ended
+    assert study_quiz.active["title"] == "DBI test"
+
+
+def test_test_quiz_without_test_prep(aria):
+    aria.test_prep = None
+    assert aria.study_app("test", test="x") == ("I can't help with tests right now.", [], None)
+
+
+def test_app_tests_and_mapping(aria):
+    aria.test_prep = None
+    assert aria._app_tests() == {"cards": [], "notebooks": []}
+
+    class P:
+        def cards(self): return [{"id": "c"}]
+        def notebooks(self): return [{"id": 1, "name": "Databases"}]
+        def set_notebook(self, subject, fid): return fid == 1
+    aria.test_prep = P()
+    assert aria._app_tests(("DBI", 1)) == {"cards": [{"id": "c"}], "notebooks": [{"id": 1, "name": "Databases"}]}
+    with pytest.raises(LookupError):
+        aria._app_tests(("DBI", 2))
+
+
+def test_app_study_passes_the_test_id_on(aria):
+    aria.test_prep = None
+    assert aria._app_study("test", None, test="x") == ("I can't help with tests right now.", [], None)

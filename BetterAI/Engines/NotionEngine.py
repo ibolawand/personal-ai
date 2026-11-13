@@ -327,6 +327,21 @@ class NotionEngine:
             return [dict(r) for r in c.execute(
                 "SELECT * FROM notes WHERE userID = ? ORDER BY updated_at DESC", (self.user_id,))]
 
+    def notebooks(self) -> list:
+        """This user's top-level folders as {"id", "name"}, by name."""
+        with self._conn() as c:
+            rows = c.execute("SELECT id, name FROM FOLDERS WHERE userID = ? AND (parentID IS NULL OR parentID = 0)",
+                             (self.user_id,)).fetchall()
+        return sorted(({"id": r["id"], "name": r["name"]} for r in rows), key=lambda f: (f["name"] or "").lower())
+
+    def notebook_notes(self, folder_id: int) -> list:
+        """The notes in a folder or its direct subfolders, newest first. [] for an unknown folder."""
+        with self._conn() as c:
+            return [dict(r) for r in c.execute(
+                "SELECT * FROM notes WHERE userID = ? AND (folderID = ? OR folderID IN "
+                "(SELECT id FROM FOLDERS WHERE parentID = ?)) ORDER BY updated_at DESC",
+                (self.user_id, folder_id, folder_id))]
+
     def _find_note(self, title: str):
         if title and THIS_RE.match(title):
             return self.open_note()

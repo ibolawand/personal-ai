@@ -20,6 +20,12 @@ closes; this one is a conversation: one JSON object per line, in both directions
     The panel's study buttons, on the note open in MyNotion (answered with "text" … "done", like chat):
     MyNotion → Aria   {"id": "12", "type": "study", "action": "quiz|explain|prep"}
 
+    The cards for upcoming tests, and a quiz for one of them:
+    MyNotion → Aria   {"id": "20", "type": "tests"}
+                      {"id": "21", "type": "tests", "map": {"subject": "DBI", "notebook": 12}}   (saves the notebook first)
+    Aria → MyNotion   {"id": "20", "type": "tests", "cards": [...], "notebooks": [{"id": 12, "name": "Databases"}]}
+    MyNotion → Aria   {"id": "22", "type": "study", "action": "test", "test": "20261117-DBI-0800"}
+
 "done" carries the final reply (it replaces what was streamed) and, in "confirm", a yes/no question that is
 waiting for an answer, and in "quiz" whether a quiz is running now (the panel then shows Hint, Skip and
 Stop). This module knows nothing about Aria: start() gets the function that runs a turn.
@@ -35,7 +41,9 @@ MAX_TEXT = 4000         # characters in one message
 MAX_LINE = 65536        # bytes in one request line; a longer one closes the connection
 SORRY = "Something went wrong on my side."
 EDIT_ACTIONS = ("rewrite", "shorter", "spelling", "table", "custom")
-STUDY_ACTIONS = ("quiz", "explain", "prep")
+STUDY_ACTIONS = ("quiz", "explain", "prep", "test")
+MAX_SUBJECT = 40        # characters in a subject name
+MAX_TEST_ID = 60        # characters in a test id
 MAX_HTML = 40000        # characters of selected HTML (and of her previous version, for "Try again")
 EDIT_TEXTS = {"instruction": 500, "title": 200, "context": 2000, "previous": MAX_HTML}
 
@@ -49,7 +57,7 @@ def _done(rid, reply, tools, confirm, quiz_active):
     return {"id": rid, "type": "done", "reply": reply, "tools": list(tools), "confirm": confirm, "quiz": quiz}
 
 
-def _handle(line: bytes, answer, send, edit=None, study=None, quiz_active=None):
+def _handle(line: bytes, answer, send, edit=None, study=None, quiz_active=None, tests=None):
     """One request line → its events."""
     try:
         req = json.loads(line.decode("utf-8"))
@@ -63,6 +71,8 @@ def _handle(line: bytes, answer, send, edit=None, study=None, quiz_active=None):
         return send({"id": rid, "type": "status", "ready": True})
     if kind == "edit":
         return _handle_edit(rid, req, edit, send)
+    if kind == "tests":
+        return _handle_tests(rid, req, tests, send)
     if kind == "study":
         return _handle_study(rid, req, study, send, quiz_active)
     if kind != "chat":
@@ -90,13 +100,39 @@ def _handle_study(rid, req, study, send, quiz_active):
     action = req.get("action")
     if action not in STUDY_ACTIONS:
         return send({"id": rid, "type": "error", "message": "I don't know that study action."})
+    test = req.get("test")
+    if action == "test" and not (isinstance(test, str) and 0 < len(test) <= MAX_TEST_ID):
+        return send({"id": rid, "type": "error", "message": "I don't know which test you mean."})
     try:
         on_text = lambda delta: delta and send({"id": rid, "type": "text", "delta": delta})
-        reply, tools, confirm = study(action, on_text)
+        reply, tools, confirm = study(action, on_text, test=test) if action == "test" else study(action, on_text)
     except Exception as e:
         print(f"[App] study turn failed: {type(e).__name__}: {e}")
         return send({"id": rid, "type": "error", "message": SORRY})
     send(_done(rid, reply, tools, confirm, quiz_active))
+
+
+def _handle_tests(rid, req, tests, send):
+    """The test cards, after saving a subject's notebook if the request carries one."""
+    def refuse(message):
+        send({"id": rid, "type": "error", "message": message})
+    if tests is None:
+        return send({"id": rid, "type": "tests", "cards": [], "notebooks": []})
+    mapping = None
+    if "map" in req:
+        m = req["map"]
+        if not (isinstance(m, dict) and isinstance(m.get("subject"), str) and 0 < len(m["subject"]) <= MAX_SUBJECT
+                and isinstance(m.get("notebook"), int) and not isinstance(m["notebook"], bool)):
+            return refuse("That wasn't a valid notebook choice.")
+        mapping = (m["subject"], m["notebook"])
+    try:
+        result = tests(mapping)
+    except LookupError:
+        return refuse("I couldn't find that notebook.")
+    except Exception as e:
+        print(f"[App] tests failed: {type(e).__name__}")
+        return refuse(SORRY)
+    send({"id": rid, "type": "tests", "cards": result["cards"], "notebooks": result["notebooks"]})
 
 
 def _handle_edit(rid, req, edit, send):
@@ -130,7 +166,7 @@ def _handle_edit(rid, req, edit, send):
     send({"id": rid, "type": "proposal", "html": new_html})
 
 
-def _serve(conn, answer, edit=None, study=None, quiz_active=None):
+def _serve(conn, answer, edit=None, study=None, quiz_active=None, tests=None):
     lock = threading.Lock()
 
     def send(obj):
@@ -155,15 +191,17 @@ def _serve(conn, answer, edit=None, study=None, quiz_active=None):
                 if len(line) > MAX_LINE:
                     return
                 if line.strip():
-                    _handle(line, answer, send, edit, study, quiz_active)
+                    _handle(line, answer, send, edit, study, quiz_active, tests)
             if len(buf) > MAX_LINE:
                 return
 
 
-def start(answer, path: str = SOCKET_PATH, edit=None, study=None, quiz_active=None):
+def start(answer, path: str = SOCKET_PATH, edit=None, study=None, quiz_active=None, tests=None):
     """Listen in a daemon thread. answer(text, on_text) -> (reply, tool names, pending question or None);
     edit(action=, html=, instruction=, title=, context=, previous=) -> (new html or None, why not);
-    study(action, on_text) -> like answer; quiz_active() -> whether a quiz is running (for "done")."""
+    study(action, on_text) -> like answer (for "test": study("test", on_text, test=<id>));
+    tests(None, or (subject, notebook id) to save first) -> {"cards": [...], "notebooks": [...]}, LookupError if the
+    notebook doesn't exist; quiz_active() -> whether a quiz is running (for "done")."""
     if os.path.exists(path):
         os.unlink(path)             # left over from a crash; a running Aria was ruled out before we got here
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -181,7 +219,7 @@ def start(answer, path: str = SOCKET_PATH, edit=None, study=None, quiz_active=No
                 conn, _ = server.accept()
             except OSError:
                 return
-            threading.Thread(target=_serve, args=(conn, answer, edit, study, quiz_active), daemon=True).start()
+            threading.Thread(target=_serve, args=(conn, answer, edit, study, quiz_active, tests), daemon=True).start()
 
     threading.Thread(target=loop, daemon=True).start()
     return server

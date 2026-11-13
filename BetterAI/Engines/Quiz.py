@@ -75,7 +75,7 @@ class Quiz:
     def _save_misses(self, title, missed):
         data = self._load()
         misses = [m for m in data.get("misses", []) if m["q"] not in {x["q"] for x in missed}]
-        misses += [{"q": m["q"], "a": m["a"], "source": title, "at": time.time()} for m in missed]
+        misses += [{"q": m["q"], "a": m["a"], "source": m.get("source") or title, "at": time.time()} for m in missed]
         data["misses"] = misses[-KEEP_MISSES:]
         try:
             os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
@@ -238,7 +238,7 @@ thing is not)? Reply ONLY with JSON: {{"correct": true or false}}"""
             if not misses:
                 return "You haven't missed anything yet, there's nothing to retry."
             picked = random.sample(misses, min(count, len(misses)))
-            return self._begin("your mistakes", [{"q": m["q"], "a": m["a"]} for m in picked], retry=True)
+            return self._begin("your mistakes", [{"q": m["q"], "a": m["a"], "source": m.get("source")} for m in picked], retry=True)
         if not topic:
             return "What should I quiz you on? A note or a document."
         source = self.find_source(topic)
@@ -261,12 +261,33 @@ thing is not)? Reply ONLY with JSON: {{"correct": true or false}}"""
             return f"I couldn't come up with questions from '{title}', try again in a moment."
         return self._begin(title, questions)
 
-    def _begin(self, title, questions, retry=False):
+    def start_mixed(self, title: str, old: list, sources: list):
+        """A quiz for a test: the `old` questions ({"q","a","source"}) first, then new ones from each (note title,
+        note text, how many) in `sources`. Each question remembers its note, so a miss is saved under it."""
+        questions = [dict(q, old=True) for q in old]
+        seen = {q["q"].lower() for q in questions}
+        for note_title, text, count in sources:
+            for q in self.make_questions(note_title, self.pick_chunk(text), count):
+                if q["q"].lower() not in seen:
+                    seen.add(q["q"].lower())
+                    questions.append(dict(q, source=note_title))
+        if not questions:
+            return "I couldn't come up with questions for that, try again in a moment."
+        n, k = len(questions), len(old)
+        m = n - k
+        tail = "Say skip if you don't know, or stop to end. "
+        if k and m:
+            intro = f"Quiz for your {title}, {n} questions: {k} you missed before, then {m} new one{'s' if m != 1 else ''}. {tail}"
+        else:
+            intro = f"Quiz for your {title}, {n} question{'s' if n != 1 else ''}. {tail}"
+        return self._begin(title, questions, intro=intro)
+
+    def _begin(self, title, questions, retry=False, intro=None):
         self.active = {"title": title, "questions": questions, "i": 0, "right": 0, "missed": [], "hinted": False,
                        "retry": retry, "fixed": []}
         n = len(questions)
-        intro = (f"Okay, {n} question{'s' if n != 1 else ''} from your mistakes. " if retry else
-                 f"Quiz on {title}, {n} question{'s' if n != 1 else ''}. Say skip if you don't know, or stop to end. ")
+        intro = intro or (f"Okay, {n} question{'s' if n != 1 else ''} from your mistakes. " if retry else
+                          f"Quiz on {title}, {n} question{'s' if n != 1 else ''}. Say skip if you don't know, or stop to end. ")
         return FINAL_PREFIX + intro + f"First one: {questions[0]['q']}"
 
     # ── answers, handled in code ──
@@ -299,7 +320,7 @@ thing is not)? Reply ONLY with JSON: {{"correct": true or false}}"""
             correct, _ = self.judge(cur["q"], cur["a"], text)
             if correct:
                 self.active["right"] += 1
-                if self.active["retry"]:
+                if self.active["retry"] or cur.get("old"):
                     self.active["fixed"].append(cur)
                 said = random.choice(["Yes!", "Correct.", "Exactly.", "That's it.", "Nice, right."])
                 if not quick_check(cur["a"], text):

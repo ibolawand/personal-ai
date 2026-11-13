@@ -210,3 +210,19 @@ def test_tables_toggles_and_scripts_are_read_in_order():
 def test_set_launcher_is_stored(notion):
     notion.set_launcher("/x/aria.sh")
     assert notion._state("aria_launcher") == "/x/aria.sh"
+
+
+def test_notebooks_and_their_notes(notion):
+    with notion._conn() as c:
+        uid = notion.user_id
+        c.execute("INSERT INTO FOLDERS (id, name, userID) VALUES (1, 'databases', ?)", (uid,))
+        c.execute("INSERT INTO FOLDERS (id, name, userID) VALUES (2, 'Analysis', ?)", (uid,))
+        c.execute("INSERT INTO FOLDERS (id, name, parentID, userID) VALUES (3, 'SQL', 1, ?)", (uid,))
+        c.execute("INSERT INTO FOLDERS (id, name, userID) VALUES (4, 'Not mine', ?)", (uid + 1,))
+    a, b, loose = (notion._create_note(t, "<p>x</p>") for t in ("Normal forms", "Joins", "Loose"))
+    with notion._conn() as c:
+        c.execute("UPDATE notes SET folderID = 1 WHERE id = ?", (a,))
+        c.execute("UPDATE notes SET folderID = 3 WHERE id = ?", (b,))
+    assert notion.notebooks() == [{"id": 2, "name": "Analysis"}, {"id": 1, "name": "databases"}]
+    assert sorted(n["title"] for n in notion.notebook_notes(1)) == ["Joins", "Normal forms"]
+    assert notion.notebook_notes(2) == [] and notion.notebook_notes(99) == []

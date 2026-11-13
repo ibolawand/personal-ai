@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+import main  # noqa: F401  (imported at collection, before the subprocess guard is in place)
 from Engines import Untis as U
 
 MON = dt.date(2026, 11, 9)
@@ -193,3 +194,46 @@ def test_the_morning_briefing_includes_school(aria):
     assert aria._briefing_extras() == "Rain later. 1 new email: from Sara. School today 8:00 to 13:00."
     aria.untis = None
     assert aria._briefing_extras() == "Rain later. 1 new email: from Sara."
+
+
+def test_the_morning_briefing_offers_a_quiz(aria):
+    import types
+    aria.weather = types.SimpleNamespace(brief=lambda: "")
+    class P:
+        def briefing_line(self): return "I can quiz you on your Databases notes."
+    aria.test_prep = P()
+    assert "I can quiz you on your Databases notes." in aria._briefing_extras()
+
+    def broken(): raise RuntimeError("x")
+    aria.test_prep.briefing_line = broken
+    aria._briefing_extras()                       # never raises
+
+
+def exam(date, su, start=800, text="", kind="Test"):
+    return {"examType": kind, "name": "", "examDate": date, "startTime": start, "endTime": start + 50,
+            "subject": su, "text": text}
+
+
+def test_upcoming_tests_are_plain_records_nearest_first(make):
+    u = make(FakeUntis(exams=[exam(20261116, "E"), exam(20261112, "DBI", text=" Normalformen "),
+                              exam(20261117, "AM")]))          # 17th is 8 days away
+    assert u.upcoming_tests() == [
+        {"id": "20261112-DBI-0800", "subject": "DBI", "kind": "Test", "date": dt.date(2026, 11, 12), "topic": "Normalformen"},
+        {"id": "20261116-E-0800", "subject": "E", "kind": "Test", "date": dt.date(2026, 11, 16), "topic": ""}]
+    assert [t["subject"] for t in u.upcoming_tests(days=10)] == ["DBI", "E", "AM"]
+
+
+def test_two_tests_of_one_subject_get_their_own_ids(make):
+    u = make(FakeUntis(exams=[exam(20261112, "DBI", 800), exam(20261112, "DBI", 1000)]))
+    assert [t["id"] for t in u.upcoming_tests()] == ["20261112-DBI-0800", "20261112-DBI-1000"]
+
+
+def test_a_test_without_a_subject_is_left_out_and_today_counts(make):
+    u = make(FakeUntis(exams=[exam(20261109, ""), exam(20261109, "E", kind="")]))
+    assert [(t["subject"], t["kind"]) for t in u.upcoming_tests()] == [("E", "Test")]
+
+
+def test_upcoming_tests_without_a_login(make, monkeypatch):
+    u = make(FakeUntis(exams=[exam(20261112, "DBI")]))   # make() saves a login, so drop it afterwards
+    monkeypatch.setattr(U, "load_login", lambda: None)
+    assert u.upcoming_tests() == []

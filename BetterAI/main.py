@@ -41,6 +41,7 @@ from Engines.Dictation import Dictation
 from Engines.Addressee import AT_DESK_S, not_for_aria
 from Engines.MailEngine import MailEngine
 from Engines.Untis import Untis
+from Engines.TestPrep import TestPrep
 from Engines.Telegram import TelegramBot, load_bot
 from Engines.Typos import fix_typos
 from Engines.NotionEngine import DAILY_RE, html_to_text
@@ -512,6 +513,8 @@ class Aria:
             self.mail.on_announce = self._announce               # "Couldn't send the email to …"
             self.mail.sender_name = self._known_user_name() or "Lala"
         self.untis = self._try("WebUntis", Untis)      # timetable, homework, tests; asks nothing until used
+        self.test_prep = (self._try("Test prep", lambda: TestPrep(self.untis, self.notion, self.quiz))
+                          if self.untis and self.notion and self.quiz else None)   # "quiz me for my DBI test"
         self.dictation = Dictation(self._save_dictation, confirm=self.confirm, model=LLM_MODEL,
                                    on_card=self.ui.show_card)
         self.activity = Activity(menu=self.laptop.menu)
@@ -918,12 +921,31 @@ class Aria:
             self.ui.set_state(before)       # what the orb showed before (she may still be speaking a voice reply)
         # else: it changed meanwhile (the voice reply ended, she fell asleep): that's the current truth
 
-    def study_app(self, action: str, on_text=None):
+    def study_app(self, action: str, on_text=None, test=None):
         """A study button in MyNotion's Aria panel, on the open note: "quiz", "explain" or "prep". The note is read
-        here, in code. Returns (reply, tool names, None), like answer_app."""
+        here, in code. Returns (reply, tool names, None), like answer_app. "test" starts a quiz for a coming school
+        test (its id in `test`) and needs no open note."""
         dictation = getattr(self, "dictation", None)
         if dictation and dictation.active:
             return "You're dictating right now. Say \"stop dictation\" first, then ask me again.", [], None
+        if action == "test":
+            prep = getattr(self, "test_prep", None)
+            if not prep:
+                return "I can't help with tests right now.", [], None
+            quiz = getattr(self, "quiz", None)
+            with self._turn_lock():
+                if quiz and quiz.active:
+                    quiz.stop()
+                reply, subject = prep.start_quiz(test)
+                if reply.startswith(FINAL_PREFIX):
+                    reply = reply[len(FINAL_PREFIX):]
+                if not (quiz and quiz.active):
+                    return reply, [], None
+                asked = f"Quiz me for my {subject} test"
+                self._save_turn(asked, reply)
+                self._recent.append([{"role": "user", "content": asked},
+                                     {"role": "assistant", "content": reply}])
+            return reply, ["start_quiz"], None
         note = self.notion.open_note() if self.notion else None
         if not note:
             return "Open a note first, then I can help you study it.", [], None
@@ -1014,8 +1036,19 @@ class Aria:
                 elif self._ui_state == "thinking":
                     self.ui.set_state(before)
 
-    def _app_study(self, action, on_text):
+    def _app_tests(self, mapping=None):
+        """The panel's test cards and notebook choices; `mapping` = (subject, notebook id) to remember first."""
+        prep = getattr(self, "test_prep", None)
+        if not prep:
+            return {"cards": [], "notebooks": []}
+        if mapping is not None and not prep.set_notebook(*mapping):
+            raise LookupError("unknown notebook")
+        return {"cards": prep.cards(), "notebooks": prep.notebooks()}
+
+    def _app_study(self, action, on_text, test=None):
         try:
+            if action == "test":
+                return self.study_app(action, on_text, test=test)
             return self.study_app(action, on_text)
         except Exception as e:
             Diagnostics.problem("app_study", f"{action} -> {type(e).__name__}: {e}")
@@ -1049,7 +1082,7 @@ class Aria:
         try:
             from ui import app_bridge
             self._app_server = app_bridge.start(
-                self._app_answer, edit=self.edit_app, study=self._app_study,
+                self._app_answer, edit=self.edit_app, study=self._app_study, tests=self._app_tests,
                 quiz_active=lambda: bool(getattr(self, "quiz", None) and self.quiz.active))
             print("[App] MyNotion can reach me")
         except Exception as e:
@@ -1487,7 +1520,7 @@ class Aria:
     def _briefing_extras(self) -> str:
         """Weather, new email and today's school for the morning briefing."""
         parts = [self.weather.brief()]
-        for source in (getattr(self, "mail", None), getattr(self, "untis", None)):
+        for source in (getattr(self, "mail", None), getattr(self, "untis", None), getattr(self, "test_prep", None)):
             if source:
                 try:
                     parts.append(source.briefing_line())

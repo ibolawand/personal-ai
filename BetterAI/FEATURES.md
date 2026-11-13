@@ -492,6 +492,18 @@ mail from `noted.db` and talks to Gmail herself to send, archive and check when 
 - **Morning briefing:** today's school hours and changes, homework due today, tests in the next 7 days.
 - Read-only, cached for 15 minutes, and only for you (like your notes and email). When WebUntis can't be reached she
   says so instead of guessing; the error text (which could hold the login) is never spoken or logged.
+- **Test countdown** (`Engines/TestPrep.py`): a test in the next 7 days shows as a card in MyNotion's Aria panel
+  (see "Test cards" below) and adds one sentence to the morning briefing ("I can quiz you on your Databases
+  notes."), once its notebook is known and has notes with enough text.
+  - **Which notebook is the subject?** She asks once, on the card, and keeps the answer in
+    `~/.cache/aria/test_prep.json`. A notebook named like the subject (DBI notebook for a DBI test) is matched
+    without asking.
+  - **The quiz:** 8 questions. First up to 4 mistakes you made earlier on notes from that notebook (the newest
+    ones), then new questions from up to 3 notes that match the test's topic. When WebUntis gives no topic, or no
+    note matches it, the whole notebook counts. Notes under 25 words don't count.
+  - She never speaks up or pops up for it. Nothing leaves the laptop except note text for writing the questions,
+    as with any quiz.
+  - Tested: `tests/test_testprep.py`.
 
 ## Texting from the phone — `Engines/Telegram.py` (a private Telegram bot)
 
@@ -574,6 +586,19 @@ mail from `noted.db` and talks to Gmail herself to send, archive and check when 
     work but history stays small.
   - Pressing a study button during a quiz ends that quiz. A waiting yes/no question is left alone.
   - Tested: `tests/test_study.py`, `tests/test_app_bridge.py`, MyNotion's `aria.test.ts` and `aria-panel.spec.ts`.
+- **Test cards in the Aria panel** (`Engines/TestPrep.py`, `ui/app_bridge.py` "tests" requests and the study action
+  "test"; in MyNotion `note/src/aria.ts` and `aria-panel/`). Above the study buttons, one card for each test in the
+  next 7 days, at most 3, nearest first. A card shows a headline ("DBI test tomorrow", "DBI test on Tuesday · in
+  4 days"), and under it the test's topic, the notebook and how many notes count ("Databases · 2 notes").
+  - **Mapped:** a **Quiz me** button starts the test quiz (8 questions, your earlier mistakes first).
+  - **Not mapped yet:** the question "Which notebook is DBI?" with a dropdown ("Choose…" and your notebooks).
+    Picking one saves it and the card turns into the mapped one.
+  - **No notes with enough text:** the card says "Databases · no notes with enough text yet" and has no button.
+  - **No notebooks yet:** the card says "Make a notebook for it first."
+  - The cards are hidden while a quiz runs, loaded when the panel opens and again when a quiz ends. While Aria is
+    busy answering, or isn't running, the panel keeps the cards it had (MyNotion gives up after 8 seconds). It doesn't
+    take the turn lock, so a voice or phone turn doesn't delay it; behind a panel message it waits its turn.
+  - Tested: `tests/test_app_bridge.py`, `tests/test_study.py`, MyNotion's `aria.test.ts` and `aria-panel.spec.ts`.
 - **Select text, ask Aria** (`NoteWriter.rework`, `Aria.edit_app`; in MyNotion `text-editor/aria-edit/` and
   `aria-range.ts`). Select text in a note: the small toolbar has an **Aria** button. It opens a card under the
   selection with **Rewrite**, **Shorter**, **Fix spelling**, **Make a table**, **Explain**, and a box for your own
