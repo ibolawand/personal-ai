@@ -26,6 +26,7 @@ from Engines.LaptopEngine import LaptopEngine
 from Engines.MemoryNote import MemoryNote
 from Engines.NotionEngine import NotionEngine
 from Engines.NoteWriter import NoteWriter
+from Engines.BigModel import BigModel, CHAT_SYSTEM as BIG_CHAT_SYSTEM, wanted as big_wanted
 from Engines.FocusMode import FocusMode
 from Engines.Activity import Activity
 from Engines.Weather import Weather
@@ -119,6 +120,8 @@ CHAT_TIMEOUT = 120         # after Aria asked a question, give Lala longer to an
 DICTATION_TIMEOUT = 180    # while dictating, a long pause to think is fine (what was said is saved on timeout)
 DICTATION_SILENCE_S = 2.2  # and a pause mid-thought shouldn't cut a sentence in two
 MUSIC_TOOLS = {"play_song", "play_artist", "play_playlist", "play_genre"}
+# "ask the big model about this note": then the note open in MyNotion goes along, otherwise only the question
+NOTE_WORDS_RE = re.compile(r"\b(note|notiz|this|here|hier|diese[rsmn]?|das hier)\b", re.I)
 CLIPBOARD_RE = re.compile(r"\b(copied|clipboard|i just copied|what i copied)\b", re.I)
 _TURN_LOCK_SETUP = threading.Lock()
 OPEN_NOTE_CHARS = 2500      # how much of the note open in MyNotion goes along with a message from its Aria panel
@@ -493,6 +496,15 @@ class Aria:
         self.undo = Undo(self.notion, self.reminders)
         self.quiz = Quiz(self.notion, self.files, model=LLM_MODEL)
         self.writer = NoteWriter(self.notion, model=LLM_MODEL) if self.notion else None   # write / organise notes
+        # heavy text work goes to Claude when it can be reached (Engines/BigModel.py); None = everything local
+        self.big = self._try("Big model", lambda: BigModel())
+        if self.big and not self.big.command:
+            self.big = None
+        if self.big:
+            self.quiz.big = self.big
+            if self.writer:
+                self.writer.local = self.writer.ask
+                self.writer.ask = self.big.or_local(self.writer.local)
         # Gmail through MyNotion's Inbox (same database); None without MyNotion
         self.mail = self._try("Mail", lambda: MailEngine(os.environ.get("DB_PATH"), self.confirm, notion=self.notion,
                                                          llm=self.llm)) if self.notion else None
@@ -1069,7 +1081,11 @@ class Aria:
     def handle_turn(self, user_input: str, check_state: bool = True, on_text=None, extra: str = "",
                     use_tools: bool = True):
         with self._turn_lock():
-            return self._handle_turn(user_input, check_state, on_text, extra, use_tools)
+            big = getattr(self, "big", None)
+            before = big.calls if big else 0
+            reply, used = self._handle_turn(user_input, check_state, on_text, extra, use_tools)
+            # said after saving the turn, so the mark is shown but never becomes part of the conversation
+            return (big.marked(reply, before) if big else reply), used
 
     def _handle_turn(self, user_input: str, check_state: bool = True, on_text=None, extra: str = "",
                      use_tools: bool = True):
@@ -1122,6 +1138,25 @@ class Aria:
             self._recent.append([{"role": "user", "content": user_input},
                                  {"role": "assistant", "content": opened}])
             return opened, [("open_mynotion", opened)]
+        big = getattr(self, "big", None)
+        question = big_wanted(user_input) if big else None
+        if question or (big and not use_tools):
+            # "ask the big model …", and answer-only requests from MyNotion (Explain, the study buttons): Claude
+            # answers. Decided here in code; when it can't be reached the local model answers as before.
+            note = extra if not use_tools or NOTE_WORDS_RE.search(question or "") else ""
+            said = big.ask((question or user_input) + note, "question" if question else "explain",
+                           system=BIG_CHAT_SYSTEM)
+            if said:
+                if on_text:
+                    on_text(said)
+                self._last_reply = said
+                self._save_turn(user_input, said)
+                self._recent.append([{"role": "user", "content": user_input}, {"role": "assistant", "content": said}])
+                return said, [("big_model", said)]
+            if question:
+                said = "I couldn't reach the big model just now. Ask me again in a bit, or ask me directly."
+                self._save_turn(user_input, said)
+                return said, [("big_model", said)]
         self.emotions.process(user_input)
         mood = self.emotions.get_mood_label()
         self.memory.log_mood(mood)

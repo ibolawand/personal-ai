@@ -734,6 +734,7 @@ class NoteWriter:
         self.notion = notion
         self.model = model
         self.ask = ask or self._ollama
+        self.local = None                   # set by Aria when she puts the big model in front of `ask`: the local one
 
     def _ollama(self, prompt, history=(), temperature=0.3):
         import ollama
@@ -743,8 +744,8 @@ class NoteWriter:
                            options=chat_options(temperature=temperature), keep_alive=KEEP_ALIVE)
         return resp["message"]["content"]
 
-    def _md(self, prompt, history=(), temperature=0.3) -> str:
-        return strip_fence(self.ask(prompt, history=history, temperature=temperature))
+    def _md(self, prompt, history=(), temperature=0.3, local=False) -> str:
+        return strip_fence((self.local or self.ask if local else self.ask)(prompt, history=history, temperature=temperature))
 
     # ── which note ──
 
@@ -785,7 +786,8 @@ It's for a student, so make it clear and easy to learn from. {lang}
 Use the parts that fit; don't force every kind in. Facts must be correct — leave out what you're not sure about.
 Don't repeat the title as a heading at the top. Usually 150–400 words, unless the request asks for more or less.
 Reply with the Markdown only."""
-        md = self._md(prompt, temperature=0.5)
+        # her last answer may hold mail or calendar content: turning it into a note never leaves the laptop
+        md = self._md(prompt, temperature=0.5, local=bool(source))
         md = re.sub(rf"^#+\s*{re.escape(title)}\s*\n+", "", md, flags=re.I) if title else md
         if not md.strip():
             return "I couldn't write that note just now — try again in a moment."

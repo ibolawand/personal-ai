@@ -177,10 +177,12 @@ Text:
 \"\"\"
 
 Reply ONLY with JSON: {{"questions": [{{"q": "question?", "a": "short answer"}}]}}"""
+        data = self._big_questions(prompt)
         try:
-            resp = ollama.chat(model=self.model, think=False, format="json", options=chat_options(temperature=0.4), keep_alive=KEEP_ALIVE,
-                               messages=[{"role": "user", "content": prompt}])
-            data = json.loads(resp["message"]["content"])
+            if data is None:
+                resp = ollama.chat(model=self.model, think=False, format="json", options=chat_options(temperature=0.4), keep_alive=KEEP_ALIVE,
+                                   messages=[{"role": "user", "content": prompt}])
+                data = json.loads(resp["message"]["content"])
         except Exception as e:
             print(f"[Quiz] question writing failed: {e}")
             return []
@@ -190,6 +192,19 @@ Reply ONLY with JSON: {{"questions": [{{"q": "question?", "a": "short answer"}}]
             if q and a and speakable(a) and q.lower() not in {x["q"].lower() for x in out}:
                 out.append({"q": q if q.endswith("?") else q.rstrip(".") + "?", "a": a})
         return out[:count]
+
+    def _big_questions(self, prompt):
+        """The questions from the big model (Engines/BigModel.py, set by Aria), or None: then the local one writes
+        them. Judging answers stays local: it has to be quick, and it is only yes or no."""
+        big = getattr(self, "big", None)
+        raw = big.ask(prompt, "quiz") if big else None
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
+            return data if isinstance(data.get("questions"), list) and data["questions"] else None
+        except (ValueError, AttributeError):
+            return None
 
     def judge(self, question, expected, given):
         """(correct, short note). Checked in code when the expected words were said, else by the model."""

@@ -43,6 +43,25 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
   - After she asks you something, she waits 2 minutes for your answer instead of 1 before dozing off.
 
 - **Model:** Ollama `qwen3:8b` with native tool calling (`llm_engine.py`), thinking off for speed, 8192-token context.
+- **Heavy text work goes to Claude** (`Engines/BigModel.py`). The local model stays the one that talks and runs the
+  tools; a fixed list of heavy tasks, chosen in code and never by the model, is answered by Claude instead:
+  - organising, rewriting, translating, summarising and writing notes, and "Select text, ask Aria" in MyNotion
+  - "Explain" for selected text and the study buttons "Explain simply" / "Test prep" in MyNotion's panel
+  - writing quiz questions (judging your answers stays local)
+  - anything asked by name: "ask the big model why …", "frag die große KI, was …", "frag Claude: …". The note open
+    in MyNotion only goes along when the question is about it ("… was diese Notiz bedeutet").
+
+  It runs through the Claude Code program already signed in on the laptop (`claude -p`), so it uses the Claude
+  subscription and needs no API key. Claude is started with no tools, no settings and in an empty folder: it gets
+  the text of that one task and gives text back. Every reply it helped with ends in "(via Claude)", and each call is
+  logged in `~/.cache/aria/big_model.log` (what for, how many characters, how long, the first 160 characters).
+  - **Never sent:** mail, Telegram, the calendar, reminders, Aria's memory, the conversation history and the camera.
+    "Save that as a note" from her last answer stays local too, since that answer may hold mail.
+  - **Offline, limit reached or not installed:** the local model does the task as before, and Claude isn't tried
+    again for 2 minutes. Only "ask the big model …" says that it couldn't reach it.
+  - **Settings** in `Engines/.env`: `ARIA_BIG_MODEL=0` turns it off (everything local again),
+    `ARIA_BIG_MODEL_NAME` picks the model (default `sonnet`), `ARIA_BIG_CMD` is the path of `claude` if it isn't found.
+  - Not marked: a proposal for selected text in MyNotion (it is shown as text to accept, the log still has the call).
 - **Tool routing** (`ToolEngine.schemas_for`): all ~78 tool descriptions took 5,487 of the model's 8,192 context
   tokens on every turn. Now each message gets a core set (reminders, notes, weather, maths…) plus only the groups it's
   about (music, laptop, files, notes & calendar, screen, focus, memory, home, misc), and groups used in the last two
