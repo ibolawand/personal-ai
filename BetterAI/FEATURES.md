@@ -482,6 +482,31 @@ mail from `noted.db` and talks to Gmail herself to send, archive and check when 
 
 ## MyNotion app (`../MyNotion`)
 
+- **Home screen: a shelf of books** (branch `bookshelf-home` in MyNotion; `note-frontend/src/app/bookshelf/`,
+  `open-book/`, `top-bar/`, `shelf/shelf-model.ts`). The sidebar and the notes list are gone.
+  - **The shelf** (`bookshelf/shelf-scene.ts`, three.js): one standing book per notebook, in the notebook's colour,
+    its name on the spine, thicker with more notes. Hover or arrow keys lift a book; a click (or Enter) pulls it
+    out, opens its cover and shows the notebook. Without WebGL the same shelf is drawn flat.
+  - **The opened book** (`open-book/`): the contents on the left (pinned first, then last edited; subfolders as
+    sections; the category as a small tag), the note in the normal editor on the right. "+ New note" adds one to
+    this notebook. The notebook's name is edited by clicking it; the "…" menu holds its colour, "Add a section", the
+    categories and "Delete this notebook". The contents can be folded away. Picking another note turns the page:
+    forwards to a note further down the contents, backwards to one further up. Esc (when not typing) or the
+    arrow in the bar goes back: the right half folds shut, then the shelf shows the book closing and sliding back
+    into its place. With "reduce motion" nothing is animated.
+  - **Piano and record player** on the front of the desk (`bookshelf/desk-things.ts`, `piano.ts`; 3D shelf only).
+    The piano has two octaves from middle C: click a key, drag along the keys, or hold the mouse over it and use
+    the letter keys (A = C, W = C sharp, S = D …). Its sound is made in the app, no samples. A click on the record
+    player switches the radio on or off; the record (a drawn lofi picture) turns and the arm lies on it for as
+    long as the radio plays, also when it was switched on in the editor's bar.
+  - **The desk:** notes without a notebook lean there as slips and open on their own; a slip dragged onto a book
+    moves into it. Aria's notes ("Shopping list", "Inbox", "What Aria knows about me"; the list is `ARIA_NOTES`
+    in `shelf-model.ts`) are one stack that fans out on a click. Notes Aria creates appear here.
+  - **The bar on top** (`top-bar/`): Shelf, Inbox (unread count), Calendar, search (Ctrl+P), New note (in an open
+    book it goes there; on the shelf it asks: on the desk or which book), New book, Aria (Ctrl+J).
+  - A note opened from anywhere (Aria's "open the note …", the search, the calendar, a link in a note) opens
+    inside its own book (`ModelService.onNoteClicked` → `showWhereItLives`). The database is unchanged; the one new
+    call is `updateFolder` (rename / recolour a notebook).
 - **Aria panel: talk to Aria without leaving MyNotion** (`ui/app_bridge.py`, `Aria.answer_app`; in MyNotion
   `note/src/aria.ts` and `aria-panel/`). **Ctrl+J** or "Aria" in the sidebar opens a panel on the right, next to
   whatever is open. Type a message, Enter sends it (Shift+Enter for a new line), ↑ / ↓ bring back earlier messages,
