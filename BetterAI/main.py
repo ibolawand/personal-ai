@@ -776,9 +776,10 @@ class Aria:
         self.ui.set_state("alert")
         if self.arduino and r["kind"] not in ("focus", "focusbreak"):  # focus mode handles the LEDs itself
             self.arduino.startup_animation()
-        if self.ha and not self.vision.is_present:
+        away = not self._at_desk()            # the camera when it's on, else keyboard and mouse
+        if self.ha and away:
             self.ha.notify_phone(text, title="Aria")
-        if getattr(self, "telegram", None) and not self.vision.is_present:
+        if getattr(self, "telegram", None) and away:
             self.telegram.send(text)          # not at the desk: the reminder goes to the phone too
         if r["kind"] in ("reminder", "timer", "event", "dayahead", "due"):
             title = {"timer": "Timer", "event": "Coming up", "dayahead": "Tomorrow",

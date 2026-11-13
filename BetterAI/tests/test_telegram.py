@@ -134,13 +134,14 @@ def test_reminders_reach_the_phone_when_nobody_is_at_the_desk(aria):
     import types
     sent = []
     aria.telegram = types.SimpleNamespace(send=lambda text: sent.append(text))
-    aria.vision = types.SimpleNamespace(is_present=False, _camera_index=0)
+    at_desk = [False]                  # from the camera when it's on, else from keyboard and mouse (Aria._at_desk)
+    aria._at_desk = lambda: at_desk[0]
     aria.focus = types.SimpleNamespace()
     aria.ha = aria.arduino = None
     import queue, threading
     aria.announcements, aria._wake_event = queue.Queue(), threading.Event()
     aria._on_reminder_due({"kind": "reminder", "text": "call mum", "due": 0})
     assert sent and "call mum" in sent[0]
-    aria.vision.is_present = True
+    at_desk[0] = True
     aria._on_reminder_due({"kind": "reminder", "text": "water plants", "due": 0})
     assert len(sent) == 1

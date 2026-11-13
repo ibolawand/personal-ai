@@ -209,7 +209,7 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
   - silence is trimmed and the edges fade in and out, so nothing clicks
   - calm delivery: subdued moods, a relaxed pace, and longer pauses between sentences
   - `VOICE_GAIN` in `Engines/.env` sets the overall volume (e.g. `0.7` is quieter)
-- **Sleep that sticks:** after "go to sleep", the camera only wakes Aria if you were away from the desk for at least 2 minutes.
+- **Sleep that sticks** (only with the camera on, `ARIA_CAMERA=1`): after "go to sleep", the camera only wakes Aria if you were away from the desk for at least 2 minutes.
   Looking away or down for less than 20 seconds doesn't count as leaving.
 
 ---
@@ -693,6 +693,12 @@ mail from `noted.db` and talks to Gmail herself to send, archive and check when 
 
 ## Camera & faces — `vision/vision.py`
 
+- **Off unless you switch it on.** The camera is never opened, so Aria doesn't wake because you sat down, doesn't
+  greet or recognise faces, and takes no pictures for posture nudges or mood. She wakes when you click the orb, type,
+  press Ctrl+Alt+Space or say "Hey Aria" (voice mode), and for reminders and timers. `ARIA_CAMERA=1` in `Engines/.env`
+  turns the camera back on, and with it everything below. With the camera off, "not at the desk" (a reminder also
+  goes to the phone) is decided from keyboard and mouse use, and the self-check lists the camera as switched off,
+  not as a problem (`camera_on` in `vision/vision.py`, `tests/test_vision.py`).
 - Notices when someone sits down or leaves, and greets known faces by name.
 - "What do you see?" describes the camera view. Uses the same vision model as screen reading.
 - **"Learn my face"** (or "remember my face, I'm Sam"): she takes about 40 pictures in ten seconds and says when she's

@@ -29,6 +29,12 @@ CONFIDENCE_THRESHOLD = 75   # lower = stricter match
 # actually delivers frames is used. (On Linux a webcam usually shows up as two
 # nodes: /dev/video0 = picture, /dev/video1 = metadata, which can't be read.)
 CAMERA_INDEX = os.environ.get("CAMERA_INDEX")
+
+
+def camera_on() -> bool:
+    """The camera is off unless ARIA_CAMERA=1 is set in Engines/.env: then nothing opens it, so Aria never wakes
+    because someone sat down, never greets or recognises a face, and takes no pictures for posture or mood."""
+    return os.environ.get("ARIA_CAMERA", "0") == "1"
 # DirectShow on Windows, V4L2 on Linux (CAP_ANY also tries the Orbbec backend,
 # which is what prints "Camera index out of range")
 if os.name == "nt":
@@ -238,7 +244,7 @@ class AriaVision:
     # ── Detection Loop ────────────────────────────────────────────────────────
 
     def start(self):
-        if self._running:
+        if self._running or not camera_on():
             return
         # Let a previous loop finish releasing the camera before reopening it
         if self._thread and self._thread.is_alive():
@@ -374,6 +380,8 @@ class AriaVision:
     def snapshot(self):
         """Latest camera frame (BGR) or None. Reuses the running loop's camera instead of
         opening it a second time — Linux webcams can't be opened twice."""
+        if not camera_on():
+            return None
         if self._running:
             for _ in range(10):
                 with self._frame_lock:

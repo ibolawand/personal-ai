@@ -1,4 +1,5 @@
 import types
+import main  # noqa: F401  (imported at collection, before the subprocess guard is in place)
 
 from Engines.Health import Health
 
@@ -25,3 +26,13 @@ def test_a_crashing_check_is_reported_not_raised(aria, monkeypatch):
     monkeypatch.setattr(ollama, "list", boom)
     rows = {name: (ok, detail) for name, ok, detail in Health(aria).checks()}
     assert rows["Language and vision models"] == (False, "ollama is not running")
+
+
+def test_a_switched_off_camera_is_not_a_problem(aria, monkeypatch):
+    aria.vision = types.SimpleNamespace(_camera_index=None, is_present=False)
+    monkeypatch.delenv("ARIA_CAMERA", raising=False)
+    rows = {name: (ok, detail) for name, ok, detail in Health(aria).checks()}
+    assert rows["Camera"] == (True, "switched off (ARIA_CAMERA=1 in Engines/.env turns it on)")
+    monkeypatch.setenv("ARIA_CAMERA", "1")
+    rows = {name: (ok, detail) for name, ok, detail in Health(aria).checks()}
+    assert rows["Camera"] == (False, "no camera found (set CAMERA_INDEX if you have one)")
