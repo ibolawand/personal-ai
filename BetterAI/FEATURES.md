@@ -276,6 +276,12 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 
 ## Voice — `speech_to_text.py`, `wakeworddetector.py`, `Engines/voice_engine.py`
 
+- **Her voice fits her avatar** (`blend_voice`, `lift` in `Engines/voice_engine.py`, `tests/test_stt.py`): she looks
+  like a young, playful anime girl, but spoke with Kokoro's `af_heart`, a calm, mature narrator voice (~205 Hz). Now
+  she's a blend of `af_heart` (the clearest voice) and the brighter `af_bella`, lifted 2 semitones: pitch and voice size
+  go up together (a smaller, younger speaker, as anime voices are measured to be: higher pitch, higher formants),
+  ~230 Hz, at the same pace and with no robotic pitch-shift sound. Change it in `Engines/.env`:
+  `KOKORO_VOICE=af_heart*0.5+af_bella*0.5` (any voice or weighted blend), `VOICE_LIFT=2` (semitones; 0 = off).
 - A long first sentence starts playing after its first clause (the voice is made on the CPU, ~1 s for a long
   sentence), so she starts talking sooner.
 - **The model re-reads less:** her instructions now start the same every turn. The clock and "you last talked…" come

@@ -161,3 +161,30 @@ def test_a_full_graphics_card_falls_back_to_the_cpu_instead_of_crashing():
     stt._cpu_model = types.SimpleNamespace(transcribe=lambda *a, **k: ([seg], None))
     assert stt.transcribe(np.zeros(16000, np.float32))[0] == "open my notes"
     assert stt.transcribe_short(np.zeros(16000, np.float32)) == "open my notes"
+
+
+def test_lift_raises_pitch_and_keeps_the_pace():
+    """Her voice is lifted (pitch and voice size together); Kokoro speaks slower by the same factor, so the pace
+    she ends up at is unchanged."""
+    import numpy as np
+    from Engines.voice_engine import lift, lift_rate
+    sr = 24000
+    t = np.arange(sr) / sr
+    tone = np.sin(2 * np.pi * 200 * t).astype(np.float32)
+    up = lift(tone, 2.0)
+    peak = np.argmax(np.abs(np.fft.rfft(up))) * sr / len(up)
+    assert abs(peak - 200 * 2 ** (2 / 12)) < 3                     # ~224 Hz
+    assert abs(len(tone) / len(up) - lift_rate(2.0)) < 0.01         # shorter by exactly the rate Kokoro slows by
+    assert lift(tone, 0) is tone
+
+
+def test_blend_voice_averages_weighted_voices():
+    import torch
+    from Engines.voice_engine import blend_voice
+
+    class Pipe:
+        def load_single_voice(self, name):
+            return {"af_a": torch.ones(2), "af_b": torch.zeros(2)}[name]
+    assert blend_voice(Pipe(), "af_heart") == "af_heart"
+    assert torch.allclose(blend_voice(Pipe(), "af_a*0.75+af_b*0.25"), torch.full((2,), 0.75))
+    assert torch.allclose(blend_voice(Pipe(), "af_a+af_b"), torch.full((2,), 0.5))
