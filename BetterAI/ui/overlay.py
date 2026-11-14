@@ -23,9 +23,9 @@ import traceback
 import random
 
 import numpy as np
-from PySide6.QtCore import (QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSettings, Qt, QThread, QTimer,
+from PySide6.QtCore import (QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSettings, QSize, Qt, QThread, QTimer,
                             Signal)
-from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPainterPath,
+from PySide6.QtGui import (QAction, QColor, QCursor, QFont, QFontMetrics, QGuiApplication, QPainter, QPainterPath,
                            QPen, QRadialGradient, QRegion)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu,
                                QPushButton, QScrollArea, QVBoxLayout, QWidget)
@@ -37,6 +37,13 @@ OLD_WIN_H = 440                # saved positions from before cards existed used 
 ORB_R = 28                     # base orb radius
 ORB_BOX = 160                  # square around the orb that holds its glow + particles
 MARGIN = 14
+AVATAR_W, AVATAR_H = 300, 400  # her box while she's awake unless her view asks for another (ui/avatar_view.py BOX_*);
+                               # the orb's box shares its bottom-right corner
+FADE_MS = 250                  # orb and avatar cross-fade
+WALK_OUT_PX = 150              # how far past an app's edge she walks out after peeking (0.35 of her units)
+PANEL = 0                      # "the window she sits on" when it's the top of the bottom panel
+INPUT_IDLE_S = 15               # an empty text box nobody uses closes after this long
+LOOK_REACH = 200               # pixels from her middle at which she looks as far aside as she can
 BUBBLE_MAX_W = 300
 BUBBLE_PAD_X, BUBBLE_PAD_Y = 13, 9
 MAX_CHARS = 280
@@ -121,6 +128,7 @@ class OverlayBridge(QObject):
     _clipRequest = Signal(str, str)
     remoteCommand = Signal(str)   # from ui/instance.py: toggle / show / quit
     cardRequested = Signal(object)  # a card dict, or {"type": "clear", "kind": ...}
+    micOpenChanged = Signal(bool)   # she started or stopped transcribing what is said
 
     def __init__(self):
         super().__init__()
@@ -129,16 +137,40 @@ class OverlayBridge(QObject):
         self.mic = 0.0      # latest mic volume (mean abs, ~0..0.1)
         self.out = 0.0      # latest playback RMS (~0..0.3)
         self.timers = []    # pending reminders: [{"text", "kind", "due", "created"}]
+        self.avatar_status = ""     # why the avatar can or can't show, for the self-check
+        self.mic_open = False   # the microphone is really open (awake but only typing is "listening" too)
         self._clip_lock = threading.Lock()
         self._clip_done = threading.Event()
         self._clip_result = None
         self._clipRequest.connect(self._clip_slot, Qt.QueuedConnection)
+        self._panel = threading.local()     # set while this thread runs a turn for MyNotion's panel
+
+    def panel_turn(self):
+        """While a MyNotion panel turn runs in this thread, its cards don't pop up a hidden orb (she was started from
+        MyNotion without it). A card shown anyway on a visible orb, and cards from other threads (reminders), as usual."""
+        import contextlib
+        local = self._panel
+
+        @contextlib.contextmanager
+        def turn():
+            local.depth = getattr(local, "depth", 0) + 1
+            try:
+                yield
+            finally:
+                local.depth -= 1
+        return turn()
 
     # Called by Aria (from any thread). Qt queues signals onto the UI thread.
     def set_state(self, state):
         if state not in FLASH_COLORS:
             self.state = state
         self.stateChanged.emit(state)
+
+    def set_mic_open(self, is_open):
+        is_open = bool(is_open)
+        if is_open != self.mic_open:
+            self.mic_open = is_open
+            self.micOpenChanged.emit(is_open)
 
     def set_timers(self, items):
         self.timers = list(items)
@@ -183,6 +215,8 @@ class OverlayBridge(QObject):
     #        {"type": "agenda", "title", "days": [{"label", "events": [{"time", "title", "repeat"}]}]}
     #        {"type": "confirm", "text"}
     def show_card(self, card):
+        if getattr(self._panel, "depth", 0):
+            card = {**card, "quiet": True}
         self.cardRequested.emit(card)
 
     def clear_card(self, kind=None):
@@ -375,12 +409,50 @@ class Card(QFrame):
 # ── Overlay window ────────────────────────────────────────────────────────────
 
 class Overlay(QWidget):
-    def __init__(self, bridge: OverlayBridge):
+    def __init__(self, bridge: OverlayBridge, make_avatar=None):
+        """make_avatar(parent) -> the avatar's view (ui/avatar_view.make_view), or None for the orb alone."""
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.bridge = bridge
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setMouseTracking(True)
-        self.setFixedSize(WIN_W, WIN_H)
+        self.avatar = None
+        if make_avatar:
+            try:
+                self.avatar = make_avatar(self)
+            except Exception as e:      # she never stops the overlay: the orb is always there
+                print(f"[Avatar] couldn't be created: {type(e).__name__}")
+                bridge.avatar_status = f"couldn't be created ({type(e).__name__})"
+        # her box: the view says how big it wants to be (a loaded model is taller than the built-in figure)
+        self.avatar_w, self.avatar_h = getattr(self.avatar, "box", None) or (AVATAR_W, AVATAR_H)
+        # with an avatar the window is taller, so cards keep their room above her
+        self.win_w, self.win_h = WIN_W, WIN_H + (self.avatar_h - ORB_BOX if self.avatar else 0)
+        self.full_h = self.win_h        # the wide layout's height
+        self._avatar_on = False         # she is showing (the orb isn't painted)
+        self._input_shaped = False      # clicks are limited by the X11 input shape, not by a mask
+        self._avatar_failed = False
+        self._fed = {"level": 0.0, "look": 0.0, "props": 0.0, "room": 0.0}
+        from ui.avatar_view import Travel
+        self._travel = Travel()         # her window following her walks across the screen
+        self._seat_h = None             # how far above the bottom of her box a window's top is when she sits on it
+        self._headroom = 0              # and how far above that her head reaches
+        self._perch = None              # (window id, its left, its top) while she sits on top of another window
+        self._aloft = False             # she jumped up onto a window and hasn't come down yet
+        self._behind = None             # the window she is behind (the page says), its part of her isn't drawn
+        self._cover = None              # that window's rectangle in this window's coordinates, or None
+        self._over = "unknown"          # the window over her middle last time we looked (a new one: she hides)
+        self._hide_avatar = QTimer(self)
+        self._hide_avatar.setSingleShot(True)
+        self._hide_avatar.timeout.connect(lambda: self.avatar and not self._avatar_on and self.avatar.hide())
+        # Where her box is: inside the window (bx, by), and on the screen (_box_screen, what everything follows).
+        # While she shows with nothing else up, the window is exactly her box, so it reaches the screen's edges when
+        # she does (the window manager keeps a window on the screen: extra room beside her stopped her short);
+        # bubbles, a card, the caption or the text box make it wide again, placed so that it fits on the screen.
+        self._bx, self._by = self.win_w - self.avatar_w, self.win_h - self.avatar_h
+        self._box_screen = QPoint(0, 0)
+        self._wide = True
+        self._placing = False
+        self._input_used = 0.0          # when the text box was last opened or typed in
+        self.setFixedSize(self.win_w, self.win_h)
         self.setWindowTitle("Aria")
 
         self.font_ = QFont("Noto Sans", 10)
@@ -414,6 +486,7 @@ class Overlay(QWidget):
         self.input.setPlaceholderText("Message Aria…")
         self.input.setGeometry(self._input_rect())
         self.input.returnPressed.connect(self._submit)
+        self.input.textEdited.connect(lambda _: setattr(self, "_input_used", time.monotonic()))
         self.capture_mode = False      # quick capture (Ctrl+Alt+N): the text is filed, not chatted about
         self.history = []              # what was typed, for ↑ / ↓ in the text box
         self._hist_pos = 0
@@ -427,6 +500,7 @@ class Overlay(QWidget):
         bridge.cardRequested.connect(self._on_card)
 
         self._restore_position()
+        self._floor_y = self._box_screen.y()    # where her box is when she stands (she jumps back down to it)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
@@ -435,19 +509,319 @@ class Overlay(QWidget):
     # ── Geometry ──
 
     def _orb_center(self) -> QPointF:
-        return QPointF(WIN_W - ORB_BOX / 2, WIN_H - ORB_BOX / 2)
+        corner = self._avatar_rect().bottomRight() + QPoint(1, 1)      # the orb and her box share that corner
+        return QPointF(corner.x() - ORB_BOX / 2, corner.y() - ORB_BOX / 2)
 
     def _orb_rect(self) -> QRect:
-        return QRect(WIN_W - ORB_BOX, WIN_H - ORB_BOX, ORB_BOX, ORB_BOX)
+        corner = self._avatar_rect().bottomRight() + QPoint(1, 1)
+        return QRect(corner.x() - ORB_BOX, corner.y() - ORB_BOX, ORB_BOX, ORB_BOX)
+
+    def _avatar_rect(self) -> QRect:
+        return QRect(self._bx, self._by, self.avatar_w, self.avatar_h)
+
+    def _wants_wide(self) -> bool:
+        """Is anything up besides her (the orb, the text box, a bubble, a card, the hover caption)?"""
+        return bool(not self._avatar_on or self.input.isVisible() or self.card or self.hover
+                    or self._visible_bubbles())
+
+    def _place(self, box=None):
+        """Put her box at `box` (its top-left on the screen; default: where it is) and fit the window round it:
+        just her box, or the wide layout placed so it stays on the screen (her box keeps its place either way)."""
+        if box is not None:
+            self._box_screen = QPoint(box)
+        screen = self._screen_area()
+        b = QRect(self._box_screen, QSize(self.avatar_w, self.avatar_h))
+        wide = self._wants_wide()
+        # Her box may stick out above the screen (up on a window high on the screen: only empty space above her
+        # head is there) or below it (sitting on the bottom panel: her legs hang down behind it); the window never
+        # does, or the window manager pushes it back, and her with it.
+        if wide:
+            w, h = WIN_W, self.full_h
+            left = max(screen.left(), min(b.right() + 1 - w, screen.right() + 1 - w))
+            top = max(screen.top(), min(b.bottom() + 1 - h, screen.bottom() + 1 - h))
+            left = min(left, b.left())
+            top = min(top, max(b.top(), screen.top()))
+            w, h = max(w, b.right() + 1 - left), min(b.bottom(), screen.bottom()) + 1 - top
+        else:
+            left, top, w = b.left(), max(b.top(), screen.top()), self.avatar_w
+            h = min(b.bottom(), screen.bottom()) + 1 - top
+        bx, by = b.left() - left, b.top() - top
+        changed = (bx, by, w, h, wide) != (self._bx, self._by, self.win_w, self.win_h, self._wide)
+        self._bx, self._by, self.win_w, self.win_h, self._wide = bx, by, w, h, wide
+        self._placing = True
+        try:
+            if changed:
+                self.setFixedSize(w, h)
+                if self.avatar:
+                    self.avatar.setGeometry(self._avatar_rect())
+                self.input.setGeometry(self._input_rect())
+                if self.card:
+                    self.card.move(self._card_pos())
+                self._mask_key = None
+            if self.pos() != QPoint(left, top):
+                self.move(left, top)
+        finally:
+            self._placing = False
+        if changed:
+            self._update_mask()
+            self.update()
+
+    def moveEvent(self, e):
+        super().moveEvent(e)
+        if not self._placing:               # dragged, or moved by the window manager: her box went with it
+            self._box_screen = self.pos() + QPoint(self._bx, self._by)
+
+    def _anchor_rect(self) -> QRect:
+        """What bubbles, cards, the caption and the text box are laid out against: her while she shows, else the orb."""
+        return self._avatar_rect() if self._avatar_on else self._orb_rect()
+
+    def _stack_origin(self):
+        """(right edge, bottom edge) that cards and bubbles stack up from."""
+        if self._avatar_on:                 # (above her box, or over her head when her box sticks out above the screen)
+            return self.win_w - 8, max(self._avatar_rect().top() + 6, 120)
+        o = self._orb_rect()
+        return o.right() + 1 - (ORB_BOX - 2 * ORB_R) / 2 + 4, o.top() + 6
 
     def _input_rect(self) -> QRect:
-        c = self._orb_center()
         w, h = 260, 38
+        if self._avatar_on:             # a bar across the bottom of her box, under her middle as far as it fits
+            r = self._avatar_rect()
+            x = max(4, min(r.center().x() - w // 2, self.win_w - w - 4))
+            return QRect(x, r.bottom() + 1 - 14 - h, w, h)
+        c = self._orb_center()
         return QRect(int(c.x() - ORB_R - 18 - w), int(c.y() - h / 2), w, h)
 
     def _in_orb(self, pos) -> bool:
+        """On the orb, or on her while she shows (an ellipse in the upper 80% of her box, not the box's corners)."""
+        if self._avatar_on:
+            from ui.xshape import HER_WIDTH
+            r = self._avatar_rect()
+            rx, ry = r.width() * HER_WIDTH / 2, r.height() * 0.4
+            return ((pos.x() - (r.left() + r.width() / 2)) / rx) ** 2 + ((pos.y() - (r.top() + ry)) / ry) ** 2 <= 1
         c = self._orb_center()
         return math.hypot(pos.x() - c.x(), pos.y() - c.y()) <= ORB_R + 14
+
+    # ── The avatar (ui/avatar_view.py). The orb is painted whenever she isn't showing. ──
+
+    def _shows_avatar(self) -> bool:
+        a = self.avatar
+        return bool(a and a.link.ready and not a.link.failed and self.isVisible()
+                    and self.state not in ("sleeping", "booting", "error"))
+
+    def _sync_avatar(self):
+        """Bring her in or send her away to match the state. Called on every state change, when the overlay is
+        shown or hidden, and each tick (her page becomes ready, or fails, on its own time)."""
+        a = self.avatar
+        if not a:
+            return
+        if a.link.failed and not self._avatar_failed:
+            self._avatar_failed = True
+            self.bridge.avatar_status = a.link.failed
+            try:
+                from Engines import Diagnostics
+                Diagnostics.problem("avatar", a.link.failed)
+            except Exception as e:
+                print(f"[Avatar] {a.link.failed} ({type(e).__name__} while logging it)")
+        show = self._shows_avatar()
+        if show == self._avatar_on:
+            return
+        self._avatar_on = show
+        self._mask_key = None
+        self.input.setGeometry(self._input_rect())
+        if self.card:
+            self.card.move(self._card_pos())
+        if show:
+            self._hide_avatar.stop()
+            a.setGeometry(self._avatar_rect())
+            a.show()
+            a.link.resume()
+            a.link.fade(True)
+            a.link.wave()
+            self._fed = {"level": 0.0, "look": 0.0, "props": 0.0, "room": 0.0}
+        else:
+            a.link.fade(False)
+            a.link.pause()              # nothing is drawn while she's away; the fade is the page's own transition
+            if self._avatar_failed:
+                a.hide()
+            else:
+                self._hide_avatar.start(FADE_MS)
+        self.update()
+
+    def _feed_avatar(self, now):
+        """What she needs to know while she shows, no more often than it can matter."""
+        link = self.avatar.link
+        link.set_state(self.state)
+        # the text box open or a card up: you're dealing with her, so she stays where she is
+        link.set_engaged(bool(self.input.isVisible() or self.card))
+        if now - self._fed["level"] >= 1 / 20:
+            self._fed["level"] = now
+            link.set_level(self.bridge.mic, self.bridge.out)
+        if now - self._fed["look"] >= 1 / 15:
+            self._fed["look"] = now
+            r, p = self._avatar_rect(), self.mapFromGlobal(QCursor.pos())
+            # near her the mouse is where she looks (and what it hovers); far across the screen she only glances
+            link.look_at(max(-1.0, min(1.0, (p.x() - r.center().x()) / LOOK_REACH)),
+                         max(-1.0, min(1.0, (r.center().y() - p.y()) / LOOK_REACH)))
+        if now - self._fed.get("room", 0.0) >= 0.5:
+            self._fed["room"] = now
+            link.set_room(*self._room())
+        if self._seat_h is None and hasattr(self.avatar, "ask_seat_height"):
+            self.avatar.ask_seat_height(self._got_seat_height)
+        if now - self._fed.get("seats", 0.0) >= (0.25 if self._perch else 0.6) and self._seat_h:
+            self._fed["seats"] = now
+            self._watch_seats(link)
+        if self._drag_from is None and hasattr(self.avatar, "ask_travel"):
+            self.avatar.ask_travel(self._on_travel)
+        if self._behind is not None and now - self._fed.get("cover", 0.0) >= 1 / 15 and self._seat_h is not None:
+            self._fed["cover"] = now
+            self._follow_cover(link)
+        if now - self._fed["props"] >= 1.0:
+            self._fed["props"] = now
+            from ui.avatar_view import props_for
+            link.set_props(props_for(self.state, self.bridge.mic_open, self.bridge.timers, time.time()))
+
+    def _room(self):
+        """Pixels of screen beside her box, (left, right): how far she may walk about on this screen."""
+        box = self._avatar_rect().translated(self.pos())
+        screen = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+        return max(0, box.left() - screen.left()), max(0, screen.right() - box.right())
+
+    def _screen_area(self):
+        return (self.screen() or QApplication.primaryScreen()).availableGeometry()
+
+    def _got_seat_height(self, px, headroom=None):
+        """How far above the bottom of her box a window's top is when she sits on it, and how far her head reaches
+        above it (the rest of her box above that is empty: it may stick out above the screen)."""
+        self._seat_h = px
+        self._headroom = headroom if headroom is not None else self.avatar_h - px
+
+    def _seats_here(self):
+        """The open windows and the seats on them (ui/desktop_windows.py), for her box on this screen."""
+        from ui.desktop_windows import open_windows, seats
+        screen = self._screen_area()
+        windows = open_windows(own=int(self.winId()))
+        room = (screen.left(), screen.top(), screen.right(), screen.bottom())
+        return windows, seats(windows, room, above=int(self._headroom) + 4), screen
+
+    def _watch_seats(self, link):
+        """Tell her where she could sit, and while she sits on a window, keep her on it: it moves, she rides along;
+        it goes (closed, covered, made full-size), she hops down."""
+        windows, free, screen = self._seats_here()
+        box = self._avatar_rect().translated(self.pos())
+        if not self._aloft and self._travel.done:
+            self._floor_y = self._box_screen.y()                     # standing: this is her floor
+        if self._perch and self._perch[0] == PANEL:
+            pass                                                    # the panel stays where it is
+        elif self._perch:
+            wid, left, top = self._perch
+            mine = next((w for w in windows if w.id == wid), None)
+            if mine and (mine.left, mine.top) != (left, top):        # it moved: so does she
+                self._place(self._box_screen + QPoint(mine.left - left, mine.top - top))
+                self._perch = (wid, mine.left, mine.top)
+                box = self._avatar_rect().translated(self.pos())
+            cx = box.center().x()
+            if not any(s.id == wid and s.left <= cx <= s.right for s in free):
+                self._perch = None
+                link.drop_down()
+        # where she could hide: side edges of windows beside her, while she stands on her floor
+        from ui.desktop_windows import covering, hideouts
+        here = (box.left(), box.top(), box.right(), box.bottom())
+        standing = not self._aloft and not self._perch and self._travel.done and self._behind is None
+        # (only edges she can walk out past with her whole box still on this screen)
+        room = self.avatar_w // 2 + WALK_OUT_PX
+        fits = lambda x, out: x >= screen.left() + room if out < 0 else x <= screen.right() - room   # noqa: E731
+        link.set_hideouts([{"id": e.id, "x": e.x - box.center().x(), "out": e.out} for e in hideouts(windows, here)
+                           if fits(e.x, e.out)] if standing else [])
+        # a window opened or raised over her: she's behind it now (and goes out by an edge she can get to)
+        over = covering(windows, here)
+        over_id = over.id if over else None
+        if standing and over and self._over not in ("unknown", over_id):
+            far = 100_000                                           # an edge she can't use: out of the question
+            left = over.left - box.center().x() if fits(over.left, -1) else -far
+            right = over.right - box.center().x() if fits(over.right, 1) else far
+            if (left, right) != (-far, far):
+                link.hidden_by(over.id, left, right)
+        self._over = over_id
+        # where she could go: the free stretches, kept to where her whole box stays on the screen
+        half_box = self.avatar_w // 2
+        out = []
+        if not self._perch:
+            for s in free:
+                left, right = max(s.left, screen.left() + half_box), min(s.right, screen.right() - half_box)
+                if right - left >= 2 * 60 + 20:
+                    out.append({"x": (left + right) // 2 - box.center().x(), "half": (right - left) // 2,
+                                "y": s.top - box.bottom()})
+        # an app maximized: the top edge of the bottom panel (the bottom of the work area) is a seat, just below
+        # her feet: she sits down onto it where she stands
+        from ui.desktop_windows import any_maximized
+        if not self._perch and not self._aloft and any_maximized(own=int(self.winId())):
+            out.append({"x": 0, "half": screen.width(), "y": screen.bottom() + 1 - box.bottom() - 1, "low": 1})
+        link.set_seats(out, self._floor_y - self._box_screen.y())
+
+    def _follow_cover(self, link):
+        """While she is behind a window: the part of her it covers is cut out, wherever it and she are now."""
+        from ui.desktop_windows import window_rect
+        win = window_rect(self._behind)
+        box = self._avatar_rect().translated(self.pos())
+        if win is None or not QRect(win.left, win.top, win.right - win.left, win.bottom - win.top).intersects(box):
+            # it closed, was minimized or moved off her: all of her shows again, and she stops peeking at nothing
+            self._behind = None
+            self._set_cover(link, None)
+            link.unhide()
+            return
+        self._set_cover(link, QRect(win.left, win.top, win.right - win.left, win.bottom - win.top).translated(-self.pos()))
+        link.set_cover({"left": win.left - box.left(), "top": win.top - box.top(),
+                        "right": win.right - box.left(), "bottom": win.bottom - box.top()})
+
+    def _set_cover(self, link, rect):
+        if rect is None:
+            link.set_cover(None)
+        self._cover = rect
+        self._update_mask()
+
+    def _on_travel(self, report, behind=None):
+        """The page said where her walk (or jump) has got to: her window goes along (ui/avatar_view.Travel); and
+        which window she is behind, if any."""
+        if behind != self._behind and self._drag_from is None:     # (a late answer during a drag doesn't count)
+            self._behind = behind
+            if behind is None and self.avatar:
+                self._set_cover(self.avatar.link, None)
+        at = self._travel.follow(report, (self._box_screen.x(), self._box_screen.y()))
+        if at is None or self._drag_from is not None:
+            return
+        if at != (self._box_screen.x(), self._box_screen.y()):
+            self._place(QPoint(*at))
+        if self._travel.done and len(report) == 4:                  # a jump just ended: up onto a window, or down
+            on_panel = report[3] > 0 and self._box_screen.y() > self._floor_y and self._on_panel()
+            self._aloft = report[3] < 0 or on_panel
+            self._perch = (PANEL, 0, 0) if on_panel else self._window_under() if self._aloft else None
+            if self._aloft and not self._perch:                     # landed on something we can't follow
+                self.avatar.link.drop_down()
+
+    def _on_panel(self):
+        """Is she sitting on the top edge of the bottom panel (the bottom of the work area)?"""
+        edge = self._box_screen.y() + self.avatar_h - (self._seat_h or 0)
+        return abs(edge - (self._screen_area().bottom() + 1)) <= 12
+
+    def _window_under(self):
+        """The window whose top edge she has just landed on: (id, left, top), or None."""
+        if not self._seat_h:
+            return None
+        windows, free, _ = self._seats_here()
+        box = self._avatar_rect().translated(self.pos())
+        edge, cx = box.bottom() - self._seat_h, box.center().x()
+        for w in reversed(windows):
+            if abs(w.top - edge) <= 12 and w.left <= cx <= w.right:
+                return w.id, w.left, w.top
+        return None
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._sync_avatar()
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        self._sync_avatar()
 
     def _restore_position(self):
         # stored as the window's bottom-right corner (where the orb is), so a taller window keeps the orb in place
@@ -455,18 +829,23 @@ class Overlay(QWidget):
         corner = settings.value("corner")
         pos = None
         if isinstance(corner, QPoint):
-            pos = corner - QPoint(WIN_W, WIN_H)
+            pos = corner - QPoint(self.win_w, self.win_h)
         elif isinstance(settings.value("pos"), QPoint):
-            pos = settings.value("pos") + QPoint(0, OLD_WIN_H - WIN_H)
+            pos = settings.value("pos") + QPoint(0, OLD_WIN_H - self.win_h)
         screen = QApplication.primaryScreen().availableGeometry()
-        if isinstance(pos, QPoint) and any(s.availableGeometry().contains(pos + QPoint(WIN_W - 60, WIN_H - 60))
-                                           for s in QApplication.screens()):
-            self.move(pos)
+        on = next((s.availableGeometry() for s in QApplication.screens() if isinstance(pos, QPoint)
+                   and s.availableGeometry().contains(pos + QPoint(self.win_w - 60, self.win_h - 60))), None)
+        if on is not None:
+            if pos.y() < on.top():      # the window grew taller for the avatar: keep its top on the screen
+                pos = QPoint(pos.x(), on.top())
         else:
-            self.move(screen.right() - WIN_W - MARGIN, screen.bottom() - WIN_H - MARGIN)
+            pos = QPoint(screen.right() - self.win_w - MARGIN, screen.bottom() - self.win_h - MARGIN)
+        self.move(pos)
+        self._box_screen = pos + QPoint(self._bx, self._by)
 
     def _save_position(self):
-        QSettings("Aria", "overlay").setValue("corner", self.pos() + QPoint(WIN_W, WIN_H))
+        # her box's (and the orb's) bottom-right corner, as before
+        QSettings("Aria", "overlay").setValue("corner", self._box_screen + QPoint(self.avatar_w, self.avatar_h))
 
     # ── Bridge events ──
 
@@ -474,19 +853,19 @@ class Overlay(QWidget):
         if state in FLASH_COLORS:
             self.flash = 1.0 if state == "unknown" else 2.5  # alerts pulse longer
             self.flash_color = FLASH_COLORS[state]
+            if self._avatar_on:
+                self.avatar.link.hop()
             return
         self.state = state
+        self._sync_avatar()
 
     def _on_remote(self, cmd):
         """Hotkey / second launch. Bring the orb forward and focus the text box."""
         if cmd == "quit":
             quit_app()
             return
-        if cmd in ("chat", "review", "event", "followup", "break"):
-            aria = self.bridge.aria
-            if aria:
-                threading.Thread(target=aria.initiative.force, args=(cmd,), daemon=True).start()
-            return
+        if cmd == "ping":
+            return                      # only checks she's running: the orb stays as it is
         if not self.isVisible():
             self.show()
         self._add_wave(0.6)
@@ -520,6 +899,8 @@ class Overlay(QWidget):
             if self.card and (card.get("kind") in (None, self.card.kind)):
                 self._close_card()
             return
+        if card.get("quiet") and not self.isVisible():
+            return                      # from a MyNotion panel turn: the panel shows it, the hidden orb stays away
         self._close_card()
         self.card = Card(self, card, self._card_action)
         self.card.move(self._card_pos())
@@ -530,8 +911,7 @@ class Overlay(QWidget):
             self.show()
 
     def _card_pos(self) -> QPoint:
-        right = WIN_W - (ORB_BOX - 2 * ORB_R) / 2 + 4
-        bottom = WIN_H - ORB_BOX + 6
+        right, bottom = self._stack_origin()
         return QPoint(int(right - CARD_W), int(bottom - self.card.height()))
 
     def _close_card(self):
@@ -562,10 +942,22 @@ class Overlay(QWidget):
     # ── Animation ──
 
     def _tick(self):
+        if not self.isVisible():
+            self._last_tick = time.monotonic()      # started hidden from MyNotion: nothing to draw, no CPU spent
+            return
         now = time.monotonic()
         dt = min(0.05, now - self._last_tick)
         self._last_tick = now
         self.t += dt
+        if self.avatar:
+            self._sync_avatar()
+            # an unused, empty text box closes after a while (it used to stay up and ride along on her walks)
+            if (self.input.isVisible() and not self.input.text() and now - self._input_used > INPUT_IDLE_S):
+                self._toggle_input(False)
+            if self._wants_wide() != self._wide:
+                self._place()
+            if self._avatar_on:
+                self._feed_avatar(now)
 
         target = STATE_COLORS.get(self.state, STATE_COLORS["thinking"])
         k = 1 - math.exp(-dt * 6)
@@ -688,8 +1080,7 @@ class Overlay(QWidget):
 
     def _layout_bubbles(self):
         """Returns [(rect, bubble, alpha)], stacked upward from above the orb, right-aligned."""
-        right = WIN_W - (ORB_BOX - 2 * ORB_R) / 2 + 4
-        bottom = WIN_H - ORB_BOX + 6
+        right, bottom = self._stack_origin()
         if self.card:
             bottom = self.card.y() - 6
         laid = []
@@ -706,6 +1097,9 @@ class Overlay(QWidget):
         return laid
 
     def _caption_rect(self):
+        if self._avatar_on:
+            r = self._avatar_rect()
+            return QRect(max(4, min(r.center().x() - 140, self.win_w - 284)), r.bottom() + 1 - 44, 280, 22)
         c = self._orb_center()
         return QRect(int(c.x() - ORB_R - 18 - 280), int(c.y() - 11), 280, 22)
 
@@ -715,19 +1109,40 @@ class Overlay(QWidget):
         card = self.card.geometry() if self.card else None
         key = (tuple((r.x(), r.y(), r.width(), r.height()) for r in rects),
                self.input.isVisible(), show_caption,
-               (card.x(), card.y(), card.width(), card.height()) if card else None)
+               (card.x(), card.y(), card.width(), card.height()) if card else None, self._avatar_on,
+               self._cover.getRect() if self._cover else None)
         if key == self._mask_key:
             return
         self._mask_key = key
-        region = QRegion(self._orb_rect(), QRegion.Ellipse)
-        for r in rects:
-            region = region.united(QRegion(r.adjusted(-2, -2, 2, 2)))
+        boxes = [r.adjusted(-2, -2, 2, 2) for r in rects]
         if self.input.isVisible():
-            region = region.united(QRegion(self._input_rect().adjusted(-2, -2, 2, 2)))
+            boxes.append(self._input_rect().adjusted(-2, -2, 2, 2))
         if show_caption:
-            region = region.united(QRegion(self._caption_rect()))
+            boxes.append(self._caption_rect())
         if card:
-            region = region.united(QRegion(card.adjusted(-1, -1, 1, 1)))
+            boxes.append(card.adjusted(-1, -1, 1, 1))
+        if self._avatar_on:
+            # the whole picture is drawn (a mask would cut her hair with hard edges); only her outline, the
+            # bubbles and the cards take clicks, so what's beside her stays clickable (ui/xshape.py)
+            from ui import xshape
+            if (QGuiApplication.platformName() == "xcb"
+                    and xshape.set_input_rects(int(self.winId()),
+                                           boxes + xshape.avatar_click_rects(self._avatar_rect(), hole=self._cover))):
+                self._input_shaped = True
+                # the whole window is drawn. Not clearMask(): on this desktop that left the orb's circle in
+                # force and cut her down to it (seen 2026-11-13); a mask of the full window does lift it.
+                self.setMask(QRegion(self.rect()))
+                return
+            self.bridge.avatar_status = "showing, but clicks beside her are blocked (XFixes missing)"
+            region = QRegion(self._avatar_rect())
+        else:
+            if self._input_shaped:
+                from ui import xshape
+                xshape.clear_input_rects(int(self.winId()))
+                self._input_shaped = False
+            region = QRegion(self._orb_rect(), QRegion.Ellipse)
+        for box in boxes:
+            region = region.united(QRegion(box))
         self.setMask(region)
 
     # ── Painting ──
@@ -737,7 +1152,8 @@ class Overlay(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.TextAntialiasing)
         self._paint_bubbles(p)
-        self._paint_orb(p)
+        if not self._avatar_on:
+            self._paint_orb(p)
         if self.hover and not self.input.isVisible():
             self._paint_caption(p)
         p.end()
@@ -999,6 +1415,7 @@ class Overlay(QWidget):
 
     def _toggle_input(self, show=None):
         show = (not self.input.isVisible()) if show is None else show
+        self._input_used = time.monotonic()
         if show:
             self.input.show()
             self.activateWindow()
@@ -1071,8 +1488,13 @@ class Overlay(QWidget):
     def mouseMoveEvent(self, e):
         if self._drag_from is not None:
             gp = e.globalPosition().toPoint()
-            if (gp - self._press_at).manhattanLength() > 4:
+            if (gp - self._press_at).manhattanLength() > 4 and not self._dragged:
                 self._dragged = True
+                self._travel.drop()         # picked up on her way somewhere: she stops, and goes where she's put
+                if self.avatar:
+                    self.avatar.link.stop_trip()
+                    self._behind = None
+                    self._set_cover(self.avatar.link, None)
             if self._dragged:
                 self.move(gp - self._drag_from)
         self.setCursor(Qt.PointingHandCursor if self._in_orb(e.position()) else Qt.ArrowCursor)
@@ -1081,6 +1503,7 @@ class Overlay(QWidget):
         if e.button() == Qt.LeftButton and self._drag_from is not None:
             if self._dragged:
                 self._save_position()
+                self._perch, self._aloft, self._floor_y = None, False, self._box_screen.y()   # she stands where put
             else:
                 self._add_wave(0.6)
                 self._burst(14)
@@ -1105,14 +1528,6 @@ class Overlay(QWidget):
         mute_act.setEnabled(bool(aria))
         mute_act.triggered.connect(lambda: aria.toggle_mute())
         menu.addAction(mute_act)
-
-        init = getattr(aria, "initiative", None)
-        chat_act = QAction("Let Aria start conversations", menu)
-        chat_act.setCheckable(True)
-        chat_act.setEnabled(init is not None)
-        chat_act.setChecked(bool(init and init.enabled))
-        chat_act.toggled.connect(lambda on: aria.set_initiative(on))
-        menu.addAction(chat_act)
 
         clear_act = QAction("Clear bubbles", menu)
         clear_act.triggered.connect(lambda: (self.bubbles.clear(), self._close_card()))
@@ -1145,15 +1560,28 @@ def quit_app():
         QApplication.quit()
 
 
-def run_with_overlay(make_aria):
-    """make_aria(bridge) -> Aria. Builds Aria in a worker thread so the orb appears instantly."""
+def _avatar_maker(bridge):
+    """The function that builds her view, or None when she can't show; why goes to bridge.avatar_status."""
+    try:
+        from ui import avatar_view
+        path = avatar_view.avatar_path()
+        ok, bridge.avatar_status = avatar_view.available(path)
+    except Exception as e:
+        ok, bridge.avatar_status = False, f"couldn't be checked ({type(e).__name__})"
+    return (lambda parent: avatar_view.make_view(parent, path)) if ok else None
+
+
+def run_with_overlay(make_aria, visible: bool = True):
+    """make_aria(bridge) -> Aria. Builds Aria in a worker thread so the orb appears instantly.
+    visible=False (MyNotion's Start): the orb stays hidden until the hotkey, the menu or a card shows it."""
     global _bridge
     app = QApplication.instance() or QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
 
     _bridge = OverlayBridge()
-    overlay = Overlay(_bridge)
-    overlay.show()
+    overlay = Overlay(_bridge, _avatar_maker(_bridge))
+    if visible:
+        overlay.show()
 
     from ui import instance
     instance.listen(_bridge.remoteCommand.emit)

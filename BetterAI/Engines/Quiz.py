@@ -2,7 +2,7 @@
 "Quiz me on my C# note" / "quiz me on the gear trains PDF" / "quiz me on my mistakes".
 
 The source is a MyNotion note or a document from Lala's folders (the content index). The model writes short-answer
-questions from a part of it; everything after that is handled in code (like the weekly review): each reply is an
+questions from a part of it; everything after that is handled in code: each reply is an
 answer, unless it's "skip", "I don't know", "repeat", "hint" or "stop". Answers are checked in code first (the
 expected words are in it) and only otherwise by the model, which is told the answer was heard by speech
 recognition. Missed questions are kept (~/.cache/aria/quiz.json) for "quiz me on my mistakes".
@@ -75,7 +75,7 @@ class Quiz:
     def _save_misses(self, title, missed):
         data = self._load()
         misses = [m for m in data.get("misses", []) if m["q"] not in {x["q"] for x in missed}]
-        misses += [{"q": m["q"], "a": m["a"], "source": title, "at": time.time()} for m in missed]
+        misses += [{"q": m["q"], "a": m["a"], "source": m.get("source") or title, "at": time.time()} for m in missed]
         data["misses"] = misses[-KEEP_MISSES:]
         try:
             os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
@@ -177,10 +177,12 @@ Text:
 \"\"\"
 
 Reply ONLY with JSON: {{"questions": [{{"q": "question?", "a": "short answer"}}]}}"""
+        data = self._big_questions(prompt)
         try:
-            resp = ollama.chat(model=self.model, think=False, format="json", options=chat_options(temperature=0.4), keep_alive=KEEP_ALIVE,
-                               messages=[{"role": "user", "content": prompt}])
-            data = json.loads(resp["message"]["content"])
+            if data is None:
+                resp = ollama.chat(model=self.model, think=False, format="json", options=chat_options(temperature=0.4), keep_alive=KEEP_ALIVE,
+                                   messages=[{"role": "user", "content": prompt}])
+                data = json.loads(resp["message"]["content"])
         except Exception as e:
             print(f"[Quiz] question writing failed: {e}")
             return []
@@ -190,6 +192,19 @@ Reply ONLY with JSON: {{"questions": [{{"q": "question?", "a": "short answer"}}]
             if q and a and speakable(a) and q.lower() not in {x["q"].lower() for x in out}:
                 out.append({"q": q if q.endswith("?") else q.rstrip(".") + "?", "a": a})
         return out[:count]
+
+    def _big_questions(self, prompt):
+        """The questions from the big model (Engines/BigModel.py, set by Aria), or None: then the local one writes
+        them. Judging answers stays local: it has to be quick, and it is only yes or no."""
+        big = getattr(self, "big", None)
+        raw = big.ask(prompt, "quiz") if big else None
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
+            return data if isinstance(data.get("questions"), list) and data["questions"] else None
+        except (ValueError, AttributeError):
+            return None
 
     def judge(self, question, expected, given):
         """(correct, short note). Checked in code when the expected words were said, else by the model."""
@@ -223,13 +238,21 @@ thing is not)? Reply ONLY with JSON: {{"correct": true or false}}"""
             if not misses:
                 return "You haven't missed anything yet, there's nothing to retry."
             picked = random.sample(misses, min(count, len(misses)))
-            return self._begin("your mistakes", [{"q": m["q"], "a": m["a"]} for m in picked], retry=True)
+            return self._begin("your mistakes", [{"q": m["q"], "a": m["a"], "source": m.get("source")} for m in picked], retry=True)
         if not topic:
             return "What should I quiz you on? A note or a document."
         source = self.find_source(topic)
         if not source:
             return f"I couldn't find a note or document about '{topic}'."
         title, text = source
+        return self.start_on(title, text, count)
+
+    def start_on(self, title: str, text: str, count=5):
+        """A quiz on this text (MyNotion's "Quiz me" button gives the open note; no searching)."""
+        try:
+            count = max(1, min(10, int(float(count or 5))))
+        except (TypeError, ValueError):
+            count = 5
         chunk = self.pick_chunk(text)
         if len(chunk.split()) < 25:
             return f"'{title}' doesn't have enough in it to quiz you on yet."
@@ -238,12 +261,33 @@ thing is not)? Reply ONLY with JSON: {{"correct": true or false}}"""
             return f"I couldn't come up with questions from '{title}', try again in a moment."
         return self._begin(title, questions)
 
-    def _begin(self, title, questions, retry=False):
+    def start_mixed(self, title: str, old: list, sources: list):
+        """A quiz for a test: the `old` questions ({"q","a","source"}) first, then new ones from each (note title,
+        note text, how many) in `sources`. Each question remembers its note, so a miss is saved under it."""
+        questions = [dict(q, old=True) for q in old]
+        seen = {q["q"].lower() for q in questions}
+        for note_title, text, count in sources:
+            for q in self.make_questions(note_title, self.pick_chunk(text), count):
+                if q["q"].lower() not in seen:
+                    seen.add(q["q"].lower())
+                    questions.append(dict(q, source=note_title))
+        if not questions:
+            return "I couldn't come up with questions for that, try again in a moment."
+        n, k = len(questions), len(old)
+        m = n - k
+        tail = "Say skip if you don't know, or stop to end. "
+        if k and m:
+            intro = f"Quiz for your {title}, {n} questions: {k} you missed before, then {m} new one{'s' if m != 1 else ''}. {tail}"
+        else:
+            intro = f"Quiz for your {title}, {n} question{'s' if n != 1 else ''}. {tail}"
+        return self._begin(title, questions, intro=intro)
+
+    def _begin(self, title, questions, retry=False, intro=None):
         self.active = {"title": title, "questions": questions, "i": 0, "right": 0, "missed": [], "hinted": False,
                        "retry": retry, "fixed": []}
         n = len(questions)
-        intro = (f"Okay, {n} question{'s' if n != 1 else ''} from your mistakes. " if retry else
-                 f"Quiz on {title}, {n} question{'s' if n != 1 else ''}. Say skip if you don't know, or stop to end. ")
+        intro = intro or (f"Okay, {n} question{'s' if n != 1 else ''} from your mistakes. " if retry else
+                          f"Quiz on {title}, {n} question{'s' if n != 1 else ''}. Say skip if you don't know, or stop to end. ")
         return FINAL_PREFIX + intro + f"First one: {questions[0]['q']}"
 
     # ── answers, handled in code ──
@@ -276,7 +320,7 @@ thing is not)? Reply ONLY with JSON: {{"correct": true or false}}"""
             correct, _ = self.judge(cur["q"], cur["a"], text)
             if correct:
                 self.active["right"] += 1
-                if self.active["retry"]:
+                if self.active["retry"] or cur.get("old"):
                     self.active["fixed"].append(cur)
                 said = random.choice(["Yes!", "Correct.", "Exactly.", "That's it.", "Nice, right."])
                 if not quick_check(cur["a"], text):
@@ -291,6 +335,10 @@ thing is not)? Reply ONLY with JSON: {{"correct": true or false}}"""
             lead = "Last one" if self.active["i"] == len(self.active["questions"]) - 1 else "Next"
             return f"{said} {lead}: {nxt['q']}"
         return f"{said} {self._finish()}"
+
+    def stop(self):
+        """End a running quiz the way "stop" does (missed questions are kept); returns what to say, or None."""
+        return self._finish(stopped=True) if self.active else None
 
     def _finish(self, stopped=False):
         a, self.active = self.active, None

@@ -83,3 +83,30 @@ def test_learn_my_face_needs_a_name(aria):
     aria.memory = types.SimpleNamespace(get_memories=lambda n: [])
     aria.vision = types.SimpleNamespace(_camera_index=0, _running=True)
     assert aria.learn_my_face() == "Tell me your name with it, like: learn my face, I'm Sam."
+
+
+# ── the camera is off unless ARIA_CAMERA=1 ──
+
+@pytest.fixture
+def whole_cam(monkeypatch):
+    """A complete AriaVision whose loop and camera are recorded instead of run."""
+    v = V.AriaVision(lambda n: None, lambda: None, lambda: None, memory=types.SimpleNamespace(get_face_profiles=lambda: []))
+    v.opened = []
+    monkeypatch.setattr(V.AriaVision, "_loop", lambda self: self.opened.append("loop"))
+    monkeypatch.setattr(V, "open_camera", lambda: (v.opened.append("camera"), (None, None))[1])
+    return v
+
+
+def test_the_camera_stays_off_by_default(whole_cam, monkeypatch):
+    monkeypatch.delenv("ARIA_CAMERA", raising=False)
+    whole_cam.start()
+    assert whole_cam._running is False and whole_cam._thread is None
+    assert whole_cam.snapshot() is None and whole_cam.opened == []      # nothing ever opens it, not even a snapshot
+
+
+def test_aria_camera_1_turns_it_on(whole_cam, monkeypatch):
+    monkeypatch.setenv("ARIA_CAMERA", "1")
+    whole_cam.start()
+    whole_cam._thread.join(2)
+    assert whole_cam.opened == ["loop"]
+

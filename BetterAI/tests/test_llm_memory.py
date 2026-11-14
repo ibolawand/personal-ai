@@ -49,7 +49,7 @@ def test_tools_always_start_in_the_same_order():
     from Engines.Tool_Engine import ToolEngine
     a = Any()
     t = ToolEngine(spotify=a, arduino=a, vision=a, ha=a, reminders=a, focus=a, screen=a, laptop=a, files=a, notion=a,
-                   initiative=a, memory_note=a, activity=a, weather=a, undo=a, recall=a, health=a, posture=a, quiz=a,
+                   memory_note=a, activity=a, weather=a, undo=a, recall=a, health=a, posture=a, quiz=a,
                    face_learner=lambda name='': 'ok', mail=a)
     order = lambda text: [s["function"]["name"] for s in t.schemas_for(text)]
     small, music, mail = order("how are you"), order("play no excuses by NF"), order("any new emails?")

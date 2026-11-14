@@ -45,8 +45,9 @@ def _tool(tool_name, description, handler, optional=(), **params):
 class ToolEngine:
     def __init__(self, spotify=None, arduino=None, vision=None, ha=None,
                  reminders=None, focus=None, screen=None, laptop=None, files=None, notion=None,
-                 owner_check=None, initiative=None, memory_note=None, activity=None, weather=None, undo=None,
-                 recall=None, health=None, posture=None, quiz=None, face_learner=None, mail=None, untis=None):
+                 owner_check=None, memory_note=None, activity=None, weather=None, undo=None,
+                 recall=None, health=None, posture=None, quiz=None, face_learner=None, mail=None, untis=None,
+                 writer=None):
         self.spotify = spotify
         self.arduino = arduino
         self.vision = vision
@@ -58,7 +59,6 @@ class ToolEngine:
         self.files = files
         self.notion = notion
         self.owner_check = owner_check or (lambda: True)
-        self.initiative = initiative
         self.memory_note = memory_note
         self.activity = activity
         self.weather = weather
@@ -70,6 +70,7 @@ class ToolEngine:
         self.face_learner = face_learner
         self.mail = mail
         self.untis = untis
+        self.writer = writer
         self._registry = {t["schema"]["function"]["name"]: t for t in self._build()}
 
     # Tools that touch the laptop, files, clipboard/screen or phone — gated by owner_check
@@ -84,11 +85,12 @@ class ToolEngine:
         "check_mail", "read_mail", "search_mail", "draft_reply", "draft_mail", "archive_mail", "mark_mail_read",
         "mail_todo", "mail_to_event", "mark_sender_important",
         "school_day", "school_homework", "school_exams",
+        "organize_note", "edit_note",
     }
 
     # Changes "undo that" can take back (Engines/Undo.py)
     UNDOABLE = {"restore_note", "add_note", "save_as_note", "add_to_list", "remove_from_list", "check_off", "add_event",
-                "add_todo", "set_due",
+                "add_todo", "set_due", "write_note", "organize_note", "edit_note",
                 "set_reminder", "set_timer"}
 
     # ── Tool routing ──────────────────────────────────────────────────────────
@@ -122,8 +124,11 @@ class ToolEngine:
                    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|birthday|inbox|remove|clear|move|"
                    r"delete|cancel|shopping|packing|mynotion|notion|save that|day like|restore|older version|"
                    r"old version|bring back|undelete|recover|backup|due|deadline|overdue|by (?:mon|tue|wed|thu|fri|sat|sun)\w*|"
-                   r"hand in|submit)\b",
-                   {"add_note", "save_as_note", "read_note", "search_notes", "list_notes", "add_to_list",
+                   r"hand in|submit|write|wrote|organi[sz]e|tidy|structure|sort|summary|summari[sz]e|translate|"
+                   r"spelling|typos?|grammar|section|part|heading|study sheet|cheat sheet|rewrite|reformat|format|"
+                   r"table|shorter|longer|simpler|columns?|organisier\w*|ordne\w*|spalten?|solution|solved?|exercise|"
+                   r"correct(?:ly)?|stimmt|richtig|rechenweg|l(?:ö|oe)sung|aufgabe)\b",
+                   {"write_note", "organize_note", "edit_note", "check_solution", "add_note", "save_as_note", "read_note", "search_notes", "list_notes", "add_to_list",
                     "remove_from_list", "check_off", "clear_list", "get_events", "add_event", "move_event",
                     "delete_event", "open_mynotion", "daily_briefing", "restore_note", "add_todo", "set_due", "get_due"}),
         "screen": (r"\b(screen|see|look|looking|copied|clipboard|this error|error|camera|who'?s|who is|in front)\b",
@@ -150,9 +155,9 @@ class ToolEngine:
         "home": (r"\b(lights?|leds?|lamp|colou?r|bright|dim|phone|tv|television)\b",
                  {"set_led_color", "set_led_effect", "set_led_brightness", "led_off", "notify_phone",
                   "check_phone_battery", "check_phone_location", "turn_on_tv", "turn_off_tv", "set_tv_volume"}),
-        "misc": (r"\b(conversations?|systems?|working|status|okay|convert|bill|tip|split|miles?|km|kilo\w*|kg|"
+        "misc": (r"\b(systems?|working|status|okay|convert|bill|tip|split|miles?|km|kilo\w*|kg|"
                  r"pounds?|celsius|fahrenheit|inch\w*|feet|cups?|units?|city|live in)\b",
-                 {"conversation_starters", "system_check", "split_bill", "convert_units", "set_home_city"}),
+                 {"system_check", "split_bill", "convert_units", "set_home_city"}),
     }
 
     def schemas_for(self, text: str, recent_tools=()) -> list:
@@ -207,6 +212,15 @@ class ToolEngine:
                 return "Refused: that only works at the desk, not from the phone."
         elif name in self.PROTECTED and not self.owner_check():     # from the phone, her own chat proves it's Lala
             return "Refused: only Lala can use that, and I don't recognise who's at the desk."
+        # small models invent arguments (undo_last(list_name=…)): pass only the ones the tool has
+        known = tool["schema"]["function"].get("parameters", {}).get("properties")
+        if known is not None:
+            dropped = [k for k in (args or {}) if k not in known]
+            if dropped:
+                print(f"[Tools] {name}: ignoring made-up argument(s) {', '.join(dropped)}")
+                from Engines import Diagnostics
+                Diagnostics.problem("dropped_arg", f"{name}: {', '.join(dropped)}")
+            args = {k: v for k, v in (args or {}).items() if k in known}
         try:
             if self.undo and name in self.UNDOABLE:
                 result = self.undo.around(lambda r: str(r), lambda: tool["handler"](**(args or {})))
@@ -331,6 +345,38 @@ class ToolEngine:
                       which=("string", "'that', sender or subject")),
                 _tool("mark_sender_important", "'Always tell me when Sara emails': Aria says it when their mail arrives.",
                       m.mark_sender_important, who=("string", "the sender's name or address")),
+            ]
+
+        if self.writer:
+            wr = self.writer
+            tools += [
+                _tool("write_note",
+                      "WRITE a new, well formatted MyNotion note on a topic (headings, lists, tables, formulas): "
+                      "'write a study sheet on the French Revolution', 'make a note with the circle formulas', "
+                      "'write that up as a note' (from_last_answer). For a quick line or thought use add_note instead.",
+                      wr.write_note, optional=("language", "from_last_answer"),
+                      title=("string", "a short title for the note"),
+                      about=("string", "what it should cover, in Lala's words, with any wishes (length, examples…)"),
+                      language=("string", "only if Lala names a language, e.g. 'German'"),
+                      from_last_answer=("boolean", "true to turn your previous answer into the note")),
+                _tool("organize_note",
+                      "Reorganise an existing MyNotion note: groups what belongs together, adds headings, lists, "
+                      "to-dos and tables; lines lined up side by side with Tab become columns (a table); never removes "
+                      "words ('organise this note', 'tidy up my biology note', 'structure my notes on the war', "
+                      "'put the Tab columns in a table'). 'this' = the note open in MyNotion.",
+                      wr.organize_note, optional=("title",),
+                      title=("string", "the note's title, or 'this' for the note open in MyNotion")),
+                _tool("edit_note",
+                      "Change part of an existing MyNotion note. change: 'add' (write a new part: 'add a section about "
+                      "mitosis'), 'summary' (summary at the top), 'fix_spelling', 'translate' (needs language), "
+                      "'rewrite' (change one part as asked: 'make the intro shorter', 'turn the dates into a table'). "
+                      "'this' = the note open in MyNotion.",
+                      wr.edit_note, optional=("title", "instruction", "section", "language"),
+                      change=("string", "add | summary | fix_spelling | translate | rewrite"),
+                      title=("string", "the note's title, or 'this' for the note open in MyNotion"),
+                      instruction=("string", "for add/rewrite: what to write or change, in Lala's words"),
+                      section=("string", "the heading of the part to change or to add after, if Lala names one"),
+                      language=("string", "for translate: the language to translate into")),
             ]
 
         if self.quiz:
@@ -466,6 +512,14 @@ class ToolEngine:
                 _tool("read_note", "Read one MyNotion note or list ALOUD, e.g. 'what's on my shopping list', 'read my packing list'. "
                       "If Lala says OPEN / show / pull up a note, use open_mynotion instead.", nt.read_note,
                       title=("string", "note or list name, e.g. 'shopping list'")),
+                _tool("check_solution",
+                      "CHECK Lala's worked maths in a MyNotion note with exact maths: is the solution of a "
+                      "differential equation right? ('is my solution right?', 'check exercise 4.15', 'did I solve "
+                      "4.3 correctly?', 'stimmt mein Rechenweg?'). Never judge a solution yourself; always call this.",
+                      lambda title="this", exercise="": __import__("Engines.MathCheck", fromlist=["check_in_note"])
+                      .check_in_note(nt, title, exercise), optional=("title", "exercise"),
+                      title=("string", "the note's title, or 'this' for the note open in MyNotion"),
+                      exercise=("string", "the exercise number if Lala names one, e.g. '4.15' or '4.26 a'")),
                 _tool("search_notes",
                       "Search Lala's MyNotion notes. Use for questions about Lala's own life or things they wrote down "
                       "(birthdays, plans, passwords hints, exam topics, ideas) before saying you don't know.",
@@ -644,13 +698,6 @@ class ToolEngine:
                                "since their last break ('how long have I been coding?', 'what did I do today?').",
                                self.activity.screen_time))
 
-        if self.initiative:
-            tools.append(_tool(
-                "conversation_starters",
-                "Turn on/off Aria starting conversations by herself (check-ins after events, the weekly review, "
-                "casual chats). E.g. 'stop starting conversations' -> false, 'you can talk to me on your own again' -> true.",
-                self._conversation_starters, enabled=("boolean", "true to allow, false to stop")))
-
         return tools
 
     def _events_with_school(self, when: str = "this week"):
@@ -667,12 +714,6 @@ class ToolEngine:
             if inside.startswith("Documents that mention"):
                 return result + " But in your files: " + inside
         return result
-
-    def _conversation_starters(self, enabled=True):
-        on = str(enabled).lower() not in ("false", "0", "no", "off")
-        self.initiative.set_enabled(on)
-        return ("Okay, I'll start a conversation now and then again." if on
-                else "Okay, I won't start conversations on my own anymore.")
 
     # ── Handlers ──────────────────────────────────────────────────────────────
 

@@ -160,9 +160,6 @@ def aria(notion):
     a.session_msgs = 0
     a._pending_state = None
     a._last_reply = ""
-    a._session_hint = None
-    a._review = None
-    a._initiative_active = None
     a.last_talked = 0
     a.awake = False
     a.screen = types.SimpleNamespace(read_clipboard=lambda: "", copy_to_clipboard=lambda t: "Copied.")

@@ -289,6 +289,23 @@ class Untis:
             return "Tests: " + "; ".join(self._exam_text(e) for e in exams[:6]) + "."
         return self._safely(answer)
 
+    def upcoming_tests(self, days: int = 7) -> list:
+        """Tests in the next `days` days as plain records, nearest first. [] without a saved login; errors from
+        WebUntis are the caller's to handle."""
+        if not load_login():
+            return []
+        today = self.today()
+        out = []
+        for e in self._exams():
+            day = _date(e["examDate"])
+            subject = (e.get("subject") or "").strip()
+            if not subject or (day - today).days > days:
+                continue
+            out.append({"id": f"{e['examDate']}-{subject}-{e.get('startTime') or 0:04d}", "subject": subject,
+                        "kind": e.get("examType") or e.get("name") or "Test", "date": day,
+                        "topic": (e.get("text") or "").strip()})
+        return out
+
     # ── the morning briefing ──
 
     def briefing_line(self) -> str:

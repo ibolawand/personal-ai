@@ -14,7 +14,7 @@ class Any:
 def tools():
     a = Any()
     return ToolEngine(spotify=a, arduino=a, vision=a, ha=a, reminders=a, focus=a, screen=a, laptop=a, files=a,
-                      notion=a, initiative=a, memory_note=a, activity=a, weather=a, undo=a, recall=a, health=a, posture=a, quiz=a, face_learner=lambda name='': 'ok', mail=a, untis=a)
+                      notion=a, memory_note=a, activity=a, weather=a, undo=a, recall=a, health=a, posture=a, quiz=a, face_learner=lambda name='': 'ok', mail=a, untis=a)
 
 
 def names(tools, text, recent=()):
@@ -99,3 +99,24 @@ def test_led_tools_only_while_the_strip_is_plugged_in():
     assert "set_led_color" not in names(t, "make the lights blue")
     strip.is_connected = True                      # plugged in later
     assert "set_led_color" in names(t, "make the lights blue")
+
+
+def test_arguments_a_tool_does_not_have_are_dropped():
+    """The model said "undo that" as undo_last(list_name='shopping'); the made-up argument must not make it fail."""
+    from Engines.Tool_Engine import ToolEngine
+    calls = []
+    t = ToolEngine(undo=type("U", (), {"undo": lambda self: calls.append(1) or "Put it back."})())
+    assert t.execute("undo_last", {"list_name": "shopping"}) == "Put it back."
+    assert calls == [1]
+    assert "32" in t.execute("calculate", {"expression": "16 * 2", "precision": 2})     # real arguments still arrive
+
+
+def test_dropped_arguments_are_logged(monkeypatch):
+    from Engines import Diagnostics
+    from Engines.Tool_Engine import ToolEngine
+    problems = []
+    monkeypatch.setattr(Diagnostics, "problem", lambda kind, detail="", **k: problems.append((kind, detail)))
+    t = ToolEngine(undo=type("U", (), {"undo": lambda self: "Put it back."})())
+    t.execute("undo_last", {"list_name": "shopping"})
+    t.execute("calculate", {"expression": "1 + 1"})
+    assert problems == [("dropped_arg", "undo_last: list_name")]

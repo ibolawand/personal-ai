@@ -18,11 +18,41 @@ pytestmark = [pytest.mark.model,
               pytest.mark.skipif(os.environ.get("ARIA_MODEL_TESTS") != "1", reason="set ARIA_MODEL_TESTS=1")]
 
 
+_REAL_POPEN = __import__("subprocess").Popen
+
+
+@pytest.fixture(autouse=True)
+def _main_imported(monkeypatch):
+    """main imports gradio_client, which runs a program while it loads; the tests' stand-in for starting programs
+    (conftest) would break that, so main is imported with the real one first."""
+    import subprocess
+    with monkeypatch.context() as m:
+        m.setattr(subprocess, "Popen", _REAL_POPEN)
+        import main  # noqa: F401
+
+
 class Stub:
     menu = None
 
     def __getattr__(self, name):
         return lambda *a, **k: "Done."
+
+
+class WriterStub:
+    """Records what the model asked for (the real writing is checked in test_note_writer.py)."""
+    def __init__(self):
+        self.calls = []
+
+    def _rec(self, name):
+        def call(**kw):
+            self.calls.append((name, kw))
+            return "Done — the note is changed."
+        return call
+
+    def __getattr__(self, name):
+        if name in ("write_note", "organize_note", "edit_note"):
+            return self._rec(name)
+        raise AttributeError(name)
 
 
 @pytest.fixture
@@ -42,7 +72,8 @@ def real_aria(aria, memory, tmp_path):
     aria.posture = s                                   # "this is my good posture" is handled in code
     aria.tools = ToolEngine(spotify=s, vision=s, reminders=aria.reminders, focus=s, screen=s, laptop=s,
                             files=FilesEngine(aria.confirm, roots=[str(tmp_path)]), notion=aria.notion,
-                            initiative=s, memory_note=s, activity=s, weather=s, recall=s, health=s, posture=s, quiz=s, face_learner=lambda name='': 'Okay, look at the camera.', mail=s)
+                            memory_note=s, activity=s, weather=s, recall=s, health=s, posture=s, quiz=s, face_learner=lambda name='': 'Okay, look at the camera.', mail=s,
+                            writer=WriterStub())
     return aria
 
 
@@ -64,7 +95,28 @@ COMMANDS = [
     ("the essay is due on monday now", "set_due|add_todo"),
     ("any new emails?", "check_mail"), ("read the email from Mr Huber", "read_mail"),
     ("reply to Sara that I'm in", "draft_reply"),
+    ("organise this note", "organize_note"), ("tidy up my biology note", "organize_note"),
+    ("organisiere diese Notiz", "organize_note"), ("mach aus den Tab-Spalten eine Tabelle", "organize_note"),
+    ("is my solution for 4.15 right?", "check_solution"), ("check exercise 4.3 in this note", "check_solution"),
+    ("stimmt mein Rechenweg bei 4.15?", "check_solution"),
+    ("write a study sheet on the french revolution", "write_note"),
+    ("make a note with the formulas for circles", "write_note"),
+    ("add a section about mitosis to my biology note", "edit_note"),
+    ("put a short summary at the top of this note", "edit_note"),
+    ("fix the spelling in my biology note", "edit_note"), ("translate this note into English", "edit_note"),
 ]
+
+
+@pytest.mark.parametrize("text,check", [
+    ("put a short summary at the top of this note", lambda a: a.get("change") == "summary"),
+    ("translate this note into English", lambda a: a.get("change") == "translate" and "english" in a.get("language", "").lower()),
+    ("fix the spelling in my biology note", lambda a: a.get("change") == "fix_spelling" and "bio" in a.get("title", "").lower()),
+    ("add a section about mitosis to my biology note", lambda a: a.get("change") == "add" and "mitos" in a.get("instruction", "").lower()),
+])
+def test_edit_note_gets_the_right_change(real_aria, text, check):
+    reply, used = real_aria.handle_turn(text, check_state=False)
+    args = [a for n, a in real_aria.tools.writer.calls if n == "edit_note"]
+    assert args and check(args[0]), f"{text!r} -> {real_aria.tools.writer.calls}: {reply!r}"
 
 
 @pytest.mark.parametrize("text,tool", COMMANDS)

@@ -16,7 +16,11 @@ from gradio_client import Client
 # kokoro (default): small and smooth, runs on the CPU so the whole GPU stays free for the LLM.
 # chatterbox: clones Engines/ref_voice.wav, but takes ~4 GB of VRAM and pushes the LLM onto the CPU.
 TTS_ENGINE = os.environ.get("TTS_ENGINE", "kokoro").lower()
-KOKORO_VOICE = os.environ.get("KOKORO_VOICE", "af_heart")
+# Her voice fits her avatar (a young, playful anime girl): a blend of af_heart (Kokoro's clearest voice) and the
+# brighter af_bella, lifted VOICE_LIFT semitones (pitch and voice size together, as a younger, smaller speaker):
+# ~230 Hz instead of af_heart's mature ~205 Hz. "name*weight+name*weight" blends; VOICE_LIFT=0 turns the lift off.
+KOKORO_VOICE = os.environ.get("KOKORO_VOICE", "af_heart*0.5+af_bella*0.5")
+VOICE_LIFT = float(os.environ.get("VOICE_LIFT", "2.0"))
 KOKORO_DEVICE = os.environ.get("KOKORO_DEVICE", "cpu")
 KOKORO_SR = 24000
 
@@ -82,6 +86,34 @@ def sentence_tone(sentence: str) -> str:
         return "playful"
     return "neutral"
 COMMA_PAUSE_S = 0.12
+
+
+def blend_voice(pipeline, spec: str):
+    """Kokoro voice pack for "af_heart" or a weighted blend "af_heart*0.5+af_bella*0.5" (the voice embeddings
+    averaged, which is how Kokoro's own blended voices are made)."""
+    parts = []
+    for part in spec.split("+"):
+        name, _, weight = part.strip().partition("*")
+        parts.append((name.strip(), float(weight) if weight else 1.0))
+    if len(parts) == 1:
+        return parts[0][0]
+    total = sum(w for _, w in parts)
+    return sum(pipeline.load_single_voice(n) * (w / total) for n, w in parts)
+
+
+def lift_rate(semitones: float) -> float:
+    """How much faster `lift` plays the voice: Kokoro is asked for speech this much slower, so the pace stays."""
+    return 2 ** (semitones / 12)
+
+
+def lift(audio: np.ndarray, semitones: float) -> np.ndarray:
+    """Raise the voice `semitones` by playing it faster (resampling): pitch and formants go up together, like a
+    smaller vocal tract, which sounds younger and lighter rather than "pitch-shifted", and adds no artifacts.
+    The audio gets shorter by the same factor."""
+    if not semitones or audio is None or len(audio) == 0:
+        return audio
+    rate = lift_rate(semitones)
+    return signal.resample_poly(audio, 1000, round(1000 * rate)).astype(np.float32)
 
 
 def polish_audio(audio: np.ndarray, sr: int) -> np.ndarray:
@@ -258,9 +290,10 @@ class VoiceEngine:
         else:
             print(f"[VoiceEngine] Loading Kokoro ({KOKORO_VOICE} on {KOKORO_DEVICE})...")
             from kokoro import KPipeline
-            self._kokoro = KPipeline(lang_code=KOKORO_VOICE[0], device=KOKORO_DEVICE, repo_id="hexgrad/Kokoro-82M")
+            self._kokoro = KPipeline(lang_code=KOKORO_VOICE.strip()[0], device=KOKORO_DEVICE, repo_id="hexgrad/Kokoro-82M")
             self._tts_sr = KOKORO_SR
-            list(self._kokoro("Ready.", voice=KOKORO_VOICE))  # warm-up, so the first real sentence is quick
+            self._voice = blend_voice(self._kokoro, KOKORO_VOICE)
+            list(self._kokoro("Ready.", voice=self._voice))  # warm-up, so the first real sentence is quick
             print("[VoiceEngine] Kokoro ready.")
 
         self.rvc_client = None
@@ -346,11 +379,12 @@ class VoiceEngine:
                 return None, self._tts_sr
 
             if self._kokoro is not None:
-                chunks = [r.audio.numpy() for r in self._kokoro(text, voice=KOKORO_VOICE, speed=speed or self._speed)
+                pace = (speed or self._speed) / lift_rate(VOICE_LIFT)
+                chunks = [r.audio.numpy() for r in self._kokoro(text, voice=self._voice, speed=pace)
                           if r.audio is not None]
                 if not chunks:
                     return None, KOKORO_SR
-                return np.concatenate(chunks).astype(np.float32), KOKORO_SR
+                return lift(np.concatenate(chunks).astype(np.float32), VOICE_LIFT), KOKORO_SR
 
             wav = self._tts.generate(
                 text,
