@@ -487,6 +487,10 @@ checks for that: quiet hours, a locked screen, something fullscreen, another app
   ("open Packet Tracer", "open Discord", "open Writer", even "open the web browser"). Apps are started the way the
   menu starts them (`gtk-launch`), and an app that's already open is brought to the front instead.
   "Where is my Packet Tracer?" / "do I have Discord?" says whether it's installed and offers to open it.
+- **Study apps at startup** (`Engines/Startup.py`, `tests/test_startup.py`): when the laptop starts (Aria's first
+  start after a boot, through her autostart), she opens VS Code and MyNotion. Restarting Aria doesn't reopen them, so
+  what you closed stays closed; an app already open is left as it is. `ARIA_STARTUP_APPS` in `Engines/.env` changes
+  the list (comma separated, e.g. `vscode,mynotion,spotify`); empty turns it off.
 - **Sound:**
   - set, raise or lower the volume; mute
   - list audio outputs and switch between them ("switch to my headphones")

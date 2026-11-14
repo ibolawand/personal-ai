@@ -21,6 +21,7 @@ from Controller.Spotify_controll import SpotifyEngine
 from database import AriaMemory
 from Engines.Companion import Companion, Probes, school_over, UNKNOWN
 from Engines.Beat import BeatReader
+from Engines import Startup
 from Engines.Confirm import Confirmer
 from Engines.Emotionengine import EmotionEngine
 from Engines.FilesEngine import FilesEngine
@@ -603,6 +604,8 @@ class Aria:
             if self.beat:
                 self.beat.start()
         self.files.start_indexing()
+        # the laptop just started: open VS Code and MyNotion once (Engines/Startup.py; ARIA_STARTUP_APPS)
+        threading.Thread(target=Startup.on_laptop_start, args=(self.laptop,), daemon=True).start()
         self._start_app_bridge()
 
     def _event_reminder_loop(self):
