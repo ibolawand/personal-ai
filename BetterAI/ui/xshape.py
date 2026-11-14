@@ -21,9 +21,9 @@ class _XRectangle(ctypes.Structure):
     _fields_ = [("x", ctypes.c_short), ("y", ctypes.c_short), ("width", ctypes.c_ushort), ("height", ctypes.c_ushort)]
 
 
-def avatar_click_rects(avatar: QRect, step: int = 8):
+def avatar_click_rects(avatar: QRect, step: int = 8, hole: QRect = None):
     """Horizontal strips that fill an ellipse in the upper 80% of her box, 72% of its width: her outline, near
-    enough, for clicks.
+    enough, for clicks; without `hole` (the part an app in front of her covers: clicks there go to the app).
     (The same ellipse Overlay._in_orb uses to decide that a click was on her.)"""
     rx, ry = avatar.width() * HER_WIDTH / 2, avatar.height() * 0.4
     cx, cy = avatar.left() + avatar.width() / 2, avatar.top() + ry
@@ -34,7 +34,14 @@ def avatar_click_rects(avatar: QRect, step: int = 8):
         mid = (y + h / 2 - cy) / ry
         half = rx * max(0.0, 1 - mid * mid) ** 0.5
         if half >= 1:
-            rects.append(QRect(int(cx - half), y, int(2 * half), h))
+            strip = QRect(int(cx - half), y, int(2 * half), h)
+            if hole is None or not strip.intersects(hole):
+                rects.append(strip)
+            else:                       # what's left of the strip beside the hole
+                if hole.left() > strip.left():
+                    rects.append(QRect(strip.left(), y, hole.left() - strip.left(), h))
+                if hole.right() < strip.right():
+                    rects.append(QRect(hole.right() + 1, y, strip.right() - hole.right(), h))
         y += h
     return rects
 

@@ -432,7 +432,7 @@ def test_a_view_can_ask_for_a_taller_box(app, tmp_path):
     view.box = A.BOX_MODEL                      # what make_view sets for a loaded .vrm
     overlay = O.Overlay(O.OverlayBridge(), make_avatar=lambda parent: view)
     overlay.timer.stop()
-    assert (overlay._avatar_rect().width(), overlay._avatar_rect().height()) == (300, 520)
+    assert (overlay._avatar_rect().width(), overlay._avatar_rect().height()) == A.BOX_MODEL
     assert overlay.height() == O.WIN_H + 520 - O.ORB_BOX
     assert overlay._avatar_rect().bottomRight() == overlay._orb_rect().bottomRight()
 
@@ -530,3 +530,326 @@ def test_she_is_told_where_to_sit_rides_along_with_the_window_and_hops_down_when
     finally:
         overlay.timer.stop()
         overlay.close()
+
+
+# ── peeking out from behind an app ──
+
+class HidingView(PerchingView):
+    """A page that reports which window she is behind."""
+    behind = None
+
+    def ask_travel(self, answer):
+        answer(self.report, self.behind)
+
+
+@pytest.fixture
+def hiding(app, stage, monkeypatch):
+    """(overlay, view, windows, tick): her overlay on the screen with fake windows (a list to change)."""
+    import ui.desktop_windows as D
+    from ui.overlay import Overlay
+    _, bridge, _ = stage(shown=False)
+    view = HidingView()
+    overlay = Overlay(bridge, make_avatar=lambda parent: view)
+    view.link.mark_ready()
+    overlay.show()
+    state(app, bridge, "idle")
+    screen = overlay.screen().availableGeometry()
+    overlay.move(screen.left() + 300 - (overlay.width() - overlay.avatar_w), screen.bottom() - overlay.height())
+    app.processEvents()
+    overlay.timer.stop()
+    windows = []
+    monkeypatch.setattr(D, "open_windows", lambda own=None: list(windows))
+    monkeypatch.setattr(D, "window_rect", lambda wid: next((w for w in windows if w.id == wid), None))
+    from PySide6.QtCore import QRect
+    monkeypatch.setattr(overlay, "_screen_area", lambda: QRect(0, 0, 1920, 1040))   # a real-size screen
+
+    def tick():
+        overlay._fed["seats"] = 0.0
+        overlay._fed["cover"] = 0.0
+        overlay._tick()
+    yield overlay, view, windows, tick
+    overlay.close()
+
+
+def tall(overlay, wid, left, right):
+    """A window from above her head to below her feet, `left`/`right` px from the middle of her box."""
+    import ui.desktop_windows as D
+    box = overlay._avatar_rect().translated(overlay.pos())
+    return D.Win(wid, box.center().x() + left, box.top() - 20, box.center().x() + right, box.bottom() + 20)
+
+
+def last_json(view, name):
+    import json
+    sent = calls(view, name)
+    return json.loads(sent[-1][len(f"window.aria.{name}("):-1]) if sent else "nothing sent"
+
+
+def test_she_is_told_where_she_could_hide(hiding):
+    overlay, view, windows, tick = hiding
+    windows.append(tall(overlay, 3, 150, 400))
+    tick()
+    assert last_json(view, "setHideouts") == [{"id": 3, "x": 150, "out": -1}, {"id": 3, "x": 400, "out": 1}]
+
+
+def test_a_window_raised_over_her_hides_her_and_she_is_told(hiding):
+    overlay, view, windows, tick = hiding
+    tick()                                       # what was there before doesn't count
+    assert not calls(view, "hiddenBy")
+    windows.append(tall(overlay, 4, -100, 250))
+    tick()
+    assert last_json(view, "hiddenBy") == {"id": 4, "left": -100, "right": 250}
+    tick()
+    assert len(calls(view, "hiddenBy")) == 1, "once, not every time we look"
+
+
+def test_while_behind_the_cut_out_follows_the_window_and_goes_with_it(hiding):
+    import ui.desktop_windows as D
+    overlay, view, windows, tick = hiding
+    win = tall(overlay, 5, -100, 250)
+    windows.append(win)
+    view.behind = 5
+    tick()
+    box = overlay._avatar_rect().translated(overlay.pos())
+    assert last_json(view, "setCover") == {"left": win.left - box.left(), "top": win.top - box.top(),
+                                           "right": win.right - box.left(), "bottom": win.bottom - box.top()}
+    windows[0] = D.Win(5, win.left + 30, win.top, win.right + 30, win.bottom)
+    tick()
+    assert last_json(view, "setCover")["left"] == win.left + 30 - box.left()
+    windows.clear()                              # closed: all of her shows again
+    tick()
+    assert calls(view, "setCover")[-1] == "window.aria.setCover(null)"
+
+
+def test_no_hiding_reaction_while_up_on_a_window_or_walking(hiding):
+    overlay, view, windows, tick = hiding
+    tick()
+    overlay._aloft = True
+    windows.append(tall(overlay, 6, -100, 250))
+    tick()
+    overlay._aloft = False
+    overlay._travel.done = False                 # walking somewhere
+    windows.append(tall(overlay, 7, -120, 260))
+    tick()
+    assert not calls(view, "hiddenBy")
+
+
+def test_a_drag_while_behind_removes_the_cut_out(hiding):
+    overlay, view, windows, tick = hiding
+    windows.append(tall(overlay, 8, -100, 250))
+    view.behind = 8
+    tick()
+    start = overlay._avatar_rect().center() - QPoint(0, 60)
+    QTest.mousePress(overlay, Qt.LeftButton, pos=start)
+    QTest.mouseMove(overlay, start + QPoint(30, 0))
+    QTest.mouseRelease(overlay, Qt.LeftButton, pos=start + QPoint(30, 0))
+    assert calls(view, "setCover")[-1] == "window.aria.setCover(null)"
+
+
+def test_clicks_on_the_hidden_part_of_her_go_to_the_app():
+    from PySide6.QtCore import QRect
+    from ui.xshape import avatar_click_rects
+    box, hole = QRect(0, 0, 300, 520), QRect(150, 0, 200, 600)
+    rects = avatar_click_rects(box, hole=hole)
+    assert rects and not any(r.intersects(hole) for r in rects)
+    assert any(r.right() > 140 for r in rects), "the part beside the hole still takes clicks"
+
+
+def test_when_the_app_she_is_behind_goes_she_is_told_and_just_stands_there(hiding):
+    overlay, view, windows, tick = hiding
+    windows.append(tall(overlay, 9, -100, 250))
+    view.behind = 9
+    tick()
+    windows.clear()
+    tick()
+    assert calls(view, "unhide"), "she stops peeking at nothing"
+
+
+def test_when_the_app_moves_off_her_she_is_told_too(hiding):
+    import ui.desktop_windows as D
+    overlay, view, windows, tick = hiding
+    win = tall(overlay, 10, -100, 250)
+    windows.append(win)
+    view.behind = 10
+    tick()
+    windows[0] = D.Win(10, win.left + 2000, win.top, win.right + 2000, win.bottom)
+    tick()
+    assert calls(view, "unhide")
+
+
+def test_a_late_report_during_a_drag_does_not_bring_the_cut_out_back(hiding):
+    overlay, view, windows, tick = hiding
+    windows.append(tall(overlay, 11, -100, 250))
+    start = overlay._avatar_rect().center() - QPoint(0, 60)
+    QTest.mousePress(overlay, Qt.LeftButton, pos=start)
+    QTest.mouseMove(overlay, start + QPoint(30, 0))
+    overlay._on_travel(None, 11)                 # sent before the drag, arriving now
+    assert overlay._behind is None
+    QTest.mouseRelease(overlay, Qt.LeftButton, pos=start + QPoint(30, 0))
+
+
+def test_the_cut_out_reads_only_that_window(hiding, monkeypatch):
+    import ui.desktop_windows as D
+    overlay, view, windows, tick = hiding
+    windows.append(tall(overlay, 12, -100, 250))
+    view.behind = 12
+    tick()
+    monkeypatch.setattr(D, "open_windows", lambda own=None: (_ for _ in ()).throw(AssertionError("all windows read")))
+    overlay._fed["cover"] = 0.0
+    overlay._fed["seats"] = overlay._fed["room"] = 10_000.0
+    overlay._feed_avatar(10_000.0)               # only the cover is due
+    assert calls(view, "setCover")
+
+
+def test_edges_her_box_cannot_reach_on_the_screen_are_left_out(hiding):
+    overlay, view, windows, tick = hiding
+    screen = overlay._screen_area()
+    box = overlay._avatar_rect().translated(overlay.pos())
+    off = screen.left() - box.center().x() + 40      # an edge 40 px from the screen's left: her box can't get there
+    windows.append(tall(overlay, 13, off, 150))
+    tick()
+    assert [e["x"] for e in last_json(view, "setHideouts")] == [150]
+
+
+def test_raised_over_her_with_one_edge_off_the_screen_she_goes_to_the_other(hiding):
+    overlay, view, windows, tick = hiding
+    screen = overlay._screen_area()
+    box = overlay._avatar_rect().translated(overlay.pos())
+    tick()
+    windows.append(tall(overlay, 14, screen.left() - box.center().x() - 50, 300))
+    tick()
+    got = last_json(view, "hiddenBy")
+    assert got["right"] == 300 and abs(got["left"]) > 10_000, "the edge off the screen is out of the question"
+
+
+# ── her window hugs her box, and grows round her only while something else is up ──
+
+def test_with_nothing_else_up_the_window_is_her_box(hiding):
+    overlay, view, windows, tick = hiding
+    tick()
+    assert overlay.size() == overlay._avatar_rect().size() and overlay._avatar_rect().topLeft() == QPoint(0, 0)
+
+
+def test_the_text_box_widens_the_window_round_her_without_moving_her(hiding):
+    overlay, view, windows, tick = hiding
+    tick()
+    before = overlay._box_screen
+    overlay._toggle_input(True)
+    tick()
+    assert overlay.width() > overlay.avatar_w and overlay._box_screen == before
+    assert overlay._avatar_rect().translated(overlay.pos()).topLeft() == before
+    assert overlay._input_rect().right() < overlay.width() and overlay._input_rect().left() >= 0
+
+
+def test_at_the_left_and_top_of_the_screen_the_wide_window_still_fits(hiding):
+    overlay, view, windows, tick = hiding
+    overlay._place(QPoint(10, 20))              # her box near the top-left corner of the screen
+    overlay._toggle_input(True)
+    tick()
+    assert overlay.x() >= 0 and overlay.y() >= 0, "the window manager would push it back (and her with it)"
+    assert overlay._avatar_rect().translated(overlay.pos()).topLeft() == QPoint(10, 20)
+
+
+def test_an_unused_text_box_closes_and_while_open_she_stays_put(hiding, monkeypatch):
+    import ui.overlay as O
+    overlay, view, windows, tick = hiding
+    overlay._toggle_input(True)
+    tick()
+    assert calls(view, "setEngaged")[-1] == "window.aria.setEngaged(true)"
+    overlay._input_used -= O.INPUT_IDLE_S + 1
+    tick()
+    assert not overlay.input.isVisible()
+    tick()
+    assert calls(view, "setEngaged")[-1] == "window.aria.setEngaged(false)"
+    assert overlay.size() == overlay._avatar_rect().size()
+
+
+def test_a_text_box_with_something_typed_stays(hiding):
+    import ui.overlay as O
+    overlay, view, windows, tick = hiding
+    overlay._toggle_input(True)
+    overlay.input.setText("half a sent")
+    overlay._input_used -= O.INPUT_IDLE_S + 1
+    tick()
+    assert overlay.input.isVisible()
+
+
+# ── high up: her box may stick out above the screen (only empty space above her head is cut off) ──
+
+class HeadroomView(HidingView):
+    """A page whose seat is 230 px above the bottom of her box, with her head 200 px above that."""
+    def ask_seat_height(self, answer):
+        answer(230.0, 200.0)
+
+
+@pytest.fixture
+def high(hiding, monkeypatch):
+    overlay, view, windows, tick = hiding
+    overlay.avatar.__class__ = HeadroomView
+    overlay._seat_h = None
+    return overlay, view, windows, tick
+
+
+def test_a_window_high_on_the_screen_is_a_seat_when_her_head_fits_above_it(high):
+    import json
+    import ui.desktop_windows as D
+    overlay, view, windows, tick = high
+    box = overlay._avatar_rect().translated(overlay.pos())
+    windows.append(D.Win(20, box.center().x() - 300, 230, box.center().x() + 300, 800))   # 230 px from the top
+    tick()
+    tick()
+    seats = json.loads(calls(view, "setSeats")[-1][len("window.aria.setSeats("):].rsplit(",", 1)[0])
+    assert seats and seats[0]["y"] == 230 - box.bottom()
+
+
+def test_her_box_sticks_out_above_the_screen_but_the_window_stays_on_it(high):
+    overlay, view, windows, tick = high
+    overlay._place(QPoint(400, -150))            # perched high: the top 150 px of her box is above the screen
+    tick()
+    assert overlay.y() >= 0, "the window manager would push the window (and her) down"
+    assert overlay._avatar_rect().translated(overlay.pos()).topLeft() == QPoint(400, -150)
+    assert overlay.height() == overlay.avatar_h - 150
+    overlay._toggle_input(True)                  # and with the text box up
+    tick()
+    assert overlay.y() >= 0 and overlay._avatar_rect().translated(overlay.pos()).topLeft() == QPoint(400, -150)
+
+
+# ── an app maximized: she may sit on the top edge of the bottom panel ──
+
+def panel_seats(view):
+    import json
+    seats = json.loads(calls(view, "setSeats")[-1][len("window.aria.setSeats("):].rsplit(",", 1)[0])
+    return [s for s in seats if s.get("low")]
+
+
+def test_with_an_app_maximized_the_top_of_the_panel_is_a_seat(high, monkeypatch):
+    import ui.desktop_windows as D
+    overlay, view, windows, tick = high
+    overlay._place(QPoint(400, 1040 - overlay.avatar_h - 14))      # standing on her floor
+    monkeypatch.setattr(D, "any_maximized", lambda own=None: False)
+    tick()
+    tick()
+    assert panel_seats(view) == []
+    monkeypatch.setattr(D, "any_maximized", lambda own=None: True)
+    tick()
+    seat = panel_seats(view)
+    assert seat and seat[0]["y"] == 1040 - (overlay._box_screen.y() + overlay.avatar_h) and abs(seat[0]["x"]) <= seat[0]["half"]
+
+
+def test_sitting_down_on_the_panel_her_box_reaches_below_it_and_the_window_does_not(high, monkeypatch):
+    import ui.desktop_windows as D
+    overlay, view, windows, tick = high
+    monkeypatch.setattr(D, "any_maximized", lambda own=None: True)
+    floor = 1040 - overlay.avatar_h - 14
+    overlay._place(QPoint(400, floor))
+    tick()
+    tick()
+    view.report = [7, 0, True, 0.0]
+    tick()
+    view.report = [7, 0, False, 244.0]                              # sat down onto the edge: 244 px lower
+    tick()
+    assert overlay._box_screen.y() == floor + 244
+    assert overlay.y() + overlay.height() <= 1040, "the window stays in the work area"
+    assert overlay._aloft and overlay._perch and overlay._perch[0] == 0, "up on a seat (the panel)"
+    tick()
+    assert calls(view, "setSeats")[-1].endswith(",-244)"), "her floor is 244 px above her now"
+    assert not calls(view, "dropDown"), "the panel doesn't go away"

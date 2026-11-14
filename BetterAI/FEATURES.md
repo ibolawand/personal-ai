@@ -112,6 +112,16 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 - **Awake, she is a 3D character** (`ui/avatar/`, `ui/avatar_view.py`, `ui/xshape.py`). Asleep you see the orb, exactly
   as before. When she wakes, the orb fades into a small anime-style figure (about 300 × 400 pixels, her whole body),
   and back when she sleeps.
+  - **Her box hugs her:** her character's box is only 250 px wide, and while nothing else is up (no bubble, card,
+    text box or hover caption) the overlay's window is exactly that box. So walking to the edge of the screen she
+    gets right up to it: the window manager keeps every window fully on the screen, and the old 420 px window
+    with room for bubbles beside her stopped her (walking on the spot) far from the edge, and pushed her down
+    when she sat on a window near the top. When something comes up, the window grows round her, placed so it
+    fits on the screen, and her box stays exactly where it is (`Overlay._place`). The text box closes by itself
+    after 15 seconds open, empty and unused, so it doesn't ride along on her walks.
+  - **Small things that make her feel alive:** a big jump of her gaze comes with a blink, as in people (it hides the
+    eyes snapping across); a wave lifts the elbow to a little below her shoulder, swung forward, with the forearm
+    up beside her face (not the whole arm out level with her shoulder).
   - **Who she is:** the character in `ui/avatar/aria.vrm` (or the file `ARIA_AVATAR` in `Engines/.env` names). Right now
     that is VRoid's sample character "AvatarSample_B" (by the VRoid Project; free for everyone to use, no credit needed),
     put there on 2026-11-13. Any VRM file works, for example one you export from VRoid Studio: replace the file and
@@ -128,10 +138,12 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
   - **She does things of her own while idle** (every 6 to 16 seconds, only while awake with nothing going on). A
     weighted picker (`chooseIdle` in `ui/avatar/logic.mjs`) chooses among about a dozen things and never repeats one
     of the last three, so she doesn't loop:
-    - **a walk across the screen:** she turns to one side and walks somewhere else on the screen, and the whole
-      overlay (her text box, bubbles and cards) goes with her; she stays there until her next walk. The side with
-      more room is the likelier one, so she drifts back toward the middle; about one walk in three goes all the way
-      to the edge of the screen, where she looks out past it and glances back over her shoulder at you. She walks
+    - **a walk across the screen:** she turns to one side (taking a small step round, not pivoting on planted feet)
+      and walks somewhere else on the screen, a few seconds' walk at most (up to about 600 px), at a relaxed human
+      pace (about half her height a second, a little under two steps a second); she stays there until her next
+      walk. Her bubbles and cards go with her. The side with more room is the likelier one, so she drifts back
+      toward the middle; when the edge of the screen is near, about one walk in three goes all the way to it, where
+      she looks out past it and glances back over her shoulder at you. She walks
       with a real stride (legs and arms swinging against each other, hips turning against her chest, a small bob),
       speeds up and slows down smoothly, her steps follow how far she has gone (her feet don't skate), her head
       turns before her body does, and as she stops her body carries on a moment and settles (a spring). Talk to her
@@ -139,8 +151,8 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
       (the one Aria starts at next time); walks don't change it. The page plans the walk (`planTrip`/`trip` in
       `ui/avatar/logic.mjs`) and reports how far she has gone; the overlay moves its window that far
       (`Travel` in `ui/avatar_view.py`). Inside the page the camera follows her, so her hair still swings with the
-      walk. Her box always stays fully on the screen. With no room on either side she strolls inside her box and
-      back instead.
+      walk. With no room on either side she strolls inside her box and back instead. While the text box is open (or
+      a card is up) she stays where she is: you're talking to her.
     - **sitting on top of a window:** after about 15 seconds of nothing she may walk under an open window (the
       nearest one is likelier), crouch, jump up and land sitting on its top edge, legs hanging over the front of
       the app and swinging now and then, hands in her lap, turned a little (square on, her skirt flips up) with
@@ -149,11 +161,32 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
       push off, a fall that speeds up, a crouch to land, back where she was standing. If the window moves she
       rides along; if it closes, is minimized, made full-size or another window covers her spot, she hops down.
       Drag her off and she stands where you put her. Only windows with a free stretch of top edge (not covered by
-      a window above it) and room above it for her qualify; maximized and fullscreen ones never do. The windows
+      a window above it) and room above it for her head (about 200 px of screen) qualify; maximized and
+      fullscreen ones never do. High up, her box sticks out above the top of the screen: only the empty part of it
+      above her head is cut off, so windows near the top of the screen are seats too.
+    - **sitting on the bottom panel:** while an app is maximized (or fullscreen) on the workspace, the top edge of
+      the bottom panel is a seat too, just below her feet: she bends her knees and lowers herself over the edge
+      where she stands, and sits there facing you like on a window, her legs hanging down behind the panel (the
+      part of her box below the work area is cut off: the window manager keeps windows above the panel). After a
+      while she leans forward, pushes herself up and stands where she was (`edgeSit` in `ui/avatar/logic.mjs`,
+      `any_maximized` in `ui/desktop_windows.py`). Try it: `tools/avatar_look.py OUT --seat max
+      'window.aria.act("perch")|4000|'`. The windows
       are read from X11 (`ui/desktop_windows.py`, python-xlib: visible top edges, title bars included, shadows
       left out); the overlay sends her the seats and her floor and keeps her on the window (`_watch_seats` in
       `ui/overlay.py`); the jump and the pose are in `ui/avatar/logic.mjs` (`jump`, `perchPose`, `planPerch`).
       Only with a full-size character. To try it: `tools/avatar_look.py OUT --seat X,Y,W,H 'window.aria.act("perch")|3500|'`.
+    - **peeking out from behind an app:** with an open window beside her (one that reaches from above her head to
+      below her feet), she may walk behind it: past its edge she disappears (the part of her the app covers isn't
+      drawn). Just behind the edge she faces you, takes a small step and leans out so her head and a shoulder
+      show past it, looks at you with a little smile (about half the time she waves with the outer hand), leans
+      back in and walks out. And when you open or raise a window over her while she stands there, she's behind it:
+      hidden, she walks to its nearer edge and peeks out the same way, then steps out. Talk to her while she's
+      behind and she comes straight out. If the app moves, the hidden part follows it; if it closes, all of her
+      shows again; clicks on the hidden part of her go to the app. Only real app windows count (not overlays,
+      docks or widgets, which are left out of the taskbar), and never their titles or contents. The overlay finds
+      the edges and the window over her (`hideouts`/`covering` in `ui/desktop_windows.py`) and sends the cut-out
+      (`_follow_cover` in `ui/overlay.py`); the walk and the lean are in `ui/avatar/logic.mjs` (`planHide`,
+      `peekOut`). Try it: `tools/avatar_look.py OUT --seat 1050,380,420,620 'window.aria.act("hide")|4000|'`.
     - **a stretch:** both arms swung up in front of her and over her head, leaning back a little, and down the same way.
     - **a shoulder roll:** shoulders up and down, then a slow neck stretch to each side.
     - **tucking her hair** behind her ear: her fingers go to her temple and slide back past her ear, and the lock
@@ -172,7 +205,9 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
       to you. Her body drops and moves back exactly as far as her legs fold, so her feet stay planted. Seated, she
       only does what fits (looking around, a smile, a sigh, a shoulder roll, her hair); after 20 seconds or more she
       gets up again, leaning forward over her feet, and turns back to you. She gets up at once when you talk to her
-      or a reminder goes off. (Only with a full-size character; the built-in figure doesn't sit.)
+      or a reminder goes off. Her box moves along with her as she sits back (the overlay's window and her view
+      together, so nothing moves on the screen), keeping all of her in it. (Only with a full-size character; the
+      built-in figure doesn't sit.)
     - **Her gaze wanders:** when the mouse has been still for 5 seconds, her eyes and head drift to the corners, the
       edges and back to you, holding each place a few seconds; a big look takes her chest along a little.
     - **Nothing pops:** every joint follows what it's told through a short smoothing filter, and a fidget fades out

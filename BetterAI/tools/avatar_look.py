@@ -5,7 +5,8 @@ the decisions, not the picture).
 
     .venv/bin/python tools/avatar_look.py OUTDIR [--model FILE.vrm | --figure] STEP...
 
---seat X,Y,W,H opens a plain window there for her to sit on ("perch").
+--seat X,Y,W,H (or --seat max: maximized) opens a plain window there for her to sit on ("perch") or hide behind ("hide"; or as if it had
+just been raised over her: window.aria.hiddenBy({id: window.benchId, left: ..., right: ...})).
 A STEP is  "javascript|milliseconds|name" ("name*N" films N shots of the screen's width, 150 ms apart):  at that many milliseconds run the JavaScript (may be empty), and if a
 name is given save OUTDIR/name.png 350 ms later. Without --model or --figure she is whoever Aria would show.
 
@@ -25,7 +26,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from PySide6.QtCore import Qt, QTimer  # noqa: E402
+from PySide6.QtCore import QRect, Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QGuiApplication  # noqa: E402
 from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
@@ -44,7 +45,7 @@ def main(argv):
         path, args = args[1], args[2:]
     seat_at = None
     if args and args[0] == "--seat":                # a plain window at X,Y,W,H for her to sit on
-        seat_at, args = [int(v) for v in args[1].split(",")], args[2:]
+        seat_at, args = ("max" if args[1] == "max" else [int(v) for v in args[1].split(",")]), args[2:]
     steps = [a.rsplit("|", 2) for a in args]
     os.makedirs(out, exist_ok=True)
 
@@ -65,9 +66,13 @@ def main(argv):
         bench = QWidget(None)
         bench.setWindowTitle("A window to sit on")
         bench.setStyleSheet("background: #e8e6f0")
-        bench.setGeometry(*seat_at)
-        bench.show()
+        if seat_at == "max":                        # a maximized app: she may sit on the bottom panel
+            bench.showMaximized()
+        else:
+            bench.setGeometry(*seat_at)
+            bench.show()
         win.raise_()
+        QTimer.singleShot(2500, lambda: view.page().runJavaScript(f"window.benchId = {int(bench.winId())}"))
 
     def shoot(name):
         screen.grabWindow(0, win.x(), win.y(), w, h).save(os.path.join(out, name + ".png"))
@@ -79,25 +84,50 @@ def main(argv):
     travel = avatar_view.Travel()
 
     floor = [None]
+    box_at = [win.x(), win.y()]
+
+    def place(x, y):
+        """Her box at (x, y) on the screen; above the screen its top is cut off (as the overlay does)."""
+        box_at[:] = [x, y]
+        top, bottom = max(y, area.top()), min(y + h, area.bottom() + 1)
+        win.setGeometry(x, top, w, bottom - top)
+        view.setGeometry(0, y - top, w, h)
+    hiding = [None]
     seat_h = [None]
-    view.ask_seat_height(lambda px: seat_h.__setitem__(0, px))
+    view.ask_seat_height(lambda px, head: seat_h.__setitem__(0, (px, head)))
 
     def follow():
-        box = win.geometry()
+        box = QRect(box_at[0], box_at[1], w, h)          # her box (its top may be above the screen)
         view.link.set_room(box.left() - area.left(), area.right() - box.right())
-        view.ask_travel(lambda report: (at := travel.follow(report, (win.x(), win.y()))) is not None and win.move(*at))
+        def went(report, behind=None):
+            at = travel.follow(report, (box_at[0], box_at[1]))
+            if at is not None:
+                place(*at)
+            hiding[0] = behind
+        view.ask_travel(went)
         if seat_h[0] is None:
-            view.ask_seat_height(lambda px: seat_h.__setitem__(0, px))
+            view.ask_seat_height(lambda px, head: seat_h.__setitem__(0, (px, head)))
             return
         # the seats on the windows that are open, as the overlay works them out (ui/overlay.py _watch_seats)
         from ui.desktop_windows import open_windows, seats
-        if floor[0] is None or travel.done and abs(win.y() - floor[0]) < 2:
-            floor[0] = win.y()
+        if floor[0] is None or travel.done and abs(box_at[1] - floor[0]) < 2:
+            floor[0] = box_at[1]
         free = seats(open_windows(own=int(win.winId())), (area.left(), area.top(), area.right(), area.bottom()),
-                     above=int(h - seat_h[0]) + 4)
+                     above=int(seat_h[0][1]) + 4)
         out_ = [{"x": (s.left + s.right) // 2 - box.center().x(), "half": (s.right - s.left) // 2, "y": s.top - box.bottom()}
                 for s in free]
-        view.link.set_seats(out_, max(0, floor[0] - win.y()))
+        from ui.desktop_windows import any_maximized
+        if travel.done and box_at[1] == floor[0] and any_maximized(own=int(win.winId())):   # the panel, as the overlay
+            out_.append({"x": 0, "half": area.width(), "y": area.bottom() + 1 - box.bottom() - 1, "low": 1})
+        view.link.set_seats(out_, floor[0] - box_at[1])
+        # where she could hide, and the cut-out while she's behind a window (as ui/overlay.py does)
+        from ui.desktop_windows import hideouts
+        windows = open_windows(own=int(win.winId()))
+        here = (box.left(), box.top(), box.right(), box.bottom())
+        view.link.set_hideouts([{"id": e.id, "x": e.x - box.center().x(), "out": e.out} for e in hideouts(windows, here)])
+        behind = next((x for x in windows if x.id == hiding[0]), None)
+        view.link.set_cover({"left": behind.left - box.left(), "top": behind.top - box.top(),
+                             "right": behind.right - box.left(), "bottom": behind.bottom - box.top()} if behind else None)
     walker = QTimer(win)
     walker.timeout.connect(follow)
     walker.start(16)

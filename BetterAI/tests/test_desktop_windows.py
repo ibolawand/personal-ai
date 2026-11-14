@@ -1,5 +1,5 @@
 """Where on the other windows Aria's avatar can sit (ui/desktop_windows.py): pure geometry, no X needed."""
-from ui.desktop_windows import Seat, Win, open_windows, seats
+from ui.desktop_windows import Edge, Seat, Win, covering, hideouts, open_windows, seats
 
 SCREEN = (0, 0, 1920, 1040)
 
@@ -39,3 +39,31 @@ def test_without_x_there_are_no_windows(monkeypatch):
     import ui.desktop_windows as D
     monkeypatch.setattr(D, "_display", [])
     assert open_windows() == []
+
+
+# ── where she can hide behind a window (her box: left, top, right, bottom) ──
+
+BOX = (1000, 400, 1300, 920)
+
+
+def test_a_tall_window_beside_her_gives_two_edges():
+    assert hideouts([Win(1, 300, 200, 800, 1000)], BOX) == [Edge(1, 300, -1), Edge(1, 800, 1)]
+
+
+def test_a_short_or_far_window_gives_none():
+    assert hideouts([Win(1, 300, 700, 800, 1000)], BOX) == []          # starts below her head
+    assert hideouts([Win(1, 300, 200, 800, 600)], BOX) == []           # ends above her feet
+    assert hideouts([Win(1, 3000, 200, 3500, 1000)], BOX) == []        # too far to walk to
+
+
+def test_an_edge_covered_by_a_higher_window_is_left_out():
+    low, high = Win(1, 300, 200, 800, 1000), Win(2, 750, 100, 900, 1000)
+    assert hideouts([low, high], BOX) == [Edge(1, 300, -1), Edge(2, 750, -1), Edge(2, 900, 1)]
+
+
+def test_covering_is_the_topmost_window_over_her_middle():
+    a, b = Win(1, 900, 200, 1400, 1000), Win(2, 1100, 300, 1250, 1000)
+    assert covering([a, b], BOX) == b
+    assert covering([b, a], BOX) == a
+    assert covering([Win(3, 0, 200, 500, 1000)], BOX) is None
+    assert covering([Win(4, 900, 600, 1400, 1000)], BOX) is None        # too short to hide her

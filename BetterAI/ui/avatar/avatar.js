@@ -2,8 +2,8 @@
 // with her body is decided in logic.mjs; her shape is figure.mjs, or a VRM file when one is given (vrmrig.mjs).
 // It reports once through window.ariaStatus: "ready" after the first frame, or "failed: <why>".
 import * as THREE from 'three';
-import { BONES, GESTURES, FIDGETS, avatarState, poseFor, idleMotion, gesture, walkCycle, stroll, trip, planTrip, cutLeg, legLength, perchPose, dangle, jump, planPerch, LEDGE_Y, PERCH_YAW, talkMotion, visemes,
-         saccade, chooseIdle, sitting, sitPose, spring, gazeWander, withinLimits, ease, nextBlink, blinkWeight,
+import { BONES, GESTURES, FIDGETS, avatarState, poseFor, idleMotion, gesture, walkCycle, stroll, trip, planTrip, cutLeg, legLength, perchPose, dangle, jump, edgeSit, planPerch, LEDGE_Y, PERCH_YAW, PERCH_HEADROOM, PEEK, planHide, peekOut, talkMotion, visemes,
+         saccade, lookBlink, chooseIdle, sitting, sitPose, spring, gazeWander, withinLimits, ease, nextBlink, blinkWeight,
          mouthWeight, ringPosition } from './logic.mjs';
 import { buildFigure } from './figure.mjs';
 
@@ -84,6 +84,14 @@ let seatsPx = [], floorPx = 0;
 let jumping = null;                                 // { start, dy (units), base, id } of a jump under way
 let perched = null;                                 // { since } while she sits on top of a window
 let perchSide = 1;                                  // which way she turns a little, sitting there
+// Peeking out from behind an app: the overlay says which side edges of windows she could go behind ({ id, x
+// (pixels from the middle of her box), out }); she walks to just behind one, peeks out and walks back out. While
+// she is behind a window, ariaBehind is its id and the overlay sends its rectangle (setCover): that part of her
+// isn't drawn.
+let hideoutsPx = [];
+let hide = null;                                    // { id, out, edge (stage x of the edge), phase, start, r, early }
+window.ariaBehind = null;
+let idleNow = true;                                 // nothing is going on (she may do things of her own)
 let room = null;                                    // { left, right }: how far she may walk each way (units)
 let tripId = 0;
 window.ariaTravel = null;                           // [trip id, pixels walked, still walking]: read by the overlay
@@ -100,7 +108,7 @@ let hairUntil = 0;                                  // her hair stays tucked beh
 const LEGS = new Set(['leftUpperLeg', 'rightUpperLeg', 'leftLowerLeg', 'rightLowerLeg']);
 const SEAT_YAW = 1.15;      // how far she turns to sit (radians)
 const FOLLOW_S = 0.045;     // every joint follows what it is told this closely: a new action can never make one pop
-let blinkAt = nextBlink(0, Math.random());
+let blinkAt = nextBlink(0, Math.random()), lastBlink = -9;
 
 // ── the things in orbit ──
 const propMat = color => new THREE.MeshBasicMaterial({ color, transparent: true });
@@ -217,7 +225,8 @@ function move(dt) {
   const pose = poseFor(state), idle = idleMotion(t);
   // with nothing going on she now and then does something of her own: while idle, and also while she is listening
   // but nobody is talking (an open microphone can mean a long wait). Never while thinking or speaking.
-  const waiting = state === 'idle' || (state === 'listening' && told.mic < 0.012);
+  // (and not while you're dealing with her: the text box open or a card up)
+  const waiting = !told.engaged && (state === 'idle' || (state === 'listening' && told.mic < 0.012));
   if (!waiting) idleSince = t;
 
   // a fidget gives way quickly when something happens (a wave or a hop is meant, and plays out)
@@ -232,17 +241,28 @@ function move(dt) {
   // sitting on the floor: she gets up as soon as something happens
   if (sit && !waiting && sit.standAt == null) sit.standAt = t - sit.start;
   const seat = sit ? sitting(t - sit.start, sit.standAt) : null;
-  if (sit && !seat) sit = null;
+  if (sit && !seat) {
+    window.ariaTravel = [sit.id, 0, false];         // up again: her box is back where it was
+    sit = null;
+  }
   const settling = seat && seat.w > 0.001 && seat.w < 0.999;
   let base = seat ? sitPose(seat.w, pose) : pose;
 
-  if (!waiting || doing || walk || settling || jumping) idleAt = Math.max(idleAt, t + 3 + Math.random() * 5);
+  idleNow = waiting;
+  if (!waiting || doing || walk || settling || jumping || hide) idleAt = Math.max(idleAt, t + 3 + Math.random() * 5);
   else if (t >= idleAt) begin(chooseIdle({ recent, idleFor: t - idleSince, seated: !!sit && sit.standAt == null,
                                           seatedFor: sit ? t - sit.start : 0, perched: !!perched,
                                           perchedFor: perched ? t - perched.since : 0,
-                                          canPerch: rig.canSit && seatsPx.length > 0 }, Math.random(), Math.random()));
+                                          canPerch: rig.canSit && seatsPx.length > 0,
+                                          canHide: rig.canSit && hideoutsPx.length > 0 && !hide },
+                                Math.random(), Math.random()));
+  // spoken to while she is behind a window: she comes out (straight away from the peek, or once she has stopped)
+  if (hide && !waiting && !hide.early) {
+    hide.early = true;
+    if (hide.phase === 'peek') hide.start = Math.min(hide.start, t - (PEEK.length - 0.7));
+  }
   // spoken to on her way somewhere, she slows to a stop where she is (a stroll in her box just plays out)
-  if (walk?.trip && !waiting && !walk.cut) {
+  if (walk?.trip && !waiting && !walk.cut && !walk.keep) {
     const leg = cutLeg(walk.leg, t - walk.start);
     if (leg !== walk.leg) [walk.leg, walk.peek] = [leg, false];
     walk.cut = true;
@@ -257,15 +277,28 @@ function move(dt) {
   }
   if (walk && !going) {
     if (walk.then != null) leap(walk.then);         // arrived under the seat: up she goes
+    const was = walk;
     walk = null;
+    if (hide && was.hide === 'in') [hide.phase, hide.start] = hide.early ? ['peek', t - PEEK.length] : ['peek', t];
+    else if (hide && was.hide === 'out') endHide();
+  }
+  // the peek, and then out again: she steps out well past the edge she peeked from
+  const peeking = hide?.phase === 'peek' ? peekOut(t - hide.start, hide.out, hide.r) : null;
+  if (hide?.phase === 'peek' && !peeking) {
+    hide.phase = 'out';
+    walkTo(hide.edge + hide.out * 0.35, 'out');
+  } else if (peeking?.wave && !hide.waved && t - hide.start > 1.3) {
+    hide.waved = true;
+    start('wave', -hide.out);                        // the hand on the side she peeks out of
   }
   // a jump up onto a window or down from one: her whole world (and the overlay's window) goes up or down with her
-  const air = jumping ? jump(t - jumping.start, jumping.dy) : null;
+  // (onto the bottom panel, `low`, she sits down over its edge and later gets up again: no jump)
+  const air = !jumping ? null : jumping.low ? edgeSit(t - jumping.start, jumping.dy) : jump(t - jumping.start, jumping.dy);
   if (jumping) {
     if (air) stageY = jumping.base + air.y;
     window.ariaTravel = [jumping.id, 0, !!air, -(stageY - jumping.base) * pxPerUnit];
     if (!air) {
-      perched = jumping.dy > 0 ? { since: t } : null;
+      perched = (jumping.low ? jumping.dy < 0 : jumping.dy > 0) ? { since: t, low: jumping.low } : null;
       jumping = null;
     }
   }
@@ -282,7 +315,15 @@ function move(dt) {
   const seatYaw = seat ? sit.side * SEAT_YAW * seat.turn : perchSide * PERCH_YAW * now.ledge;
   rig.root.rotation.y = going ? going.yaw : seatYaw;
   // her body moves back (along the way she faces) as far as her folding legs reach forward, so her feet stay put
-  if (seat) rig.root.position.x += seat.back * Math.sin(seatYaw);
+  if (seat) {
+    rig.root.position.x += seat.back * Math.sin(seatYaw);
+    // sitting down she moves back over her planted feet; her box (the camera and the overlay's window together,
+    // so nothing moves on the screen) follows most of that, keeping all of her (hair included) in it
+    const centre = 0.65 * seat.back * Math.sin(seatYaw);
+    camera.position.x = ring.position.x = stageX + centre;
+    window.ariaTravel = [sit.id, centre * pxPerUnit, true];
+  }
+  if (peeking) rig.root.position.x += peeking.shift;
   rig.root.position.z = seat ? seat.back * Math.cos(seatYaw) : 0;
   const facing = going ? Math.max(0, 1 - Math.abs(going.yaw)) : 1;    // side-on, her head stops following the mouse
   now.talk = ease(now.talk, state === 'speaking' ? Math.min(1, told.out * 5) : 0, dt, 0.18);
@@ -305,7 +346,9 @@ function move(dt) {
     lookY += (act.look[1] - lookY) * w;
   }
 
-  // her eyes get there first, in small darts; her head turns after them and more slowly
+  // her eyes get there first, in small darts; her head turns after them and more slowly. A big jump of her gaze
+  // comes with a blink, as in people (it hides the eyes snapping across)
+  if (t < blinkAt && lookBlink(now.eyes, [lookX, lookY], t - lastBlink)) blinkAt = t;
   const dart = saccade(t);
   now.eyes[0] = ease(now.eyes[0], lookX + dart[0], dt, 0.07);
   now.eyes[1] = ease(now.eyes[1], lookY + dart[1], dt, 0.07);
@@ -347,8 +390,10 @@ function move(dt) {
     // Her pose, the idle movement, walking and talking are small angles that add up. A gesture is different: it
     // says where a bone should BE, so it is blended in as a rotation (the short way round, by its weight) and not
     // by mixing the angle numbers, which swings a turned arm through places no arm goes.
+    if (peeking?.bones[name]) for (let i = 0; i < 3; i++) out[i] += peeking.bones[name][i];
     if (tuning?.[name]) { rig.setBone(name, withinLimits(name, tuning[name]), null, 0, 1); continue; }
-    const target = act?.bones[name];
+    // peeking, a wave is her arm only: the rest of her keeps leaning out past the edge
+    const target = peeking && !/Shoulder|Arm|Hand/.test(name) ? null : act?.bones[name];
     if (target) rig.setBone(name, withinLimits(name, out), withinLimits(name, target), Math.min(1, act.weight), follow);
     else rig.setBone(name, withinLimits(name, out), null, 0, follow);
   }
@@ -358,14 +403,15 @@ function move(dt) {
   now.lift = lift;
   rig.root.position.y = stageY + lift;
 
-  if (t >= blinkAt + 0.15) blinkAt = nextBlink(t, Math.random());
+  if (t >= blinkAt + 0.15) [lastBlink, blinkAt] = [blinkAt, nextBlink(t, Math.random())];
   rig.setBlink(blinkWeight(t, blinkAt));
   now.mouth = mouthWeight(now.mouth, state === 'speaking' ? told.out : 0, dt);
   rig.setVisemes(visemes(t, now.mouth));
   now.surprised = ease(now.surprised, doing?.name === 'hop' ? 1 : 0, dt, 0.12);
   now.relaxed = ease(now.relaxed, Math.max(pose.expressions.relaxed || 0, act?.face?.relaxed || 0), dt);
   // a flicker of a smile on the louder moments, a small one for the wave, and whatever a fidget brings
-  const smile = doing?.name === 'wave' ? 0.5 : Math.max(act?.face?.happy || 0, 0.35 * now.talk * Math.max(0, Math.sin(t * 1.7)));
+  const smile = doing?.name === 'wave' ? 0.5 : Math.max(act?.face?.happy || 0, peeking?.face.happy || 0,
+                                                       0.35 * now.talk * Math.max(0, Math.sin(t * 1.7)));
   now.happy = ease(now.happy, smile, dt, 0.2);
   // her hair, tucked behind her ear, stays there a while and then slips forward again (sooner once she walks off)
   if (act?.hair != null) {
@@ -400,11 +446,38 @@ function frame(time) {
   }
 }
 
+/** Walk (across the screen, the overlay's window going along) until her middle is at stage x `x`; `tag` marks
+ *  the walk as part of hiding ('in' or 'out'). A walk out is never cut short. */
+function walkTo(x, tag) {
+  const d = x - stageX;
+  if (Math.abs(d) < 0.02) {
+    walk = { start: t, side: 1, leg: 0, trip: true, base: stageX, id: ++tripId, cut: true, hide: tag, keep: true };
+    return;
+  }
+  walk = { start: t, side: Math.sign(d), leg: legLength(Math.abs(d)), peek: false, trip: true, base: stageX,
+           id: ++tripId, cut: false, hide: tag, keep: tag === 'out' };
+}
+
+/** Go behind a window and peek out from its edge at `x` pixels from her middle (`out`: -1 its left edge, 1 its
+ *  right edge). */
+function hideBehind(id, x, out) {
+  const edge = stageX + x / pxPerUnit;
+  hide = { id, out, edge, phase: 'in', start: t, r: Math.random(), early: false, waved: false };
+  window.ariaBehind = id;
+  walkTo(edge - out * PEEK.inset, 'in');
+}
+
+function endHide() {
+  hide = null;
+  window.ariaBehind = null;
+  canvas.style.clipPath = '';
+}
+
 /** Jump `dy` units up onto a window (or down off it, negative). */
-function leap(dy) {
+function leap(dy, low = false) {
   if (jumping || Math.abs(dy) < 0.05) return;
-  jumping = { start: t, dy, base: stageY, id: ++tripId };
-  if (dy > 0) perchSide = Math.random() < 0.5 ? -1 : 1;
+  jumping = { start: t, dy, base: stageY, id: ++tripId, low };
+  if (low ? dy < 0 : dy > 0) perchSide = Math.random() < 0.5 ? -1 : 1;
 }
 
 /** Where the window's top edge has to be, in units above her feet, for her to sit on it: her box's bottom is
@@ -424,27 +497,35 @@ function start(name, side = 1) {
 function begin(act) {
   let name = act.gesture;
   if (act.gesture) start(act.gesture, act.side);
-  else if (act.perch && !sit && !walk && !perched && !jumping && rig.canSit) {
+  else if (act.perch && !sit && !walk && !perched && !jumping && !hide && rig.canSit) {
     // the nearest window she can sit on: walk under the spot, then jump up onto it
     const plan = planPerch(seatsPx, Math.random());
     if (plan) {
       const rise = -plan.y / pxPerUnit - (LEDGE_Y - boxBottom());
-      if (Math.abs(plan.dx) < 20) leap(rise);
+      if (plan.y > 0) leap(rise, true);              // the bottom panel's edge, just below her feet
+      else if (Math.abs(plan.dx) < 20) leap(rise);
       else walk = { start: t, side: Math.sign(plan.dx), leg: legLength(Math.abs(plan.dx) / pxPerUnit), peek: false,
                     trip: true, base: stageX, id: ++tripId, cut: false, then: rise };
       name = 'perch';
     }
+  } else if (act.hide && !sit && !walk && !perched && !jumping && !hide && rig.canSit) {
+    const plan = planHide(hideoutsPx.map(e => ({ ...e, x: e.x / pxPerUnit })), Math.random());
+    if (plan) {
+      hideBehind(plan.id, (plan.dx + plan.out * PEEK.inset) * pxPerUnit, plan.out);
+      name = 'hide';
+    }
   } else if (act.hopDown && perched && !jumping) {
-    leap(-Math.max(0.06, floorPx / pxPerUnit));
+    if (perched.low) leap(-floorPx / pxPerUnit, true);   // up from the panel's edge (her floor is above her)
+    else leap(-Math.max(0.06, floorPx / pxPerUnit));
     name = 'hopDown';
-  } else if (act.stroll && !sit && !perched && !jumping) {
+  } else if (act.stroll && !sit && !perched && !jumping && !hide) {
     // across the screen when the overlay has said how much room there is; otherwise a stroll in her box
     const plan = act.inBox ? null : planTrip(room, Math.random(), Math.random());
     if (plan) walk = { start: t, ...plan, trip: true, base: stageX, id: ++tripId, cut: false };
     else if (strollReach > 0.02) walk = { start: t, side: act.stroll, peek: !!act.peek };
     if (walk) name = 'stroll';
   }
-  else if (act.sit && !sit && !walk && rig.canSit) [sit, name] = [{ start: t, standAt: null, side: act.side || 1 }, 'sit'];
+  else if (act.sit && !sit && !walk && !hide && !perched && rig.canSit) [sit, name] = [{ start: t, standAt: null, side: act.side || 1, id: ++tripId }, 'sit'];
   else if (act.stand && sit && sit.standAt == null) [sit.standAt, name] = [t - sit.start, 'standUp'];
   if (name) recent = [name, ...recent].slice(0, 3);
   idleAt = t + (sit ? 9 + Math.random() * 10 : 6 + Math.random() * 10);
@@ -460,18 +541,49 @@ window.aria = {
     if (walk?.trip) { window.ariaTravel = [walk.id, (stageX - walk.base) * pxPerUnit, false]; walk = null; }
     if (jumping) window.ariaTravel = [jumping.id, 0, false, -(stageY - jumping.base) * pxPerUnit];
     [jumping, perched] = [null, null];              // picked up off a window: she stands where she's put
+    if (hide) endHide();
   },
   /** Where she could sit on top of other windows ([{ x, half, y }] pixels from the middle of the bottom of her
    *  box) and how far below her box the floor is (pixels). */
   setSeats(list, floor) {
     seatsPx = Array.isArray(list) ? list.filter(s => [s?.x, s?.half, s?.y].every(Number.isFinite)) : [];
-    floorPx = Math.max(0, +floor || 0);
+    floorPx = Number.isFinite(+floor) ? +floor : 0;   // (negative: her floor is above her, sitting on the panel)
+  },
+  /** The side edges of windows she could go behind: [{ id, x (pixels from the middle of her box), out }]. */
+  setHideouts(list) {
+    hideoutsPx = Array.isArray(list) ? list.filter(e => Number.isFinite(e?.x) && (e.out === 1 || e.out === -1)) : [];
+  },
+  /** A window was opened or raised over her ({ id, left, right }: its edges in pixels from the middle of her box):
+   *  she is behind it, walks to the nearer edge and peeks out. */
+  hiddenBy(win) {
+    if (!win || !idleNow || hide || sit || perched || jumping || walk || !rig.canSit) return;
+    const left = Math.abs(win.left) <= Math.abs(win.right);
+    hideBehind(win.id, left ? win.left : win.right, left ? -1 : 1);
+  },
+  /** The part of her box an app covers ({ left, top, right, bottom } in pixels of her box) is not drawn; null:
+   *  all of her is. */
+  setCover(rect) {
+    if (!hide || !rect || ![rect.left, rect.top, rect.right, rect.bottom].every(Number.isFinite)) {
+      canvas.style.clipPath = '';
+      return;
+    }
+    const w = window.innerWidth, h = window.innerHeight;
+    canvas.style.clipPath = `path(evenodd, "M0 0 H${w} V${h} H0 Z M${rect.left} ${rect.top} H${rect.right} V${rect.bottom} H${rect.left} Z")`;
+  },
+  /** The app she was behind went away (closed, minimized, moved off her): she stops where she is. */
+  unhide() {
+    if (!hide) return;
+    if (walk?.hide) walk.hide = null;               // a walk under way just ends there
+    endHide();
   },
   /** The window she sits on went away (closed, covered, made full-size): she hops down. */
   dropDown() { if (perched && !jumping) begin({ hopDown: true }); },
   /** How high above the bottom of her box the edge goes when she sits on one (pixels), for the overlay. */
   seatHeight() { return (LEDGE_Y - boxBottom()) * pxPerUnit; },
+  /** How far above the edge she sits on her head reaches, ribbons included (pixels). */
+  seatHeadroom() { return PERCH_HEADROOM * pxPerUnit; },
   setState(state) { told.state = String(state); },
+  setEngaged(on) { told.engaged = !!on; },
   setLevel(mic, out) { told.mic = +mic || 0; told.out = +out || 0; },
   lookAt(x, y) { told.lookX = Math.max(-1, Math.min(1, +x || 0)); told.lookY = Math.max(-1, Math.min(1, +y || 0)); },
   setProps,
@@ -487,7 +599,7 @@ window.aria = {
     const dir = side ? +side : Math.random() < 0.5 ? -1 : 1;
     if (what === 'stroll' || what === 'strollPeek') begin({ stroll: dir, peek: what === 'strollPeek', inBox: true });
     else if (what === 'trip') begin({ stroll: dir });
-    else if (what === 'perch' || what === 'hopDown') begin({ [what]: true });
+    else if (what === 'perch' || what === 'hopDown' || what === 'hide') begin({ [what]: true });
     else if (what === 'sit') begin({ sit: true, side: dir });
     else if (what === 'stand') begin({ stand: true });
     else begin({ gesture: what, side: dir });

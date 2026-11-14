@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { STATES, BONES, GESTURES, FIDGETS, WALK, avatarState, poseFor, idleMotion, gesture, walkCycle, stroll, strollLength,
   talkMotion, visemes, saccade, chooseIdle, IDLE, SEATED_FIDGETS, sitting, sitPose, LEG, spring, gazeWander, withinLimits, ease, nextBlink, blinkWeight, mouthWeight, ringPosition,
   TRIP, planTrip, trip, tripLength, cutLeg, LEDGE_Y, perchPose, dangle, jump, jumpLength, planPerch,
-  PERCHED_FIDGETS } from './logic.mjs';
+  PERCHED_FIDGETS, PEEK, planHide, peekOut, headPastEdge, lookBlink, edgeSit, edgeSitLength } from './logic.mjs';
 
 test('the microphone decides between listening and idle', () => {
   assert.equal(avatarState('listening', true), 'listening');
@@ -72,8 +72,12 @@ test('the wave bends the elbow, lifts and turns the arm, swings, and comes down 
   assert.ok(arm(0.05)[2] > 1.3);                                                    // winds up: dips away before it rises
   const heights = Array.from({ length: 28 }, (_, i) => arm(i * 0.1)[2]);
   assert.ok(arm(0.2)[2] > 0.9);                                                     // an unhurried lift: still low after 0.2 s
-  assert.ok(Math.min(...heights) < -0.12 && Math.min(...heights) > -0.3);           // goes a little past its place, not far
-  assert.ok(Math.abs(arm(1.1)[2] + 0.1) < 0.02 && Math.abs(arm(1.1)[3] + Math.PI / 2) < 0.01);   // up beside her, turned
+  assert.ok(Math.min(...heights) < 0.48 && Math.min(...heights) > 0.35);           // goes a little past its place, not far
+  // up beside her, turned, the elbow below her shoulder and swung forward (a friendly "hi", not arm-out: her hand
+  // stays beside her face, inside her box)
+  assert.ok(Math.abs(arm(1.1)[2] - 0.5) < 0.02 && Math.abs(arm(1.1)[3] + Math.PI / 2) < 0.01);
+  assert.ok(arm(1.1)[1] > 0.5 && arm(1.1)[0] < -0.2);
+  assert.ok(Math.max(...Array.from({ length: 28 }, (_, i) => elbow(i * 0.1))) <= 2.5, 'the elbow never folds past its limit');
   assert.ok(Math.abs(gesture('wave', 1.1).weight - 1) < 1e-9);
   const swings = [1.0, 1.1, 1.2, 1.3, 1.4, 1.5].map(elbow);
   assert.ok(Math.min(...swings) > 0.9 && Math.max(...swings) - Math.min(...swings) > 0.4);       // bent, and swinging
@@ -313,8 +317,8 @@ test('a stroll can pause at the edge, look out and glance back before turning ro
   assert.ok(stroll(0.5, reach, 1, false).peek === 0);
 });
 test('walking she knows how fast she goes and where she will face next', () => {
-  const reach = 0.25;
-  const mid = stroll(1.2, reach, 1);
+  const reach = 0.25, middle = 0.45 + (reach / WALK.speed + 0.4) / 2;          // the middle of the walk out
+  const mid = stroll(middle, reach, 1);
   assert.ok(Math.abs(mid.speed - 1) < 0.05 && Math.abs(mid.accel) < 0.1);          // cruising
   const total = strollLength(reach);
   let braking = false;
@@ -446,7 +450,9 @@ test('a trip turns, walks without skating, stays where it ends and faces front a
     const now = trip(t, leg, 1);
     assert.ok(Math.abs(now.x - last.x) <= WALK.speed * 0.01 + 1e-9, 'never faster than walking');
     assert.ok(Math.abs(now.yaw - last.yaw) < 0.06, 'her body turns smoothly');
-    assert.ok(Math.abs(now.phase - Math.PI * WALK.stepsPerS * now.x / WALK.speed) < 1e-9, 'steps follow the distance');
+    // walking, her steps follow the distance (turning, she takes a step of her own on the spot)
+    if (now.speed > 0 && last.speed > 0) assert.ok(Math.abs(now.phase - last.phase - Math.PI * WALK.stepsPerS * (now.x - last.x) / WALK.speed) < 1e-9,
+                                 'steps follow the distance');
     last = now;
   }
   assert.ok(Math.abs(last.yaw) < 1e-3, 'facing front at the end');
@@ -542,4 +548,101 @@ test('on a window she does seated things and in time hops down; she only goes up
     withWin.add(Object.keys(chooseIdle({ idleFor: 60, canPerch: true }, r, 0.3))[0]);
   }
   assert.ok(!without.has('perch') && withWin.has('perch'));
+});
+
+test('planHide picks the nearer edge and stops just behind it', () => {
+  assert.equal(planHide([], 0.5), null);
+  const edges = [{ id: 1, x: -0.8, out: -1 }, { id: 1, x: 2.5, out: 1 }];
+  const plan = planHide(edges, 0.2);
+  assert.equal(plan.id, 1);
+  assert.equal(plan.out, -1);
+  assert.ok(Math.abs(plan.dx - (-0.8 + PEEK.inset)) < 1e-9, 'her middle stops inset behind the edge');
+  let near = 0;
+  for (let i = 0; i < 100; i++) near += planHide(edges, (i + 0.5) / 100).out === -1;
+  assert.ok(near > 55, `the nearer edge is the likelier one (${near})`);
+});
+
+test('the lean-out brings her head past the edge and back', () => {
+  assert.ok(headPastEdge(1) > PEEK.inset + 0.04, 'at full lean her head is past the edge');
+  const lean = (t, out) => { const b = peekOut(t, out).bones;
+    return ['spine', 'chest', 'neck', 'head'].reduce((a, n) => a + (b[n]?.[2] || 0), 0); };
+  assert.ok(Math.abs(lean(0, 1)) < 0.02);
+  assert.ok(Math.abs(lean(1.5, 1)) >= 0.5, 'leaning well out');
+  assert.equal(Math.sign(lean(1.5, 1)), -Math.sign(lean(1.5, -1)), 'toward the side she peeks out of');
+  assert.ok(Math.abs(lean(PEEK.length - 0.01, 1)) < 0.05, 'back in at the end');
+  assert.equal(peekOut(PEEK.length, 1), null);
+  assert.deepEqual(peekOut(1.5, 1).look, [0, 0], 'looking at you');
+});
+
+test('the lean-out is smooth', () => {
+  let last = peekOut(0, 1);
+  for (let t = 0.01; t < PEEK.length; t += 0.01) {
+    const now = peekOut(t, 1);
+    for (const [name, a] of Object.entries(now.bones))
+      a.forEach((v, i) => assert.ok(Math.abs(v - (last.bones[name]?.[i] || 0)) < 0.05, `${name} at ${t}`));
+    last = now;
+  }
+});
+
+test('hiding is only chosen standing, with somewhere to hide', () => {
+  const picks = opts => { const seen = new Set();
+    for (let i = 0; i < 300; i++) { const a = chooseIdle(opts, (i + 0.5) / 300, 0.3); seen.add(a.gesture || Object.keys(a)[0]); }
+    return seen; };
+  assert.ok(!picks({ idleFor: 60 }).has('hide'), 'not without a window to hide behind');
+  assert.ok(picks({ idleFor: 60, canHide: true }).has('hide'));
+  assert.ok(!picks({ idleFor: 60, canHide: true, seated: true }).has('hide'));
+  assert.ok(!picks({ idleFor: 60, canHide: true, perched: true }).has('hide'));
+});
+
+test('she walks at a relaxed human pace: about half her height a second, near two steps a second', () => {
+  const height = 0.95;
+  assert.ok(WALK.speed / height > 0.4 && WALK.speed / height < 0.7, `${WALK.speed / height} heights a second`);
+  assert.ok(WALK.stepsPerS >= 1.7 && WALK.stepsPerS <= 2.0);
+});
+
+test('a trip is a few seconds of walking, not the whole screen', () => {
+  for (let i = 0; i < 100; i++) {
+    const plan = planTrip({ left: 6, right: 6 }, (i + 0.5) / 100, ((i * 0.37) % 1));
+    const end = trip(tripLength(plan.leg, plan.peek) - 1e-6, plan.leg, plan.side, plan.peek);
+    assert.ok(Math.abs(end.x) <= TRIP.max + 1e-9, `went ${end.x}`);
+  }
+});
+
+test('turning, she steps round instead of pivoting on planted feet', () => {
+  const leg = 3, turn = trip(0.2, leg, 1), start = trip(0, leg, 1);
+  assert.ok(turn.amount > 0.2, 'her legs step while she turns');
+  assert.ok(turn.phase > start.phase, 'the step moves on');
+  const end = trip(tripLength(leg) - 0.2, leg, 1);
+  assert.ok(end.amount > 0.2, 'and when she turns back to you');
+  assert.ok(trip(tripLength(leg) - 1e-6, leg, 1).amount < 0.05, 'feet together at the very end');
+});
+
+test('a big jump of her gaze comes with a blink (not a small drift, and not twice in a row)', () => {
+  assert.equal(lookBlink([0, 0], [0.9, 0.2], 5), true);
+  assert.equal(lookBlink([0, 0], [0.2, 0.1], 5), false, 'small drift: no blink');
+  assert.equal(lookBlink([0, 0], [0.9, 0.2], 0.4), false, 'just blinked');
+});
+
+test('a seat below her feet (the panel): she sits down where she is, no jump', () => {
+  assert.deepEqual(planPerch([{ x: 0, half: 5000, y: 240, low: 1 }], 0.5), { dx: 0, y: 240 });
+  assert.equal(planPerch([{ x: 0, half: 5000, y: 240 }], 0.5), null, 'a window below her is not a seat');
+});
+
+test('sitting down onto a low edge: knees bend, she lowers herself over it and settles; and back up', () => {
+  const dy = -0.57, n = edgeSitLength(dy);
+  let last = edgeSit(0, dy);
+  assert.deepEqual([last.y, last.ledge], [0, 0]);
+  for (let t = 0.01; t < n; t += 0.01) {
+    const now = edgeSit(t, dy);
+    assert.ok(Math.abs(now.y - last.y) < 0.03 && Math.abs(now.ledge - last.ledge) < 0.06, `smooth at ${t}`);
+    assert.ok(now.y <= 1e-9 && now.y >= dy - 0.02, 'only down, never below the edge');
+    last = now;
+  }
+  assert.ok(Math.abs(last.y - dy) < 1e-6 && last.ledge === 1, 'sitting on the edge at the end');
+  assert.equal(edgeSit(n, dy), null);
+  const up = 0.57, m = edgeSitLength(up);
+  assert.equal(edgeSit(0, up).ledge, 1);
+  assert.ok(edgeSit(0.25, up).lean > 0.1, 'leans forward to push up');
+  const end = edgeSit(m - 1e-6, up);
+  assert.ok(Math.abs(end.y - up) < 1e-6 && end.ledge < 0.01 && end.crouch < 0.01, 'standing at the end');
 });

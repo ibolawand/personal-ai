@@ -100,7 +100,9 @@ const windUp = x => x <= 0 ? 0 : x < 0.15 ? -0.06 * Math.sin(Math.PI * x / 0.15)
 /** How she walks: `speed` in model units a second, `stepsPerS`, and `leg` (hip to ankle, measured on her model).
  *  The stride is worked out from them so a foot moves as far as her body does in a step: feet that swing further
  *  than she moves look like they are skating, which is what made the first walk look wrong. */
-export const WALK = { speed: 0.3, stepsPerS: 1.6, leg: 0.44 };
+// a relaxed human stroll: about half her height a second, a little under two steps a second (at 0.3 units a
+// second she walked in slow motion, and a walk across the screen took a quarter of a minute)
+export const WALK = { speed: 0.45, stepsPerS: 1.85, leg: 0.44 };
 const STRIDE = Math.asin(WALK.speed / WALK.stepsPerS / (2 * WALK.leg));     // thigh swing each way, radians
 
 /** One moment of a walk, added on top of her pose: `phase` runs 2π per two steps. Legs swing against each
@@ -204,7 +206,7 @@ export function stroll(t, reach, side = 1, peek = false) {
 // she strolls inside her box and back.
 
 /** The shortest trip, and her distance from the screen's edge at which she counts as there (units). */
-export const TRIP = { min: 0.35 };
+export const TRIP = { min: 0.35, max: 1.4 };     // units: about 600 px at most, a few seconds of walking
 
 /** How long a trip with a leg of `leg` seconds takes: turn, walk, maybe look out over the edge, face you again. */
 export function tripLength(leg, peek = false) {
@@ -217,11 +219,13 @@ export function tripLength(leg, peek = false) {
  *  there she pauses and looks out past it. */
 export function planTrip(room, r1, r2) {
   const sides = [[-1, Math.max(0, room?.left || 0)], [1, Math.max(0, room?.right || 0)]].filter(([, r]) => r >= TRIP.min);
+  // (a far edge is out of reach for one walk: she goes part of the way, and the edge itself only when it is near)
   if (!sides.length) return null;
   const total = sides.reduce((sum, [, r]) => sum + r, 0);
   const [side, r] = sides.length === 2 && r1 * total >= sides[0][1] ? sides[1] : sides[0];
-  const toEdge = r2 < 0.35;
-  const dist = toEdge ? r : TRIP.min + (r - TRIP.min) * 0.9 * (r2 - 0.35) / 0.65;
+  const toEdge = r2 < 0.35 && r <= TRIP.max;
+  const reach = Math.min(r, TRIP.max);
+  const dist = toEdge ? r : TRIP.min + (reach - TRIP.min) * 0.9 * Math.max(0, r2 - 0.35) / 0.65;
   return { side, leg: legLength(dist), peek: toEdge };
 }
 
@@ -234,23 +238,28 @@ export function trip(t, leg, side = 1, peek = false) {
   const full = legDistance(leg, leg), P = peek ? PEEK_S : 0;
   const marks = [TURN_S, TURN_S + leg, TURN_S + leg + P];
   const out = { amount: 0, speed: 0, accel: 0, ahead: 0, peek: 0, glance: 0 };
-  let yaw, walked;
+  let yaw, walked, step = 0;
+  // turning, she takes a small step round (both feet staying planted while her body pivots reads as sliding)
+  const turnStep = u => { out.amount = 0.5 * Math.sin(Math.PI * Math.min(1, Math.max(0, u))); return Math.PI * smooth(u); };
   if (t < marks[0]) {                                   // turning to the side
     yaw = SIDE_ON * smooth(t / TURN_S);
     [walked, out.ahead] = [0, SIDE_ON - yaw];
+    step = turnStep(t / TURN_S);
   } else if (t < marks[1]) {                            // walking
+    step = Math.PI;
     [walked, yaw] = [alongLeg(t - marks[0], leg, out), SIDE_ON];
   } else if (t < marks[2]) {                            // at the edge: looking out past it, then back at you
     const u = t - marks[1];
-    [walked, yaw] = [full, SIDE_ON];
+    [walked, yaw, step] = [full, SIDE_ON, Math.PI];
     out.peek = smooth(u / 0.5) * smooth((P - u) / 0.5);
     out.glance = smooth((u - 0.55 * P) / 0.35) * smooth((P - u) / 0.3);
   } else {                                              // facing you again
     yaw = SIDE_ON * (1 - smooth((t - marks[2]) / TURN_S));
     [walked, out.ahead] = [full, -yaw];
+    step = Math.PI + turnStep((t - marks[2]) / TURN_S);
   }
   return { ...out, x: side * WALK_SPEED * walked, yaw: side * yaw, ahead: side * out.ahead,
-    phase: Math.PI * STEPS_PER_S * walked };
+    phase: Math.PI * STEPS_PER_S * walked + step };
 }
 
 /** Something happened `u` seconds into a trip with a leg of `leg` seconds: the shorter leg that has her slow down
@@ -356,6 +365,9 @@ export function sitting(t, standAt, fold) {
 /** How high the underside of her thighs is when she sits on an edge (units above her feet when standing): the
  *  window's top edge goes there. */
 export const LEDGE_Y = 0.47;
+/** How far above that edge she reaches, sitting there (her head and its ribbons; measured on her model): the
+ *  room a window needs above it for her to sit on it. */
+export const PERCH_HEADROOM = 0.48;
 const LEDGE = {                                  // on the edge facing you: thighs out over it, legs hanging down
   spine: [0.08, 0, 0], chest: [0.03, 0, 0], neck: [-0.02, 0, 0], head: [-0.05, 0, 0],
   leftUpperLeg: [-1.5, 0, -0.07], rightUpperLeg: [-1.5, 0, 0.07], leftLowerLeg: [1.4, 0, 0], rightLowerLeg: [1.4, 0, 0],
@@ -428,13 +440,78 @@ export function jump(t, dy) {
  *  nearest is likelier; on it, the spot nearest to her (keeping clear of the stretch's ends). `r` (0…1) picks.
  *  { dx, y } in pixels, or null when there is none. */
 export function planPerch(seats, r, margin = 60) {
-  const ok = (seats || []).filter(s => s.half > margin && s.y < 0);
+  // (a seat below her feet, `low`: the bottom panel's top edge; she sits down onto it where she stands)
+  const ok = (seats || []).filter(s => s.half > margin && (s.y < 0 || s.low));
   if (!ok.length) return null;
   const weights = ok.map(s => 1 / (1 + Math.abs(s.x) / 300));
   let left = r * weights.reduce((a, b) => a + b, 0), pick = ok.at(-1);
   for (let i = 0; i < ok.length; i++) if ((left -= weights[i]) < 0) { pick = ok[i]; break; }
   const dx = Math.max(pick.x - pick.half + margin, Math.min(pick.x + pick.half - margin, 0));
   return { dx, y: pick.y };
+}
+
+// ── peeking out from behind an app ──
+// She walks behind a window (the overlay cuts her picture where it covers her) until her middle is `inset` behind
+// its side edge, faces you, and peeks out: a small side step toward the edge and a lean that bends her up from the
+// hips, so her head and a shoulder come out past it; then she leans back in.
+
+export const PEEK = { inset: 0.1, length: 4.2, step: 0.07 };
+// how far each joint bends sideways at full lean (radians; her hips tip the other way), and the height of each
+// joint above the floor on her model, for working out where her head ends up
+const PEEK_LEAN = { hips: -0.06, spine: 0.15, chest: 0.17, neck: 0.15, head: 0.2 };
+const PEEK_AT = { hips: 0.512, spine: 0.57, chest: 0.63, neck: 0.756, head: 0.798, top: 0.868 };
+
+/** Which edge to peek out from: `edges` [{ id, x (units from her middle), out (-1 left edge, 1 right edge) }]; the
+ *  nearer is likelier; `r` (0…1) picks. { id, dx (where her middle stops: just behind the edge), out } or null. */
+export function planHide(edges, r) {
+  const ok = (edges || []).filter(e => Number.isFinite(e?.x) && (e.out === 1 || e.out === -1));
+  if (!ok.length) return null;
+  const weights = ok.map(e => 1 / (1 + Math.abs(e.x)));
+  let left = r * weights.reduce((a, b) => a + b, 0), pick = ok.at(-1);
+  for (let i = 0; i < ok.length; i++) if ((left -= weights[i]) < 0) { pick = ok[i]; break; }
+  return { id: pick.id, dx: pick.x - pick.out * PEEK.inset, out: pick.out };
+}
+
+/** How far her head moves toward the edge at full lean, side step included (units). */
+export function headPastEdge(out = 1) {
+  const names = ['hips', 'spine', 'chest', 'neck', 'head'], up = [...names.slice(1), 'top'];
+  let bend = 0, x = PEEK.step;
+  names.forEach((n, i) => { bend += PEEK_LEAN[n]; x += Math.sin(bend) * (PEEK_AT[up[i]] - PEEK_AT[n]); });
+  return out * x;
+}
+
+/** The peek `t` seconds in, toward `out`: { bones (sideways bends, added to her pose), shift (units toward the
+ *  edge), look, face, wave (true in about half the peeks, decided by `r`) } or null once it is over. */
+export function peekOut(t, out = 1, r = 0) {
+  if (t < 0 || t >= PEEK.length) return null;
+  const w = smooth(t / 0.6) * smooth((PEEK.length - t) / 0.7);
+  const bones = {};
+  // (a positive sideways angle tips her toward her own right, the viewer's left: so toward `out` is -out)
+  for (const [name, a] of Object.entries(PEEK_LEAN)) bones[name] = [0, 0, -out * a * w];
+  bones.head = [0.05 * w, -0.25 * out * w, -out * PEEK_LEAN.head * w];     // her face turned back toward you
+  return { bones, shift: out * PEEK.step * w, look: [0, 0], face: { happy: 0.35 * smooth((t - 0.9) / 0.5) * w },
+           wave: r < 0.5 };
+}
+
+/** How long sitting down onto an edge below her (dy < 0, units) or getting up from it (dy > 0) takes. */
+export function edgeSitLength(dy) { return 0.3 + 0.9 + 0.25 + 0 * dy; }
+
+/** Sitting down onto an edge just below her feet (dy < 0: the top of the bottom panel), `t` seconds in: her knees
+ *  bend, she lowers herself over the edge as her legs come forward, and settles; or getting up from it (dy > 0):
+ *  she leans forward and pushes herself up to stand. { y (units, how far she has gone), ledge, crouch, lean } or
+ *  null once it is over. */
+export function edgeSit(t, dy) {
+  const n = edgeSitLength(dy);
+  if (t < 0 || t >= n) return null;
+  const u = Math.min(1, Math.max(0, (t - 0.3) / 0.9)), p = smooth(t / 0.3), done = t >= 1.2;
+  if (dy < 0) {
+    if (t < 0.3) return { y: 0, ledge: 0, crouch: 0.5 * p, lean: 0.15 * p };
+    if (!done) return { y: dy * smooth(u), ledge: smooth(u), crouch: 0.5 * (1 - smooth(u / 0.5)), lean: 0.15 * (1 - u) };
+    return { y: dy, ledge: 1, crouch: 0, lean: 0.04 * Math.sin(Math.PI * (t - 1.2) / 0.25) };
+  }
+  if (t < 0.3) return { y: 0, ledge: 1, crouch: 0, lean: 0.25 * p };
+  if (!done) return { y: dy * smooth(u), ledge: 1 - smooth(u), crouch: 0.4 * Math.sin(Math.PI * u), lean: 0.25 * (1 - smooth(u)) };
+  return { y: dy, ledge: 0, crouch: 0, lean: 0 };
 }
 
 // ── while she talks ──
@@ -488,11 +565,11 @@ export const SEATED_FIDGETS = ['lookAround', 'curious', 'smile', 'sigh', 'should
 /** Everything she may do of her own while idle, and how likely each is. `after`: only once she has been idle that
  *  many seconds (she sits down when she is bored). Standing up gets likelier the longer she sits. */
 export const IDLE = {
-  stroll: { weight: 3 }, stretch: { weight: 0.8 }, lookAround: { weight: 1.5 }, lean: { weight: 1.5 },
+  stroll: { weight: 2 }, stretch: { weight: 0.8 }, lookAround: { weight: 1.5 }, lean: { weight: 1.5 },
   rock: { weight: 0.8 }, shoulderRoll: { weight: 1 }, hairTuck: { weight: 1.2 }, tugJacket: { weight: 0.8 },
   think: { weight: 1 }, smile: { weight: 1.2 }, sigh: { weight: 0.8 }, curious: { weight: 1.5 },
   sit: { weight: 2.5, after: 45 }, standUp: { weight: 0 },
-  perch: { weight: 2, after: 15 }, hopDown: { weight: 0 },
+  perch: { weight: 2, after: 15 }, hopDown: { weight: 0 }, hide: { weight: 1.5, after: 10 },
 };
 /** What she does while sitting on top of a window. */
 export const PERCHED_FIDGETS = ['lookAround', 'curious', 'smile', 'sigh', 'shoulderRoll', 'hairTuck', 'think', 'hopDown'];
@@ -500,13 +577,15 @@ export const PERCHED_FIDGETS = ['lookAround', 'curious', 'smile', 'sigh', 'shoul
 /** What she does next while idle. `recent`: the names of what she did last (never repeated straight away);
  *  `idleFor`: seconds with nothing going on; `seated`, `seatedFor`. Two random numbers 0…1 pick it. Returns
  *  { stroll: ±1, peek } | { gesture, side: ±1 } | { sit: true } | { stand: true } | { perch: true } | { hopDown: true }.
- *  `perched`: sitting on top of a window (for `perchedFor` s); `canPerch`: a window she could sit on is there. */
+ *  `perched`: sitting on top of a window (for `perchedFor` s); `canPerch`: a window she could sit on is there;
+ *  `canHide`: a window she could go behind and peek out from ({ hide: true }). */
 export function chooseIdle({ recent = [], idleFor = 0, seated = false, seatedFor = 0, perched = false, perchedFor = 0,
-                             canPerch = false }, r1, r2) {
+                             canPerch = false, canHide = false }, r1, r2) {
   const weightOf = name => {
     if (name === 'hopDown') return perched ? Math.min(4, Math.max(0, (perchedFor - 25) / 8)) : 0;
     if (perched) return PERCHED_FIDGETS.includes(name) ? IDLE[name].weight : 0;
     if (name === 'perch' && (!canPerch || seated)) return 0;
+    if (name === 'hide' && (!canHide || seated)) return 0;
     if (name === 'standUp') return seated ? Math.min(4, Math.max(0, (seatedFor - 20) / 8)) : 0;
     if (seated) return SEATED_FIDGETS.includes(name) ? IDLE[name].weight : 0;
     return idleFor >= (IDLE[name].after || 0) ? IDLE[name].weight : 0;
@@ -526,6 +605,7 @@ export function chooseIdle({ recent = [], idleFor = 0, seated = false, seatedFor
   if (pick === 'standUp') return { stand: true };
   if (pick === 'perch') return { perch: true };
   if (pick === 'hopDown') return { hopDown: true };
+  if (pick === 'hide') return { hide: true };
   return { gesture: pick, side: frac(r2 * 3) < 0.5 ? -1 : 1 };
 }
 
@@ -551,8 +631,10 @@ export function gesture(name, t, side = 1) {
     const beat = 2 * Math.PI * 2.2 * (t - 0.6);
     return { weight: smooth(t / 0.12) * smooth((length - t) / 0.12), lift: 0,
              bones: { rightShoulder: [0, 0, 0.06 - 0.28 * raised],
-                      rightUpperArm: [0.06 * (1 - raised), 0, 1.3 - 1.4 * raised, -Math.PI / 2 * turned],
-                      rightLowerArm: [0, 0.3 + 1.2 * bent + 0.5 * swing * Math.sin(beat), 0],
+                      // the elbow comes up to a little below her shoulder and forward, the forearm stands up: a
+                      // friendly wave (lifting the arm out level with the shoulder looked stiff and took more room)
+                      rightUpperArm: [0.06 * (1 - raised) - 0.25 * raised, 0.6 * raised, 1.3 - 0.8 * raised, -Math.PI / 2 * turned],
+                      rightLowerArm: [0, 0.3 + 1.8 * bent + 0.35 * swing * Math.sin(beat), 0],
                       rightHand: [0.06, 0, 0.14 * (1 - bent) + 0.35 * swing * Math.sin(beat - 0.9)],
                       chest: [0, 0, 0.05 * raised], spine: [0, 0, 0.03 * raised], head: [0, 0, 0.09 * raised] } };
   }
@@ -672,6 +754,12 @@ export function withinLimits(name, angles) {
 export function ease(from, to, dt, seconds = 0.3) {
   if (from === to) return to;
   return to + (from - to) * Math.exp(-3 * dt / seconds);
+}
+
+/** Should she blink as her gaze jumps from `from` to `to` (screen look, -1…1 each way)? A big jump is, as in
+ *  people, covered by a blink; a small drift isn't, and never within a second of the last blink (`sinceBlink`). */
+export function lookBlink(from, to, sinceBlink) {
+  return sinceBlink > 1 && Math.hypot(to[0] - from[0], to[1] - from[1]) > 0.6;
 }
 
 export function nextBlink(now, rand) {

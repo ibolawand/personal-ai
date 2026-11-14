@@ -22,7 +22,7 @@ PAGE_FILES = ("avatar.html", "avatar.js", "logic.mjs", "figure.mjs", "vrmrig.mjs
 VENDOR_FILES = ("three.module.js", "three.core.js", "three-vrm.module.js", "addons/loaders/GLTFLoader.js",
                 "addons/utils/BufferGeometryUtils.js", "addons/utils/SkeletonUtils.js")     # see vendor/VERSIONS.md
 BOX_FIGURE = (300, 400)     # the built-in figure is short and wide
-BOX_MODEL = (300, 520)      # a loaded character is tall and slim: a taller box, so she isn't tiny
+BOX_MODEL = (250, 520)      # a loaded character is tall and slim: a box round her (wide enough for a wave), so she isn't tiny
 CAPTION_MAX = 40
 LOAD_TIMEOUT_S = 20
 TIMER_KINDS = ("timer", "focus", "focusbreak")
@@ -97,7 +97,7 @@ class AvatarLink:
 
     Until the page reports ready, calls are kept (the latest of each kind) and then replayed; once it has failed,
     they are dropped. A value that hasn't changed isn't sent again."""
-    REPLAY = ("state", "props", "level", "look", "room", "seats", "fade", "run")
+    REPLAY = ("state", "props", "level", "look", "room", "seats", "hideouts", "cover", "engaged", "fade", "run")
 
     def __init__(self, run_js):
         self._run_js = run_js
@@ -144,6 +144,27 @@ class AvatarLink:
         and how far below her box the floor is."""
         text = json.dumps([{k: int(v) for k, v in s.items()} for s in seats])
         self._send("seats", f"window.aria.setSeats({text},{int(floor)})", (text, int(floor)), repeat=False)
+
+    def set_hideouts(self, edges):
+        """Side edges of windows she could go behind: [{id, x (pixels from the middle of her box), out}]."""
+        text = json.dumps([{"id": int(e["id"]), "x": int(e["x"]), "out": int(e["out"])} for e in edges])
+        self._send("hideouts", f"window.aria.setHideouts({text})", text, repeat=False)
+
+    def hidden_by(self, wid, left, right):
+        """A window was opened or raised over her: its edges in pixels from the middle of her box."""
+        self._send(None, "window.aria.hiddenBy(" + json.dumps({"id": int(wid), "left": int(left), "right": int(right)}) + ")")
+
+    def set_cover(self, rect):
+        """The part of her box an app covers (dict of left/top/right/bottom in her box's pixels), or None."""
+        text = json.dumps({k: int(rect[k]) for k in ("left", "top", "right", "bottom")}) if rect else "null"
+        self._send("cover", f"window.aria.setCover({text})", text, repeat=False)
+
+    def set_engaged(self, on):
+        """You're dealing with her (the text box open, a card up): she stays where she is."""
+        self._send("engaged", f"window.aria.setEngaged({json.dumps(bool(on))})", bool(on), repeat=False)
+
+    def unhide(self):
+        self._send(None, "window.aria.unhide()")    # the app she was behind went away: she stops peeking
 
     def drop_down(self):
         self._send(None, "window.aria.dropDown()")   # the window she sits on went away
@@ -247,19 +268,30 @@ def make_view(parent, path):
             self._poll.start(250)
 
         def ask_travel(self, answer):
-            """answer(window.ariaTravel) once the page says where her walk has got to. (It comes over as JSON text:
-            PySide6 hands JavaScript arrays back as empty strings.)"""
+            """answer(travel, behind) once the page says where her walk has got to (window.ariaTravel) and which
+            window she is behind, if any (window.ariaBehind). (It comes over as JSON text: PySide6 hands JavaScript
+            arrays back as empty strings.)"""
             def parse(text):
                 try:
-                    answer(json.loads(text) if text else None)
+                    got = json.loads(text) if text else {}
                 except ValueError:
-                    answer(None)
-            self.page().runJavaScript("JSON.stringify(window.ariaTravel || null)", parse)
+                    got = {}
+                answer(got.get("travel"), got.get("behind"))
+            self.page().runJavaScript(
+                "JSON.stringify({travel: window.ariaTravel || null, behind: window.ariaBehind ?? null})", parse)
 
         def ask_seat_height(self, answer):
-            """answer(pixels): how far above the bottom of her box a window's top edge is when she sits on it."""
-            self.page().runJavaScript("String(window.aria && window.aria.seatHeight ? window.aria.seatHeight() : '')",
-                                      lambda text: answer(float(text)) if text else None)
+            """answer(seat, headroom) in pixels: how far above the bottom of her box a window's top edge is when
+            she sits on it, and how far above that edge her head reaches."""
+            def parse(text):
+                try:
+                    seat, head = json.loads(text)
+                except (ValueError, TypeError):
+                    return
+                answer(float(seat), float(head))
+            self.page().runJavaScript(
+                "window.aria && window.aria.seatHeight ? JSON.stringify([window.aria.seatHeight(),"
+                " window.aria.seatHeadroom()]) : ''", parse)
 
         def _ask(self):
             self._asked += 1
