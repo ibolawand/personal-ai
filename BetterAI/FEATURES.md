@@ -109,6 +109,94 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 ## Overlay UI — `ui/overlay.py`
 
 - Transparent, frameless, always-on-top orb in the bottom-right corner. Clicks pass through everywhere except the orb, bubbles and input.
+- **Awake, she is a 3D character** (`ui/avatar/`, `ui/avatar_view.py`, `ui/xshape.py`). Asleep you see the orb, exactly
+  as before. When she wakes, the orb fades into a small anime-style figure (about 300 × 400 pixels, her whole body),
+  and back when she sleeps.
+  - **Who she is:** the character in `ui/avatar/aria.vrm` (or the file `ARIA_AVATAR` in `Engines/.env` names). Right now
+    that is VRoid's sample character "AvatarSample_B" (by the VRoid Project; free for everyone to use, no credit needed),
+    put there on 2026-11-13. Any VRM file works, for example one you export from VRoid Studio: replace the file and
+    restart Aria. A loaded character gets a taller box (300 × 520) because she is tall and slim. The file isn't in git
+    (`*.vrm` is ignored). With no file, she is a chibi built entirely in code (`ui/avatar/figure.mjs`: violet hair with
+    two tails, big blue eyes, a dark hoodie), in a 300 × 400 box; if a file doesn't load, that figure is used too.
+  - **Alive but calm:** she blinks and breathes, and her weight drifts from one leg to the other on two slow rhythms
+    at once, so nothing repeats exactly. Each part of her follows the one below it a moment late (hips, then spine,
+    chest, neck, head), her shoulders tip against her hips, and her feet stay where they are. Her arms hang loosely at
+    her sides with the elbows a little bent, the wrists loose and the fingers curled; they trail behind the sway.
+    Her eyes get to the mouse first, in small darts that never rest quite still, and her head turns after them more
+    slowly; a mouse far across the screen only gets a glance. She appears already standing like this (she used to
+    drop her arms from straight out every time she showed up).
+  - **She does things of her own while idle** (every 6 to 16 seconds, only while awake with nothing going on). A
+    weighted picker (`chooseIdle` in `ui/avatar/logic.mjs`) chooses among about a dozen things and never repeats one
+    of the last three, so she doesn't loop:
+    - **a walk across the screen:** she turns to one side and walks somewhere else on the screen, and the whole
+      overlay (her text box, bubbles and cards) goes with her; she stays there until her next walk. The side with
+      more room is the likelier one, so she drifts back toward the middle; about one walk in three goes all the way
+      to the edge of the screen, where she looks out past it and glances back over her shoulder at you. She walks
+      with a real stride (legs and arms swinging against each other, hips turning against her chest, a small bob),
+      speeds up and slows down smoothly, her steps follow how far she has gone (her feet don't skate), her head
+      turns before her body does, and as she stops her body carries on a moment and settles (a spring). Talk to her
+      on the way and she slows to a stop where she is. Drag her and the walk ends: where you drop her is her place
+      (the one Aria starts at next time); walks don't change it. The page plans the walk (`planTrip`/`trip` in
+      `ui/avatar/logic.mjs`) and reports how far she has gone; the overlay moves its window that far
+      (`Travel` in `ui/avatar_view.py`). Inside the page the camera follows her, so her hair still swings with the
+      walk. Her box always stays fully on the screen. With no room on either side she strolls inside her box and
+      back instead.
+    - **a stretch:** both arms swung up in front of her and over her head, leaning back a little, and down the same way.
+    - **a shoulder roll:** shoulders up and down, then a slow neck stretch to each side.
+    - **tucking her hair** behind her ear: her fingers go to her temple and slide back past her ear, and the lock
+      of hair in front of her right ear really goes back with them and stays tucked for a few seconds before it
+      slips forward again (at once when she walks off). Spring-bone hair doesn't feel a hand, so the tuck turns
+      where that lock rests and the hair physics carries it there (`hairLock` in `ui/avatar/vrmrig.mjs`; only with
+      a character that has such a lock). The hand positions were fitted on her model.
+    - **straightening her jacket:** she looks down and gives it two small tugs.
+    - **thinking:** a hand to her chin, eyes up and aside, then "got it": a small smile.
+    - **a smile to herself**, head tilted; **a sigh** (a breath in, a long breath out, a relaxed face); **something
+      catches her eye** in a corner of the screen and she leans to look.
+    - **a look around**, **a lean** onto one leg, **rocking** on her heels with her arms held back.
+    - **Sitting down when she's bored:** after about 45 seconds with nothing going on she may sit on the floor. She
+      turns side-on first (so her skirt stays put), then folds down hugging her knees (elbows beside her knees, forearms
+      wrapped round the front of her shins, one hand over the other wrist), her head and eyes turned back
+      to you. Her body drops and moves back exactly as far as her legs fold, so her feet stay planted. Seated, she
+      only does what fits (looking around, a smile, a sigh, a shoulder roll, her hair); after 20 seconds or more she
+      gets up again, leaning forward over her feet, and turns back to you. She gets up at once when you talk to her
+      or a reminder goes off. (Only with a full-size character; the built-in figure doesn't sit.)
+    - **Her gaze wanders:** when the mouse has been still for 5 seconds, her eyes and head drift to the corners, the
+      edges and back to you, holding each place a few seconds; a big look takes her chest along a little.
+    - **Nothing pops:** every joint follows what it's told through a short smoothing filter, and a fidget fades out
+      within half a second when you start talking to her.
+    It also happens while the microphone is open but nobody is talking. Never while you talk to her, while she
+    thinks or speaks, or while she is asleep.
+  - **What she does:** waves when she appears: her elbow bends, the arm comes up beside her and turns, and the
+    forearm swings from the elbow with the hand trailing; it winds up first, goes a little too far and settles, and comes
+    down with the elbow still bent. **Listening** (only while the microphone is really open, see "She
+    listens only when you type it"): leans in, head tilted, hands forward, small nods with your voice. **Thinking:** looks
+    up and aside, weight on one leg, a hand toward her chin. **Speaking:** her mouth takes turns through the vowel shapes (a, i, u, e, o) as
+    loud as her voice is, and her head, chest and shoulders move in time with it (her hands stay down by her sides
+    with only small beats), with a flicker of a
+    smile on the louder moments (all still when she is silent). **A reminder or timer going off:** her eyes widen and she hops: she winds up into a crouch, leaves the ground,
+    sinks a little on landing and straightens, her chest and head following her hips.
+    (A character whose file has no "surprised" face, like the sample, hops without the wide eyes.)
+  - **Things orbit her and mean something:** a microphone while she listens, three dots while she thinks, a clock while
+    a timer or focus session runs, a note while a reminder is waiting today. They pass in front of and behind her; put
+    the mouse on one and it grows and shows a caption ("2:05 left", the reminder's text).
+  - **Everything around her works as with the orb:** click her to type (the text box is a bar across the bottom of her
+    box), drag her, right-click for the menu; bubbles and cards stack above her head.
+  - **Clicks beside her pass through** to the window behind: only her outline, the bubbles and the cards take clicks
+    (the X11 input shape, so her picture isn't cut the way the orb's circle is).
+  - **She costs nothing while asleep or hidden:** her page is paused and draws nothing. Its small built-in browser stays
+    loaded, though: measured at roughly 450 MB of memory on top of the overlay (2026-11-13). `ARIA_AVATAR=0` switches
+    her off and frees that; then Aria is the orb only.
+  - **If anything is missing or breaks** (the page, the 3D libraries in `ui/avatar/vendor/`, QtWebEngine, the graphics),
+    Aria runs with the orb, and the self-check ("are your systems okay?") has an "Avatar" line that says why.
+  - **How a gesture is combined with her pose:** her pose, the idle movement, walking and talking are small angles
+    that add up; a gesture (the wave, the hop, a fidget) says where a bone should be and is blended in as a rotation,
+    the short way round. Elbows and knees are kept inside what a joint can do whatever adds up. Checked with numbers
+    on the real character (`window.aria.where(...)` through `tools/avatar_look.py`): through the whole wave her elbow
+    and hand stay outside her shoulder and her hand is above her head; from her first moment she stands with her
+    arms down, never in the T-pose. To fit a pose, `window.aria.tune({bone: [x, y, z, twist]})` pins bones to
+    angles while you measure (the sitting arms were fitted that way to points round her knees).
+  - How she moves is decided in `ui/avatar/logic.mjs` (poses, idle movement, the wave and the hop, blinking, the
+    mouth), which the page only applies. Tests: `node --test ui/avatar/logic.test.mjs`, `tests/test_avatar.py`.
 - **Animated orb per state:**
   - **sleeping:** dim breathing, dust drifting up, floating "z"s
   - **listening:** cyan orb, equaliser spikes and particles pulled inward, both following your mic volume

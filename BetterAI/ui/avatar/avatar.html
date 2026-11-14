@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Aria</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; opacity: 0; transition: opacity 250ms ease; }
+  #caption {
+    position: absolute; display: none; pointer-events: none; white-space: nowrap;
+    font: 12px "Noto Sans", sans-serif; color: #f1ecff; background: rgba(18, 14, 28, 0.9);
+    border: 1px solid rgba(185, 163, 255, 0.35); border-radius: 9px; padding: 3px 9px;
+    transform: translate(-50%, -150%);
+  }
+</style>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/addons/",
+               "@pixiv/three-vrm": "./vendor/three-vrm.module.js" } }
+</script>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="caption"></div>
+<script>window.ariaStatus = ''; window.addEventListener('error', e => { window.ariaStatus ||= 'failed: ' + (e.message || 'script error'); });</script>
+<script type="module" src="./avatar.js"></script>
+</body>
+</html>

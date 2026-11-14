@@ -55,6 +55,11 @@ class Health:
             return True, f"camera {v._camera_index}" + (", someone is here" if v.is_present else "")
         out.append(_check("Camera", camera))
 
+        avatar_status = getattr(getattr(a, "ui", None), "avatar_status", None)      # only the overlay has one
+        if avatar_status:
+            out.append(_check("Avatar", lambda: (avatar_status.startswith(("ready", "showing", "switched off")),
+                                                 avatar_status)))
+
         def microphone():
             import sounddevice as sd
             dev = sd.query_devices(kind="input")

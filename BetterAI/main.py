@@ -425,6 +425,7 @@ class NullUI:
     def stop_talking(self): pass
     def show_card(self, card): pass           # list / agenda / yes-no card next to the orb
     def clear_card(self, kind=None): pass
+    def set_mic_open(self, is_open): pass     # she is transcribing what is said (the avatar leans in only then)
 
 
 class Aria:
@@ -1508,9 +1509,11 @@ class Aria:
         said = " ".join(said.split())
         if STOP_LISTEN_RE.fullmatch(said):
             was_on, self._ears = bool(getattr(self, "_ears", False)), False
+            self.ui.set_mic_open(self._uses_mic())
             return "Okay, the microphone is off." if was_on else "The microphone is already off."
         if LISTEN_RE.fullmatch(said):
             self._ears = True
+            self.ui.set_mic_open(True)
             wake = getattr(self, "_wake_event", None)
             if wake:
                 wake.set()              # typed in MyNotion's panel while she sleeps: she has to wake up to hear
@@ -1519,6 +1522,7 @@ class Aria:
 
     def _go_to_sleep(self, line=None):
         self._ears = False                       # the microphone never stays open past a conversation
+        self.ui.set_mic_open(self._uses_mic())
         if self._dictating():
             saved = self.dictation.finish()      # never lose what was dictated
             print(f"Aria: {saved}")
@@ -1680,6 +1684,7 @@ class Aria:
     def run(self, option=None):
         if option is not None:
             self.option = option
+        self.ui.set_mic_open(self._uses_mic())      # --voice: open from the start
         while True:
             self.vision.start()  # no-op if already running
             self._wake_event.clear()

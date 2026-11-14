@@ -74,3 +74,29 @@ def test_while_dictating_the_words_are_not_a_command(typing_aria):
     typing_aria._ears = True
     typing_aria.dictation = types.SimpleNamespace(active=True)
     assert typing_aria._ears_command("stop listening") is None and typing_aria._ears
+
+
+# ── the UI is told when the microphone is really open (the avatar leans in only then) ──
+
+@pytest.fixture
+def heard(typing_aria):
+    calls = []
+    typing_aria.ui.set_mic_open = calls.append
+    return calls
+
+
+def test_the_ui_is_told_when_the_microphone_opens_and_closes(typing_aria, heard):
+    typing_aria._handle_turn("listen")
+    typing_aria._handle_turn("stop listening")
+    assert heard == [True, False]
+
+
+def test_going_to_sleep_tells_the_ui_the_microphone_is_closed(typing_aria, heard):
+    typing_aria._ears = True
+    typing_aria._sleep_request, typing_aria._remember_session = threading.Event(), lambda: None
+    typing_aria._go_to_sleep()
+    assert heard == [False]
+
+
+def test_null_ui_accepts_it():
+    main.NullUI().set_mic_open(True)

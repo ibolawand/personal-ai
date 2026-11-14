@@ -151,3 +151,13 @@ def test_a_hidden_orb_does_not_animate(overlay, monkeypatch):
     monkeypatch.setattr(overlay, "_update_mask", lambda *a: painted.append(1))
     overlay._tick()
     assert painted == []
+
+
+def test_the_bridge_reports_the_microphone_only_when_it_changes(app):
+    from ui.overlay import OverlayBridge
+    b, seen = OverlayBridge(), []
+    b.micOpenChanged.connect(seen.append)
+    assert b.mic_open is False
+    b.set_mic_open(True); b.set_mic_open(True); b.set_mic_open(False)
+    app.processEvents()
+    assert seen == [True, False] and b.mic_open is False

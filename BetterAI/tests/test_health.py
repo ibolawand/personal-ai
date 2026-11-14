@@ -36,3 +36,15 @@ def test_a_switched_off_camera_is_not_a_problem(aria, monkeypatch):
     monkeypatch.setenv("ARIA_CAMERA", "1")
     rows = {name: (ok, detail) for name, ok, detail in Health(aria).checks()}
     assert rows["Camera"] == (False, "no camera found (set CAMERA_INDEX if you have one)")
+
+
+def test_the_avatar_is_reported_with_its_reason(aria):
+    def row(status):
+        aria.ui = types.SimpleNamespace(avatar_status=status)
+        return {name: (ok, detail) for name, ok, detail in Health(aria).checks()}.get("Avatar")
+    assert row("ready to load (built-in figure)") == (True, "ready to load (built-in figure)")
+    assert row("switched off (ARIA_AVATAR=0)") == (True, "switched off (ARIA_AVATAR=0)")
+    assert row("no avatar file at /x/aria.vrm") == (False, "no avatar file at /x/aria.vrm")
+    assert row("no WebGL") == (False, "no WebGL")
+    aria.ui = main.NullUI()
+    assert "Avatar" not in {name for name, _, _ in Health(aria).checks()}       # no overlay, nothing to report
