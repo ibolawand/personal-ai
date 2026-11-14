@@ -35,13 +35,15 @@ class UserStateResult:
 
 
 class UserStateEngine:
-    def __init__(self, vision, llm_model: str = "qwen3:8b", cooldown_seconds: int = 300):
+    def __init__(self, vision, llm_model: str = None, cooldown_seconds: int = 300):
         """
         vision: AriaVision instance (reused for camera access)
         cooldown_seconds: minimum time between proactive check-ins,
                            so Aria doesn't ask every single message
         """
         self.vision = vision
+        if llm_model is None:
+            from llm_engine import LLM_MODEL_DEFAULT as llm_model
         self.llm_model = llm_model
         self.cooldown_seconds = cooldown_seconds
         self._last_asked = 0.0

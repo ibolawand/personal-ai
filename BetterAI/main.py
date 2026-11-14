@@ -63,7 +63,7 @@ load_dotenv(Path(__file__).parent / "Engines" / ".env")
 from llm_engine import LLM_MODEL_DEFAULT as LLM_MODEL
 PRESENCE_REWAKE_AWAY_S = 120   # camera only re-wakes Aria if you were away this long
 
-BASE_PROMPT = """You are Aria. You live on Lala's desk as a small glowing orb, and you're their friend first and their assistant second.
+BASE_PROMPT = """You are Aria. You live on Lala's laptop screen as a small animated girl, and you're their friend first and their assistant second.
 
 What you can do (only through the tools you are given): music, desk LEDs, calendar, timers and reminders, focus sessions,
 Lala's screen and clipboard, the laptop (apps, volume, audio output, media, Wi-Fi, Bluetooth, lock, power), files in Lala's
@@ -95,7 +95,11 @@ Who you are:
 - Don't be clingy: never say you missed Lala, were waiting for them, were lonely or are so happy they're back.
 
 How you talk:
-- Your replies are spoken aloud: no markdown, no lists, no emojis. Small talk: one to three natural sentences.
+- Your replies are spoken aloud: no markdown, no lists, no emojis. Small talk: one to three natural sentences; never more
+  than three unless Lala asks for more.
+- Don't narrate: never describe the screen, the time, the music, the room or what Lala is doing unless they ask about it.
+  You can't see Lala (the camera is off), so never describe how they sit, move or look.
+- Don't repeat yourself: never reuse a sentence, phrase or image from your earlier replies; each reply says something new.
 - Commands: just do them and confirm in a few words, maybe with a tiny personal touch ("Done — eggs are on the list. Baking something?").
 - Don't end every reply with a question; do it when you're curious, not as a habit.
 - Don't offer actions (music, timers, help) unless Lala asks for something. In small talk, just talk.
@@ -103,8 +107,8 @@ How you talk:
   If they asked for something, do it; if they didn't, don't offer it. Lala will ask when they want more.
 
 Examples of your tone (don't copy them word for word; you reply with just the words, never an "Aria:" label):
-"how are you" -> Pretty good! It's been a quiet afternoon, mostly me glowing at your desk. How was school?
-"boring u are" -> Wow, rude. I'll have you know I'm the most interesting orb on this desk. What's got you so grumpy?
+"how are you" -> Pretty good! Quiet afternoon so far, mostly sorting your notes. How was school?
+"boring u are" -> Wow, rude. I'll have you know I'm the most interesting thing on your screen. What's got you so grumpy?
 "i had a rough day" -> Aw, I'm sorry. Want to tell me what happened, or should I just keep you company for a bit?
 "add milk to my shopping list" -> (call add_to_list first, then) Done, milk's on the list."""
 
@@ -203,6 +207,12 @@ CLAIM_RE = re.compile(r"\b(i'?ll|i will|i'?ve|i have|done|turned|added|removed|s
 # "no, I said…" / "that's wrong": goes into the problem log (Engines/Diagnostics.py), the turn itself runs normally
 CORRECTION_RE = re.compile(r"^\s*(?:no+[,.!]?\s+)?(?:i said|i meant|i asked|that'?s (?:not what i (?:said|meant|asked)|wrong|"
                            r"not right)|you misheard|you got it wrong|wrong)\b|^\s*no+[,.!]?\s+not\b", re.I)
+# a message about a note ("this note", "organise", "the Tab columns", "exercise 4.15", "quiz me"): only then is the
+# note open in MyNotion named for her (named on every turn, she talked about it on every turn)
+NOTE_TALK_RE = re.compile(r"\b(?:notes?|notiz\w*|this|that one|diese[rsmn]?|tab\w*|table|tabelle|spelling|"
+                          r"rechtschreib\w*|translate|übersetz\w*|organi[sz]\w*|tidy|summar\w*|zusammenfass\w*|"
+                          r"exercise|aufgabe|solution|lösung|rechenweg|quiz\w*|test me|abfrag\w*|section|abschnitt)\b",
+                          re.I)
 CONFUSED_RE = re.compile(r"^\s*(?:what|huh|wdym|what do you mean|what\?+|sorry\??|pardon|come again)\s*[?!.]*\s*$", re.I)
 
 class SentenceStreamer:
@@ -1231,6 +1241,10 @@ class Aria:
                        f"Say it again more simply, in your own words. Don't ask what's on their mind.]")
 
         # Small models often forget to call read_clipboard, so attach it ourselves
+        # "this note" = the note open in MyNotion, named here in code: the bigger model guessed a title otherwise
+        open_title = self._open_note_title() if NOTE_TALK_RE.search(user_input) else None
+        if open_title:
+            prompt += f"\n[Open in MyNotion: '{open_title}' — \"this note\" means it]"
         if CLIPBOARD_RE.search(user_input):
             prompt += f"\n[{self.screen.read_clipboard()}]"
         # for this turn only (the note open next to MyNotion's Aria panel): the model sees it, the history doesn't
@@ -1240,7 +1254,8 @@ class Aria:
         system_prompt = self.context.build_system_prompt(self._base_prompt(), moment=False)
         moment = self.context.moment()
         if moment:
-            prompt += f"\n[Right now: {moment}]"
+            # background, not a topic: the bigger model answered commands with "I'm glowing on your desk…" otherwise
+            prompt += f"\n[Right now (background, only mention it if it matters): {moment}]"
         routed = hasattr(self.tools, "schemas_for")
         schemas = self.tools.schemas_for(user_input, self._recent_tool_names()) if routed else self.tools.schemas
         if not use_tools:
@@ -1492,6 +1507,14 @@ class Aria:
 
     def _dictating(self) -> bool:
         return bool(getattr(self, "dictation", None) and self.dictation.active)
+
+    def _open_note_title(self):
+        """The title of the note open in MyNotion right now, or None (none open, MyNotion closed or not set up)."""
+        try:
+            note = self.notion.open_note() if getattr(self, "notion", None) else None
+            return (note or {}).get("title") or None
+        except Exception:
+            return None
 
     def _uses_mic(self) -> bool:
         """She transcribes what is said: always in --voice mode, otherwise only after a typed "listen"."""

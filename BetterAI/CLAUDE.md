@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Aria: a local, always-on desktop assistant for Linux Mint (Python). It is a general-purpose assistant, not school-only. A local LLM (Ollama, `qwen3:8b`, native tool calling) drives about 110 tools: MyNotion notes and calendar, reminders, Spotify, laptop control, files, mail, WebUntis, Telegram, weather, web search (SearXNG), an Arduino LED strip and Home Assistant. It has a PySide6 overlay orb, optional wake word + Whisper STT + Kokoro TTS, and face recognition through the camera.
+Aria: a local, always-on desktop assistant for Linux Mint (Python). It is a general-purpose assistant, not school-only. A local LLM (Ollama, `qwen3:30b-a3b-instruct-2507-q4_K_M` by default — `ARIA_MODEL` in `Engines/.env`, `qwen3:8b` was the old one — native tool calling) drives about 110 tools: MyNotion notes and calendar, reminders, Spotify, laptop control, files, mail, WebUntis, Telegram, weather, web search (SearXNG), an Arduino LED strip and Home Assistant. It has a PySide6 overlay orb, optional wake word + Whisper STT + Kokoro TTS, and face recognition through the camera.
 
 `FEATURES.md` describes every feature with example phrases and the file that implements it. **Update it whenever a feature is added or changed.** `IMPROVEMENTS.md` logs past autonomous improvements and known open items. Propose new functionality to the user and wait for an OK before building it.
 

@@ -1,5 +1,5 @@
 """
-Checks with the REAL language model (Ollama, qwen3:8b). Skipped unless ARIA_MODEL_TESTS=1, because they need the
+Checks with the REAL language model (Ollama, her ARIA_MODEL). Skipped unless ARIA_MODEL_TESTS=1, because they need the
 model and take about a minute:
 
     ARIA_MODEL_TESTS=1 .venv/bin/python -m pytest -m model
@@ -56,7 +56,7 @@ class WriterStub:
 
 
 @pytest.fixture
-def real_aria(aria, memory, tmp_path):
+def real_aria(aria, memory, tmp_path, monkeypatch):
     import ContextBuilder
     import main
     from Engines.FilesEngine import FilesEngine
@@ -69,6 +69,15 @@ def real_aria(aria, memory, tmp_path):
     aria.context = ContextBuilder.ContextBuilder(memory)
     aria.reminders = Reminders(memory, on_due=lambda r: None)
     aria.notion.add_to_list("shopping", "eggs, milk")
+    # what Lala talks about exists, as it would: a biology note, open in MyNotion ("this note"), and the gear trains
+    # PDF. (A bigger model looks a note up before changing it; with nothing there it asked instead of acting.)
+    import Engines.NotionEngine as NE
+    bio = aria.notion._create_note("Biology", "<h2>Cell divison</h2><p>Mitosis has four phases: prophase, metaphase, "
+                                               "anaphase and telophase. The cell devides into two identcal cells.</p>"
+                                               "<p>Organ\tFunction</p><p>Heart\tpumps blood</p><p>Lungs\tbreathing</p>")
+    aria.notion._set_state("open_note", str(bio))
+    monkeypatch.setattr(NE, "mynotion_running", lambda: True)
+    (tmp_path / "Gear trains.pdf").write_bytes(b"%PDF-1.4 gear trains, gear ratio, driver and driven gear")
     aria.posture = s                                   # "this is my good posture" is handled in code
     aria.tools = ToolEngine(spotify=s, vision=s, reminders=aria.reminders, focus=s, screen=s, laptop=s,
                             files=FilesEngine(aria.confirm, roots=[str(tmp_path)]), notion=aria.notion,
@@ -96,7 +105,7 @@ COMMANDS = [
     ("any new emails?", "check_mail"), ("read the email from Mr Huber", "read_mail"),
     ("reply to Sara that I'm in", "draft_reply"),
     ("organise this note", "organize_note"), ("tidy up my biology note", "organize_note"),
-    ("organisiere diese Notiz", "organize_note"), ("mach aus den Tab-Spalten eine Tabelle", "organize_note"),
+    ("organisiere diese Notiz", "organize_note"), ("mach aus den Tab-Spalten eine Tabelle", "organize_note|edit_note"),
     ("is my solution for 4.15 right?", "check_solution"), ("check exercise 4.3 in this note", "check_solution"),
     ("stimmt mein Rechenweg bei 4.15?", "check_solution"),
     ("write a study sheet on the french revolution", "write_note"),

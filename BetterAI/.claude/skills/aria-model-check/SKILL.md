@@ -9,7 +9,7 @@ The fast tests never call the model. Prompt/tool-description/routing changes hav
 
 ## Steps
 
-1. Ollama must be running with `qwen3:8b` loaded: `ollama ps`. If Aria is running she holds the GPU model; that's fine (same model), but close MyNotion's heavy work first if it's slow.
+1. Ollama must be running with her model (`ARIA_MODEL`, default `qwen3:30b-a3b-instruct-2507-q4_K_M`) loaded: `ollama ps`. If Aria is running she holds the GPU model; that's fine (same model), but close MyNotion's heavy work first if it's slow.
 2. Run everything:
    ```bash
    ARIA_MODEL_TESTS=1 .venv/bin/python -m pytest -m model -q

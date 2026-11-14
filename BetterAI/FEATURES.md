@@ -42,7 +42,18 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
   - "What?" / "huh?" makes her say her last message again, more simply.
   - After she asks you something, she waits 2 minutes for your answer instead of 1 before dozing off.
 
-- **Model:** Ollama `qwen3:8b` with native tool calling (`llm_engine.py`), thinking off for speed, 8192-token context.
+- **Model:** Ollama `qwen3:30b-a3b-instruct-2507-q4_K_M` with native tool calling (`llm_engine.py`), 12288-token
+  context (her largest request is ~10.8 k tokens; at 8192 Ollama had been silently cutting it). A mixture-of-experts
+  model: 30 B parameters but ~3 B used per word, so it runs ~97 % on the 8 GB graphics card at 30–40 words/s (first
+  word ~0.6 s) and keeps ~11 GB more in ordinary memory. Measured on real school questions it reasons clearly better
+  than the old `qwen3:8b` (e.g. "can a 2x3 matrix be multiplied by a 2x3?" and a classic reasoning trap: the 8 B got
+  both wrong). Switch back with `ARIA_MODEL=qwen3:8b` in `Engines/.env`. A screen question (picture model) now takes
+  ~7–14 s to hand her brain back instead of ~3 s.
+  - Tuned for it, in code: the "[Right now: …]" note is marked as background (she greeted instead of acting); the
+    note open in MyNotion is named after the message, so "this note" means it (she guessed titles); after a tool,
+    "I'll open it now" gets one more round to actually do it (never when she asks a question); a tool call written
+    as text is carried out instead of shown; up to 5 tool rounds (she looks things up first). The note, quiz, reply
+    and check-off tools say they find things themselves.
 - **Heavy text work goes to Claude** (`Engines/BigModel.py`). The local model stays the one that talks and runs the
   tools; a fixed list of heavy tasks, chosen in code and never by the model, is answered by Claude instead:
   - organising, rewriting, translating, summarising and writing notes, and "Select text, ask Aria" in MyNotion

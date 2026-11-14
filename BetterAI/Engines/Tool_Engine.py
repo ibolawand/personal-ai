@@ -21,6 +21,10 @@ def _ok(success, msg, fail="The device didn't respond."):
     return msg if success else fail
 
 
+# note tools find the note themselves; the bigger model looked it up first, didn't find it and gave up
+_FINDS_NOTE = " Call it straight away with the title as Lala says it (or 'this'): it finds the note itself, so don't look it up or read it first."
+
+
 def _tool(tool_name, description, handler, optional=(), **params):
     """params: name -> (json_type, description). Required unless listed in `optional`."""
     return {
@@ -324,8 +328,9 @@ class ToolEngine:
                       full=("boolean", "true to read the whole email after a summary")),
                 _tool("search_mail", "Search Lala's emails for words ('what did Sara write about friday').",
                       m.search_mail, query=("string", "the words to look for")),
-                _tool("draft_reply", "Reply to an email ('reply that I'll be there at 3'). Writes it in Lala's voice and "
-                      "asks before sending; pass what Lala wants to say, not a finished email.",
+                _tool("draft_reply", "Reply to an email ('reply that I'll be there at 3', 'reply to Sara that I'm in'). "
+                      "Writes it in Lala's voice and asks before sending; pass what Lala wants to say, not a finished "
+                      "email. Call it straight away: it finds the email itself, so don't read the mail first.",
                       m.draft_reply, optional=("which",), which=("string", "which email: 'that', sender or subject"),
                       gist=("string", "what the reply should say")),
                 _tool("draft_mail", "Write a new email ('email Mr Huber that I'm sick'). To someone who emailed before, "
@@ -363,27 +368,30 @@ class ToolEngine:
                       "Reorganise an existing MyNotion note: groups what belongs together, adds headings, lists, "
                       "to-dos and tables; lines lined up side by side with Tab become columns (a table); never removes "
                       "words ('organise this note', 'tidy up my biology note', 'structure my notes on the war', "
-                      "'put the Tab columns in a table'). 'this' = the note open in MyNotion.",
+                      "'put the Tab columns in a table'). 'this' = the note open in MyNotion." + _FINDS_NOTE,
                       wr.organize_note, optional=("title",),
                       title=("string", "the note's title, or 'this' for the note open in MyNotion")),
                 _tool("edit_note",
                       "Change part of an existing MyNotion note. change: 'add' (write a new part: 'add a section about "
                       "mitosis'), 'summary' (summary at the top), 'fix_spelling', 'translate' (needs language), "
                       "'rewrite' (change one part as asked: 'make the intro shorter', 'turn the dates into a table'). "
-                      "'this' = the note open in MyNotion.",
+                      "'this' = the note open in MyNotion." + _FINDS_NOTE,
                       wr.edit_note, optional=("title", "instruction", "section", "language"),
                       change=("string", "add | summary | fix_spelling | translate | rewrite"),
                       title=("string", "the note's title, or 'this' for the note open in MyNotion"),
                       instruction=("string", "for add/rewrite: what to write or change, in Lala's words"),
-                      section=("string", "the heading of the part to change or to add after, if Lala names one"),
+                      section=("string", "only an existing heading Lala names (to change it, or to add after it); the topic "
+                                        "of a new part goes in instruction"),
                       language=("string", "for translate: the language to translate into")),
             ]
 
         if self.quiz:
             tools += [_tool("start_quiz",
                             "Quiz Lala out loud on one of their notes or documents ('quiz me on my C# note', 'test me "
-                            "on the gear trains PDF', 'quiz me on my mistakes'). Asks short questions one at a time; "
-                            "their answers are checked for you.",
+                            "on the gear trains PDF', 'quiz me on my mistakes'); 'test me on …' always means this, never "
+                            "reading the file to Lala. Asks short questions one at a time; "
+                            "their answers are checked for you. Call it straight away with the topic as Lala says it: "
+                            "it finds the note or file itself, so don't search for it first.",
                             self.quiz.start, optional=("count",),
                             topic=("string", "the note or document title or subject, or 'mistakes' to retry missed "
                                              "questions"),
@@ -515,7 +523,7 @@ class ToolEngine:
                 _tool("check_solution",
                       "CHECK Lala's worked maths in a MyNotion note with exact maths: is the solution of a "
                       "differential equation right? ('is my solution right?', 'check exercise 4.15', 'did I solve "
-                      "4.3 correctly?', 'stimmt mein Rechenweg?'). Never judge a solution yourself; always call this.",
+                      "4.3 correctly?', 'stimmt mein Rechenweg?'). Never judge a solution yourself; always call this." + _FINDS_NOTE,
                       lambda title="this", exercise="": __import__("Engines.MathCheck", fromlist=["check_in_note"])
                       .check_in_note(nt, title, exercise), optional=("title", "exercise"),
                       title=("string", "the note's title, or 'this' for the note open in MyNotion"),
@@ -549,8 +557,9 @@ class ToolEngine:
                                           "for bought/done use check_off).", nt.remove_from_list,
                       list_name=("string", "which list"), items=("string", "items to remove, comma-separated")),
                 _tool("check_off",
-                      "Tick items off a checklist when Lala did/bought them ('I paid the rent', 'got the eggs', "
-                      "'done with the essay'). Set done=false to untick.",
+                      "Tick items off a checklist when Lala did/bought them ('I bought the eggs', 'I paid the rent', "
+                      "'got the eggs', 'done with the essay'): bought means done, never add it again. Set done=false "
+                      "to untick.",
                       nt.check_off, optional=("list_name", "done"),
                       items=("string", "the item(s), comma-separated"),
                       list_name=("string", "which list, if Lala says it"),

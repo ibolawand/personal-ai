@@ -6,6 +6,8 @@ from Engines.Health import Health
 
 def test_report_names_problems_and_fixes(aria, monkeypatch):
     import ollama
+    import llm_engine
+    monkeypatch.setattr(llm_engine, "LLM_MODEL_DEFAULT", "qwen3:8b")     # installed here: only the picture model is missing
     monkeypatch.setattr(ollama, "list", lambda: types.SimpleNamespace(models=[types.SimpleNamespace(model="qwen3:8b")]))
     aria.spotify = None
     aria.vision = types.SimpleNamespace(_camera_index=None, is_present=False)
@@ -48,3 +50,15 @@ def test_the_avatar_is_reported_with_its_reason(aria):
     assert row("no WebGL") == (False, "no WebGL")
     aria.ui = main.NullUI()
     assert "Avatar" not in {name for name, _, _ in Health(aria).checks()}       # no overlay, nothing to report
+
+
+def test_a_missing_chat_model_is_named_with_how_to_get_it(aria, monkeypatch):
+    """Her brain is a setting (ARIA_MODEL): if that model isn't downloaded, the start-up check says which and how."""
+    import ollama
+    import llm_engine
+    monkeypatch.setattr(llm_engine, "LLM_MODEL_DEFAULT", "qwen3:30b-a3b-instruct-2507-q4_K_M")
+    monkeypatch.setattr(ollama, "list", lambda: types.SimpleNamespace(
+        models=[types.SimpleNamespace(model=m) for m in ("qwen3:8b", "qwen2.5vl:3b")]))
+    rows = {name: (ok, text) for name, ok, text in Health(aria).checks()}
+    ok, text = rows["Language and vision models"]
+    assert not ok and "ollama pull qwen3:30b-a3b-instruct-2507-q4_K_M" in text
