@@ -2,7 +2,7 @@
 // with her body is decided in logic.mjs; her shape is figure.mjs, or a VRM file when one is given (vrmrig.mjs).
 // It reports once through window.ariaStatus: "ready" after the first frame, or "failed: <why>".
 import * as THREE from 'three';
-import { BONES, GESTURES, FIDGETS, avatarState, poseFor, idleMotion, gesture, walkCycle, stroll, trip, planTrip, cutLeg, talkMotion, visemes,
+import { BONES, GESTURES, FIDGETS, avatarState, poseFor, idleMotion, gesture, walkCycle, stroll, trip, planTrip, cutLeg, legLength, perchPose, dangle, jump, planPerch, LEDGE_Y, PERCH_YAW, talkMotion, visemes,
          saccade, chooseIdle, sitting, sitPose, spring, gazeWander, withinLimits, ease, nextBlink, blinkWeight,
          mouthWeight, ringPosition } from './logic.mjs';
 import { buildFigure } from './figure.mjs';
@@ -76,7 +76,14 @@ let walk = null;                                    // { start, side, peek } of 
 // Walking across the screen she really moves through her world, and the camera (and her ring of props) go along,
 // so she stays in the middle of her box while the overlay moves its window by the same distance (ariaTravel).
 // Her hair feels the walk that way. The offset is never reset: that would jolt her hair.
-let stageX = 0;
+let stageX = 0, stageY = 0;
+// Sitting on top of a window: the overlay says where she could sit ({ x, half, y } in pixels from the middle of the
+// bottom of her box) and how far below her the floor is; she walks under a seat, jumps up onto it and sits there
+// (perched) until she hops down or the window goes. The overlay keeps her window on the seat while it moves.
+let seatsPx = [], floorPx = 0;
+let jumping = null;                                 // { start, dy (units), base, id } of a jump under way
+let perched = null;                                 // { since } while she sits on top of a window
+let perchSide = 1;                                  // which way she turns a little, sitting there
 let room = null;                                    // { left, right }: how far she may walk each way (units)
 let tripId = 0;
 window.ariaTravel = null;                           // [trip id, pixels walked, still walking]: read by the overlay
@@ -88,7 +95,7 @@ let lookMovedAt = 0, lastLook = [0, 0];             // when the mouse last moved
 let lean = [0, 0];                                  // the spring of her forward lean as she walks and stops [angle, speed]
 // she starts standing relaxed, not in the T-pose her model is built in (her arms used to drop from straight out)
 const now = { bones: poseFor('idle').bones, look: [0, 0], eyes: [0, 0], mouth: 0, surprised: 0, relaxed: 0, happy: 0,
-              nod: 0, lift: 0, talk: 0, wander: 0, hair: 0 };
+              nod: 0, lift: 0, talk: 0, wander: 0, hair: 0, ledge: 0 };
 let hairUntil = 0;                                  // her hair stays tucked behind her ear until then
 const LEGS = new Set(['leftUpperLeg', 'rightUpperLeg', 'leftLowerLeg', 'rightLowerLeg']);
 const SEAT_YAW = 1.15;      // how far she turns to sit (radians)
@@ -227,16 +234,19 @@ function move(dt) {
   const seat = sit ? sitting(t - sit.start, sit.standAt) : null;
   if (sit && !seat) sit = null;
   const settling = seat && seat.w > 0.001 && seat.w < 0.999;
-  const base = seat ? sitPose(seat.w, pose) : pose;
+  let base = seat ? sitPose(seat.w, pose) : pose;
 
-  if (!waiting || doing || walk || settling) idleAt = Math.max(idleAt, t + 3 + Math.random() * 5);
+  if (!waiting || doing || walk || settling || jumping) idleAt = Math.max(idleAt, t + 3 + Math.random() * 5);
   else if (t >= idleAt) begin(chooseIdle({ recent, idleFor: t - idleSince, seated: !!sit && sit.standAt == null,
-                                          seatedFor: sit ? t - sit.start : 0 }, Math.random(), Math.random()));
+                                          seatedFor: sit ? t - sit.start : 0, perched: !!perched,
+                                          perchedFor: perched ? t - perched.since : 0,
+                                          canPerch: rig.canSit && seatsPx.length > 0 }, Math.random(), Math.random()));
   // spoken to on her way somewhere, she slows to a stop where she is (a stroll in her box just plays out)
   if (walk?.trip && !waiting && !walk.cut) {
     const leg = cutLeg(walk.leg, t - walk.start);
     if (leg !== walk.leg) [walk.leg, walk.peek] = [leg, false];
     walk.cut = true;
+    walk.then = null;                               // and doesn't go on to jump up anywhere
   }
   const going = !walk ? null
     : walk.trip ? trip(t - walk.start, walk.leg, walk.side, walk.peek)
@@ -245,12 +255,31 @@ function move(dt) {
     if (going) stageX = walk.base + going.x;
     window.ariaTravel = [walk.id, (stageX - walk.base) * pxPerUnit, !!going];
   }
-  if (walk && !going) walk = null;
+  if (walk && !going) {
+    if (walk.then != null) leap(walk.then);         // arrived under the seat: up she goes
+    walk = null;
+  }
+  // a jump up onto a window or down from one: her whole world (and the overlay's window) goes up or down with her
+  const air = jumping ? jump(t - jumping.start, jumping.dy) : null;
+  if (jumping) {
+    if (air) stageY = jumping.base + air.y;
+    window.ariaTravel = [jumping.id, 0, !!air, -(stageY - jumping.base) * pxPerUnit];
+    if (!air) {
+      perched = jumping.dy > 0 ? { since: t } : null;
+      jumping = null;
+    }
+  }
+  now.ledge = air ? air.ledge : ease(now.ledge, perched ? 1 : 0, dt, 0.4);
+  const crouch = air ? air.crouch : 0;
+  const onEdge = now.ledge > 0.001 || crouch > 0.001;
+  const perchLift = onEdge ? (base = perchPose(now.ledge, crouch, base)).lift : 0;
   const steps = going && going.amount > 0 ? walkCycle(going.phase) : null;
   rig.root.position.x = stageX + (going && !walk?.trip ? going.x : 0);
   camera.position.x = ring.position.x = stageX;
+  camera.position.y = 0.54 + stageY;
+  ring.position.y = RING_Y + stageY;
   // sitting, she turns side-on (so her skirt stays put) and her head and eyes turn back to you
-  const seatYaw = seat ? sit.side * SEAT_YAW * seat.turn : 0;
+  const seatYaw = seat ? sit.side * SEAT_YAW * seat.turn : perchSide * PERCH_YAW * now.ledge;
   rig.root.rotation.y = going ? going.yaw : seatYaw;
   // her body moves back (along the way she faces) as far as her folding legs reach forward, so her feet stay put
   if (seat) rig.root.position.x += seat.back * Math.sin(seatYaw);
@@ -285,14 +314,16 @@ function move(dt) {
   now.nod = ease(now.nod, state === 'listening' ? Math.min(0.1, told.mic * 1.6) : 0, dt, 0.12);
 
   const follow = 1 - Math.exp(-dt / FOLLOW_S);
+  const dangled = perched ? dangle(t) : {};
   for (const name of BONES) {
     const cur = now.bones[name], want = base.bones[name], out = [0, 0, 0, 0];
     // sitting is a smooth curve already, and how far her body drops is worked out from exactly this fold of her
     // legs: easing them on top would leave her feet floating or sinking while she sits down or gets up
-    const exact = seat && LEGS.has(name);
+    const exact = (seat || onEdge) && LEGS.has(name);
     for (let i = 0; i < 4; i++) {
       cur[i] = exact ? want[i] : ease(cur[i], want[i], dt);
-      out[i] = cur[i] + (idle[name]?.[i] || 0) + (talking?.[name]?.[i] || 0);
+      out[i] = cur[i] + (exact && onEdge ? 0 : idle[name]?.[i] || 0) + (talking?.[name]?.[i] || 0);
+      if (perched && !air && LEGS.has(name)) out[i] += (dangled[name]?.[i] || 0) * now.ledge;
       if (steps?.bones[name]) out[i] += steps.bones[name][i] * going.amount;
     }
     if (name === 'head') {                            // her head follows her eyes a third of the way, and nods
@@ -310,7 +341,7 @@ function move(dt) {
       out[1] += now.look[0] * 0.06 * facing - 0.1 * seatYaw;
       if (going) out[1] -= Math.sign(going.yaw) * 0.15 * going.glance;
     } else if (name === 'spine') {
-      out[0] += lean[0] + (seat ? seat.lean : 0);
+      out[0] += lean[0] + (seat ? seat.lean : 0) + (air ? air.lean : 0);
       out[1] += now.look[0] * 0.03 * facing;
     }
     // Her pose, the idle movement, walking and talking are small angles that add up. A gesture is different: it
@@ -322,10 +353,10 @@ function move(dt) {
     else rig.setBone(name, withinLimits(name, out), null, 0, follow);
   }
 
-  const lift = (act?.lift || 0) + (steps ? steps.lift * going.amount : 0) + (seat ? seat.lift : 0);
+  const lift = (act?.lift || 0) + (steps ? steps.lift * going.amount : 0) + (seat ? seat.lift : 0) + perchLift;
   const liftSpeed = (lift - now.lift) / dt;
   now.lift = lift;
-  rig.root.position.y = lift;
+  rig.root.position.y = stageY + lift;
 
   if (t >= blinkAt + 0.15) blinkAt = nextBlink(t, Math.random());
   rig.setBlink(blinkWeight(t, blinkAt));
@@ -369,7 +400,19 @@ function frame(time) {
   }
 }
 
+/** Jump `dy` units up onto a window (or down off it, negative). */
+function leap(dy) {
+  if (jumping || Math.abs(dy) < 0.05) return;
+  jumping = { start: t, dy, base: stageY, id: ++tripId };
+  if (dy > 0) perchSide = Math.random() < 0.5 ? -1 : 1;
+}
+
+/** Where the window's top edge has to be, in units above her feet, for her to sit on it: her box's bottom is
+ *  this far below her feet (the camera sees a little below the floor). */
+function boxBottom() { return 0.54 - Math.tan(camera.fov * Math.PI / 360) * camera.position.z; }
+
 function start(name, side = 1) {
+  if (name === 'hop' && (perched || jumping)) return;   // no hopping on top of a window
   if (name === 'hop' && sit) {                      // she can't hop sitting down: she gets up instead
     if (sit.standAt == null) sit.standAt = t - sit.start;
     return;
@@ -381,7 +424,20 @@ function start(name, side = 1) {
 function begin(act) {
   let name = act.gesture;
   if (act.gesture) start(act.gesture, act.side);
-  else if (act.stroll && !sit) {
+  else if (act.perch && !sit && !walk && !perched && !jumping && rig.canSit) {
+    // the nearest window she can sit on: walk under the spot, then jump up onto it
+    const plan = planPerch(seatsPx, Math.random());
+    if (plan) {
+      const rise = -plan.y / pxPerUnit - (LEDGE_Y - boxBottom());
+      if (Math.abs(plan.dx) < 20) leap(rise);
+      else walk = { start: t, side: Math.sign(plan.dx), leg: legLength(Math.abs(plan.dx) / pxPerUnit), peek: false,
+                    trip: true, base: stageX, id: ++tripId, cut: false, then: rise };
+      name = 'perch';
+    }
+  } else if (act.hopDown && perched && !jumping) {
+    leap(-Math.max(0.06, floorPx / pxPerUnit));
+    name = 'hopDown';
+  } else if (act.stroll && !sit && !perched && !jumping) {
     // across the screen when the overlay has said how much room there is; otherwise a stroll in her box
     const plan = act.inBox ? null : planTrip(room, Math.random(), Math.random());
     if (plan) walk = { start: t, ...plan, trip: true, base: stageX, id: ++tripId, cut: false };
@@ -400,7 +456,21 @@ window.aria = {
   /** How many pixels of screen there are beside her box, to the left and to the right: room for walking about. */
   setRoom(left, right) { room = { left: Math.max(0, +left || 0) / pxPerUnit, right: Math.max(0, +right || 0) / pxPerUnit }; },
   /** Someone is dragging her window: a trip under way ends where she is. */
-  stopTrip() { if (walk?.trip) { window.ariaTravel = [walk.id, (stageX - walk.base) * pxPerUnit, false]; walk = null; } },
+  stopTrip() {
+    if (walk?.trip) { window.ariaTravel = [walk.id, (stageX - walk.base) * pxPerUnit, false]; walk = null; }
+    if (jumping) window.ariaTravel = [jumping.id, 0, false, -(stageY - jumping.base) * pxPerUnit];
+    [jumping, perched] = [null, null];              // picked up off a window: she stands where she's put
+  },
+  /** Where she could sit on top of other windows ([{ x, half, y }] pixels from the middle of the bottom of her
+   *  box) and how far below her box the floor is (pixels). */
+  setSeats(list, floor) {
+    seatsPx = Array.isArray(list) ? list.filter(s => [s?.x, s?.half, s?.y].every(Number.isFinite)) : [];
+    floorPx = Math.max(0, +floor || 0);
+  },
+  /** The window she sits on went away (closed, covered, made full-size): she hops down. */
+  dropDown() { if (perched && !jumping) begin({ hopDown: true }); },
+  /** How high above the bottom of her box the edge goes when she sits on one (pixels), for the overlay. */
+  seatHeight() { return (LEDGE_Y - boxBottom()) * pxPerUnit; },
   setState(state) { told.state = String(state); },
   setLevel(mic, out) { told.mic = +mic || 0; told.out = +out || 0; },
   lookAt(x, y) { told.lookX = Math.max(-1, Math.min(1, +x || 0)); told.lookY = Math.max(-1, Math.min(1, +y || 0)); },
@@ -417,6 +487,7 @@ window.aria = {
     const dir = side ? +side : Math.random() < 0.5 ? -1 : 1;
     if (what === 'stroll' || what === 'strollPeek') begin({ stroll: dir, peek: what === 'strollPeek', inBox: true });
     else if (what === 'trip') begin({ stroll: dir });
+    else if (what === 'perch' || what === 'hopDown') begin({ [what]: true });
     else if (what === 'sit') begin({ sit: true, side: dir });
     else if (what === 'stand') begin({ stand: true });
     else begin({ gesture: what, side: dir });

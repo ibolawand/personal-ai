@@ -18,6 +18,7 @@ snac                   # decoder.py
 # Vision
 opencv-contrib-python  # needs cv2.face
 pystray                # tray icon in --no-ui mode
+python-xlib            # the tops of open windows, for the avatar to sit on (ui/desktop_windows.py)
 
 # Overlay UI
 PySide6

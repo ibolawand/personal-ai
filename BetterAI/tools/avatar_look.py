@@ -5,6 +5,7 @@ the decisions, not the picture).
 
     .venv/bin/python tools/avatar_look.py OUTDIR [--model FILE.vrm | --figure] STEP...
 
+--seat X,Y,W,H opens a plain window there for her to sit on ("perch").
 A STEP is  "javascript|milliseconds|name" ("name*N" films N shots of the screen's width, 150 ms apart):  at that many milliseconds run the JavaScript (may be empty), and if a
 name is given save OUTDIR/name.png 350 ms later. Without --model or --figure she is whoever Aria would show.
 
@@ -15,7 +16,7 @@ A step's JavaScript can also measure: push onto window.ariaLog and it is printed
     '(window.ariaLog ||= []).push(window.aria.where("rightHand", "rightLowerArm"))|4500|'
 
 Calls: window.aria.setState("listening|thinking|speaking|idle"), setLevel(mic, out), lookAt(x, y), setProps([...]),
-wave(), hop(), act("trip" (across the screen; the window goes along) | "stroll" | "strollPeek" | "sit:1" | "stand" | a fidget like "curious:-1"),
+wave(), hop(), act("trip" (across the screen; the window goes along) | "perch" | "hopDown" | "stroll" | "strollPeek" | "sit:1" | "stand" | a fidget like "curious:-1"),
 tune({bone: [x, y, z, twist]}) to pin bones while fitting a pose (tune() lets go). Her pose waits for the
 model: act on it after about 3000 ms.
 """
@@ -41,6 +42,9 @@ def main(argv):
         path, args = "", args[1:]
     elif args[0] == "--model":
         path, args = args[1], args[2:]
+    seat_at = None
+    if args and args[0] == "--seat":                # a plain window at X,Y,W,H for her to sit on
+        seat_at, args = [int(v) for v in args[1].split(",")], args[2:]
     steps = [a.rsplit("|", 2) for a in args]
     os.makedirs(out, exist_ok=True)
 
@@ -57,20 +61,43 @@ def main(argv):
     win.show()
     view.link.resume()
     view.link.fade(True)
+    if seat_at:
+        bench = QWidget(None)
+        bench.setWindowTitle("A window to sit on")
+        bench.setStyleSheet("background: #e8e6f0")
+        bench.setGeometry(*seat_at)
+        bench.show()
+        win.raise_()
 
     def shoot(name):
         screen.grabWindow(0, win.x(), win.y(), w, h).save(os.path.join(out, name + ".png"))
 
     def shoot_wide(name):
-        screen.grabWindow(0, area.left(), win.y(), area.width(), h).save(os.path.join(out, name + ".png"))
+        screen.grabWindow(0, area.left(), area.top(), area.width(), area.height()).save(os.path.join(out, name + ".png"))
 
     # her walks across the screen move this window, as they move the overlay's (ui/avatar_view.Travel)
     travel = avatar_view.Travel()
 
+    floor = [None]
+    seat_h = [None]
+    view.ask_seat_height(lambda px: seat_h.__setitem__(0, px))
+
     def follow():
         box = win.geometry()
         view.link.set_room(box.left() - area.left(), area.right() - box.right())
-        view.ask_travel(lambda report: (x := travel.follow(report, win.x())) is not None and win.move(x, win.y()))
+        view.ask_travel(lambda report: (at := travel.follow(report, (win.x(), win.y()))) is not None and win.move(*at))
+        if seat_h[0] is None:
+            view.ask_seat_height(lambda px: seat_h.__setitem__(0, px))
+            return
+        # the seats on the windows that are open, as the overlay works them out (ui/overlay.py _watch_seats)
+        from ui.desktop_windows import open_windows, seats
+        if floor[0] is None or travel.done and abs(win.y() - floor[0]) < 2:
+            floor[0] = win.y()
+        free = seats(open_windows(own=int(win.winId())), (area.left(), area.top(), area.right(), area.bottom()),
+                     above=int(h - seat_h[0]) + 4)
+        out_ = [{"x": (s.left + s.right) // 2 - box.center().x(), "half": (s.right - s.left) // 2, "y": s.top - box.bottom()}
+                for s in free]
+        view.link.set_seats(out_, max(0, floor[0] - win.y()))
     walker = QTimer(win)
     walker.timeout.connect(follow)
     walker.start(16)

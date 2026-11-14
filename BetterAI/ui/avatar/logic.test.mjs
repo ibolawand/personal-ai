@@ -3,7 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { STATES, BONES, GESTURES, FIDGETS, WALK, avatarState, poseFor, idleMotion, gesture, walkCycle, stroll, strollLength,
   talkMotion, visemes, saccade, chooseIdle, IDLE, SEATED_FIDGETS, sitting, sitPose, LEG, spring, gazeWander, withinLimits, ease, nextBlink, blinkWeight, mouthWeight, ringPosition,
-  TRIP, planTrip, trip, tripLength, cutLeg } from './logic.mjs';
+  TRIP, planTrip, trip, tripLength, cutLeg, LEDGE_Y, perchPose, dangle, jump, jumpLength, planPerch,
+  PERCHED_FIDGETS } from './logic.mjs';
 
 test('the microphone decides between listening and idle', () => {
   assert.equal(avatarState('listening', true), 'listening');
@@ -466,4 +467,79 @@ test('cutting a trip short slows her down from where she is, without a jump', ()
     assert.ok(tripLength(cut) - u <= 2 * 0.4 + 2 * 0.45, 'she is stopped and facing front within two seconds');
   }
   assert.equal(cutLeg(leg, 6.3), leg, 'already slowing down: unchanged');
+});
+
+test('a jump up onto a window: crouch, one smooth arc, land sitting on the edge with a small bounce', () => {
+  for (const dy of [0.4, 1.2, 2.5]) {
+    const n = jumpLength(dy);
+    let last = jump(0, dy);
+    assert.deepEqual([last.y, last.ledge, last.crouch], [0, 0, 0]);
+    for (let t = 0.005; t < n; t += 0.005) {
+      const j = jump(t, dy);
+      assert.ok(Math.abs(j.y - last.y) < 0.06 * Math.max(1, dy), `no jump in her height at ${t}`);
+      assert.ok(Math.abs(j.ledge - last.ledge) < 0.1 && Math.abs(j.crouch - last.crouch) < 0.1, 'her pose flows');
+      assert.ok(j.y <= dy + 0.3, 'over the edge only a little before coming down onto it');
+      last = j;
+    }
+    assert.ok(Math.abs(last.y - dy) < 0.002 && last.ledge === 1, 'sitting on the edge at the end');
+    assert.equal(jump(n, dy), null);
+  }
+});
+
+test('hopping down: a push off the edge, a fall that speeds up, a crouch to land and up again', () => {
+  const dy = -1.5, n = jumpLength(dy);
+  assert.equal(jump(0, dy).ledge, 1);
+  const ys = [];
+  for (let t = 0; t < n; t += 0.02) ys.push(jump(t, dy).y);
+  const drops = ys.slice(1).map((y, i) => ys[i] - y).filter(d => d > 1e-6);
+  assert.ok(drops.at(-1) > drops[0], 'falling faster near the floor');
+  const end = jump(n - 1e-6, dy);
+  assert.ok(Math.abs(end.y - dy) < 1e-9 && end.ledge === 0 && end.crouch < 0.01, 'standing on the floor at the end');
+});
+
+test('on the edge her thighs are level, so the window edge is under them; crouching keeps her feet down', () => {
+  const p = perchPose(1, 0);
+  assert.ok(Math.abs(p.bones.leftUpperLeg[0] + Math.PI / 2) < 0.1 && Math.abs(p.bones.rightUpperLeg[0] + Math.PI / 2) < 0.1);
+  assert.ok(p.bones.leftLowerLeg[0] > 1.2, 'shins hanging down');
+  assert.ok(Math.abs(p.lift) < 1e-12);
+  const c = perchPose(0, 1), thigh = c.bones.leftUpperLeg[0], knee = thigh + c.bones.leftLowerLeg[0];
+  const drop = LEG.thigh * (1 - Math.cos(thigh)) + LEG.shin * (1 - Math.cos(knee));
+  assert.ok(Math.abs(c.lift + drop) < 1e-9, 'body drops exactly as far as her knees bend');
+  assert.ok(LEDGE_Y < LEG.hip && LEDGE_Y > LEG.hip - 0.08);
+  const d = dangle(10);
+  assert.ok(Math.abs(d.leftLowerLeg[0]) <= 0.28 && Math.abs(d.rightLowerLeg[0]) <= 0.28);
+});
+
+test('which seat: the spot on a free stretch nearest to her, clear of its ends; none without one', () => {
+  assert.equal(planPerch([], 0.5), null);
+  assert.equal(planPerch([{ x: 0, half: 40, y: -300 }], 0.5), null);        // too short a stretch
+  assert.deepEqual(planPerch([{ x: 0, half: 200, y: -300 }], 0.5), { dx: 0, y: -300 });    // right above her
+  assert.deepEqual(planPerch([{ x: 500, half: 200, y: -300 }], 0.5), { dx: 360, y: -300 }); // its near end
+  assert.deepEqual(planPerch([{ x: -500, half: 200, y: -300 }], 0.5), { dx: -360, y: -300 });
+  let near = 0;
+  for (let i = 0; i < 100; i++) near += planPerch([{ x: 100, half: 200, y: -200 }, { x: 1400, half: 200, y: -200 }], (i + 0.5) / 100).dx < 500;
+  assert.ok(near > 60, `the nearer window is the likelier one (${near} of 100)`);
+});
+
+test('on a window she does seated things and in time hops down; she only goes up when there is a window', () => {
+  const picks = new Set();
+  for (let i = 0; i < 300; i++) {
+    const act = chooseIdle({ perched: true, perchedFor: 60, idleFor: 120 }, (i + 0.5) / 300, 0.3);
+    picks.add(act.gesture || Object.keys(act)[0]);
+  }
+  for (const p of picks) assert.ok(PERCHED_FIDGETS.includes(p), `${p} on a window`);
+  assert.ok(picks.has('hopDown'));
+  const early = new Set();
+  for (let i = 0; i < 300; i++) {
+    const act = chooseIdle({ perched: true, perchedFor: 5 }, (i + 0.5) / 300, 0.3);
+    early.add(act.gesture || Object.keys(act)[0]);
+  }
+  assert.ok(!early.has('hopDown'), 'not straight away');
+  const without = new Set(), withWin = new Set();
+  for (let i = 0; i < 300; i++) {
+    const r = (i + 0.5) / 300;
+    without.add(Object.keys(chooseIdle({ idleFor: 60 }, r, 0.3))[0]);
+    withWin.add(Object.keys(chooseIdle({ idleFor: 60, canPerch: true }, r, 0.3))[0]);
+  }
+  assert.ok(!without.has('perch') && withWin.has('perch'));
 });

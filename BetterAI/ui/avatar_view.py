@@ -97,7 +97,7 @@ class AvatarLink:
 
     Until the page reports ready, calls are kept (the latest of each kind) and then replayed; once it has failed,
     they are dropped. A value that hasn't changed isn't sent again."""
-    REPLAY = ("state", "props", "level", "look", "room", "fade", "run")
+    REPLAY = ("state", "props", "level", "look", "room", "seats", "fade", "run")
 
     def __init__(self, run_js):
         self._run_js = run_js
@@ -139,6 +139,15 @@ class AvatarLink:
         room = (int(left), int(right))
         self._send("room", f"window.aria.setRoom({room[0]},{room[1]})", room, repeat=False)
 
+    def set_seats(self, seats, floor):
+        """Where she could sit on other windows ([{x, half, y}] pixels from the middle of the bottom of her box)
+        and how far below her box the floor is."""
+        text = json.dumps([{k: int(v) for k, v in s.items()} for s in seats])
+        self._send("seats", f"window.aria.setSeats({text},{int(floor)})", (text, int(floor)), repeat=False)
+
+    def drop_down(self):
+        self._send(None, "window.aria.dropDown()")   # the window she sits on went away
+
     def stop_trip(self):
         self._send(None, "window.aria.stopTrip()")   # her window is being dragged: she stops where she is
 
@@ -170,31 +179,33 @@ class AvatarLink:
 
 
 class Travel:
-    """Her window following her walks across the screen. While she walks somewhere, the page reports
-    [trip id, pixels walked, still walking] (window.ariaTravel); the window moves that far from where it was when
-    the trip began, and stays where the trip ends."""
+    """Her window following her across the screen: walking, and jumping up onto a window or down from one. While
+    she moves, the page reports [trip id, pixels across, still moving, pixels down] (window.ariaTravel; the last
+    one only for jumps); the window moves that far from where it was when the trip began, and stays where the trip
+    ends."""
 
     def __init__(self):
         self.id = None
-        self.base = 0
+        self.base = (0, 0)
         self.done = True
 
-    def follow(self, report, x):
-        """The window's x for this report, with the window now at `x`; None to leave it where it is."""
-        if not isinstance(report, (list, tuple)) or len(report) != 3:
+    def follow(self, report, at):
+        """(x, y) for the window for this report, with the window now at `at` (x, y); None to leave it."""
+        if not isinstance(report, (list, tuple)) or len(report) not in (3, 4):
             return None
-        trip, px, walking = report
-        if not isinstance(px, (int, float)):
+        trip, px, walking = report[:3]
+        py = report[3] if len(report) == 4 else 0
+        if not all(isinstance(v, (int, float)) for v in (px, py)):
             return None
         if trip != self.id:
             if not walking:             # a trip that ended before we saw it (or one we let go of)
                 return None
-            self.id, self.base, self.done = trip, x - px, False
+            self.id, self.base, self.done = trip, (at[0] - px, at[1] - py), False
         if self.done:
             return None
         if not walking:
             self.done = True
-        return round(self.base + px)
+        return round(self.base[0] + px), round(self.base[1] + py)
 
     def drop(self):
         """Stop following (her window is being dragged); a trip that carries on is not followed either."""
@@ -244,6 +255,11 @@ def make_view(parent, path):
                 except ValueError:
                     answer(None)
             self.page().runJavaScript("JSON.stringify(window.ariaTravel || null)", parse)
+
+        def ask_seat_height(self, answer):
+            """answer(pixels): how far above the bottom of her box a window's top edge is when she sits on it."""
+            self.page().runJavaScript("String(window.aria && window.aria.seatHeight ? window.aria.seatHeight() : '')",
+                                      lambda text: answer(float(text)) if text else None)
 
         def _ask(self):
             self._asked += 1

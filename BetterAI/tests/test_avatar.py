@@ -141,16 +141,21 @@ def test_she_is_told_how_much_room_there_is_and_a_drag_stops_her_trip(link):
 
 def test_her_window_follows_a_trip_from_where_it_began_and_stays_where_it_ends():
     travel = A.Travel()
-    assert travel.follow(None, 500) is None
-    assert travel.follow([1, 40.0, False], 500) is None          # a trip that ended before it was seen
-    assert travel.follow([2, 0.0, True], 500) == 500            # she turns first: no distance yet
-    assert travel.follow([2, -10.4, True], 500) == 490
-    assert travel.follow([2, -250.0, True], 490) == 250         # from where the trip began, not from where it is
-    assert travel.follow([2, -300.0, False], 250) == 200        # the end of it
-    assert travel.follow([2, -300.0, False], 200) is None       # and then nothing more
-    assert travel.follow([3, 5.0, True], 200) == 200            # the next trip starts where the last one ended
+    assert travel.follow(None, (500, 600)) is None
+    assert travel.follow([1, 40.0, False], (500, 600)) is None   # a trip that ended before it was seen
+    assert travel.follow([2, 0.0, True], (500, 600)) == (500, 600)   # she turns first: no distance yet
+    assert travel.follow([2, -10.4, True], (500, 600)) == (490, 600)
+    assert travel.follow([2, -250.0, True], (490, 600)) == (250, 600)   # from where it began, not where it is
+    assert travel.follow([2, -300.0, False], (250, 600)) == (200, 600)  # the end of it
+    assert travel.follow([2, -300.0, False], (200, 600)) is None        # and then nothing more
+    # a jump: up 400 px onto a window, then the next trip starts from there
+    assert travel.follow([3, 0, True, 0.0], (200, 600)) == (200, 600)
+    assert travel.follow([3, 0, True, -120.4], (200, 600)) == (200, 480)
+    assert travel.follow([3, 0, False, -400], (200, 480)) == (200, 200)
+    assert travel.follow([4, 0.0, True], (200, 200)) == (200, 200)
+    assert travel.follow([4, 5.0, True], (200, 200)) == (205, 200)
     travel.drop()                                               # being dragged: no longer followed
-    assert travel.follow([3, 80.0, True], 900) is None
+    assert travel.follow([4, 80.0, True], (900, 200)) is None
 
 
 # ── the overlay switches between the orb and her (off-screen, with a view that only records) ──
@@ -468,6 +473,60 @@ def test_her_window_walks_with_her_and_a_drag_lets_go(app, stage):
         view.report = [1, -80.0, True]
         overlay._tick()
         assert overlay.x() == moved
+    finally:
+        overlay.timer.stop()
+        overlay.close()
+
+
+class PerchingView(WalkingView):
+    """A view whose page sits 200 px above the bottom of her box when she is on a window."""
+    def ask_seat_height(self, answer):
+        answer(200.0)
+
+
+def test_she_is_told_where_to_sit_rides_along_with_the_window_and_hops_down_when_it_goes(app, stage, monkeypatch):
+    import json
+    import ui.desktop_windows as D
+    from ui.overlay import Overlay, OverlayBridge
+    _, bridge, _ = stage(shown=False)
+    view = PerchingView()
+    overlay = Overlay(bridge, make_avatar=lambda parent: view)
+    try:
+        view.link.mark_ready()
+        overlay.show()
+        state(app, bridge, "idle")
+        screen = overlay.screen().availableGeometry()
+        overlay.move(screen.left() + 100 - (overlay.width() - overlay.avatar_w), screen.bottom() - overlay.height())
+        app.processEvents()
+        box = overlay._avatar_rect().translated(overlay.pos())
+        windows = [D.Win(7, box.center().x() - 250, box.bottom() - 450, box.center().x() + 250, box.bottom() - 100)]
+        monkeypatch.setattr(D, "open_windows", lambda own=None: list(windows))
+        overlay.timer.stop()
+        overlay._fed["seats"] = 0.0
+        overlay._tick()
+        sent = calls(view, "setSeats")
+        assert sent, "she is told where she could sit"
+        seats = json.loads(sent[-1][len("window.aria.setSeats("):].rsplit(",", 1)[0])
+        assert seats and seats[0]["y"] == -450 and abs(seats[0]["x"]) <= seats[0]["half"]   # a stretch right over her
+        # she jumps up 250 px (the edge is 450 px up, her seat 200 px above the bottom of her box) and lands
+        y0 = overlay.y()
+        view.report = [5, 0, True, 0.0]
+        overlay._tick()
+        view.report = [5, 0, False, -250.0]
+        overlay._tick()
+        assert overlay.y() == y0 - 250 and overlay._perch and overlay._perch[0] == 7
+        # the window moves: she rides along
+        windows[0] = D.Win(7, windows[0].left + 40, windows[0].top - 20, windows[0].right + 40, windows[0].bottom - 20)
+        x1 = overlay.x()
+        overlay._fed["seats"] = 0.0
+        overlay._tick()
+        assert (overlay.x(), overlay.y()) == (x1 + 40, y0 - 270)
+        assert calls(view, "setSeats")[-1].endswith(",270)"), "and knows how far down the floor is"
+        # it goes away: she hops down
+        windows.clear()
+        overlay._fed["seats"] = 0.0
+        overlay._tick()
+        assert calls(view, "dropDown") and overlay._perch is None
     finally:
         overlay.timer.stop()
         overlay.close()

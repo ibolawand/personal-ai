@@ -131,7 +131,7 @@ const TURN_S = 0.45, WALK_SPEED = WALK.speed, STEPS_PER_S = WALK.stepsPerS, SIDE
 const RAMP_S = 0.4;                     // she takes this long to get up to walking speed, and to come to a stop
 
 /** How long one leg of a stroll (`reach` one way) takes: she gets up to speed, walks, and slows to a stop. */
-const legLength = reach => reach / WALK_SPEED + RAMP_S;
+export const legLength = reach => reach / WALK_SPEED + RAMP_S;
 /** How far into one leg she is after `u` seconds, in seconds' worth of walking at full speed. Her speed rises
  *  and falls on a smooth curve, so she never starts or stops moving at full speed. */
 function legDistance(u, leg) {
@@ -351,6 +351,92 @@ export function sitting(t, standAt, fold) {
   return { w, lean, turn, lift: drop - drop0, back: -(forward - forward0) };
 }
 
+// ── sitting on top of a window ──
+
+/** How high the underside of her thighs is when she sits on an edge (units above her feet when standing): the
+ *  window's top edge goes there. */
+export const LEDGE_Y = 0.47;
+const LEDGE = {                                  // on the edge facing you: thighs out over it, legs hanging down
+  spine: [0.08, 0, 0], chest: [0.03, 0, 0], neck: [-0.02, 0, 0], head: [-0.05, 0, 0],
+  leftUpperLeg: [-1.5, 0, -0.07], rightUpperLeg: [-1.5, 0, 0.07], leftLowerLeg: [1.4, 0, 0], rightLowerLeg: [1.4, 0, 0],
+  // hands in her lap, one over the other, keeping her skirt down (fitted on her model)
+  leftUpperArm: [0.38, -0.23, -1.32, 0.12], leftLowerArm: [0, -1.76, 0, -0.04], leftHand: [-0.04, 0.26, -0.53, 0.15],
+  rightUpperArm: [0.34, 0.07, 1.19, 0.27], rightLowerArm: [0, 1.83, 0, 0.65], rightHand: [0.08, 0.35, 0.19, 0.6],
+};
+/** How far she turns from facing you while she sits on an edge (radians; her head and eyes turn back to you).
+ *  Square on, her skirt flips up at the front with her thighs level; a little turned, her near thigh hides it. */
+export const PERCH_YAW = 0.45;
+const CROUCH = {                                 // knees bent to jump or to land (feet under her hips)
+  spine: [0.3, 0, 0], head: [-0.15, 0, 0],
+  leftUpperLeg: [-0.5, 0, 0], rightUpperLeg: [-0.5, 0, 0], leftLowerLeg: [1.0, 0, 0], rightLowerLeg: [1.0, 0, 0],
+  leftUpperArm: [0.55, 0, -1.25], rightUpperArm: [0.55, 0, 1.25],     // arms swung back, ready to throw forward
+};
+const CROUCH_DROP = (LEG.thigh + LEG.shin) * (1 - Math.cos(0.5));      // how far her body drops in that crouch
+
+/** `base` with `ledge` (0…1) of sitting on an edge and `crouch` (0…1) of a crouch blended in: a pose and the lift
+ *  (negative: lower) that keeps her feet on the ground while crouching. */
+export function perchPose(ledge, crouch, base = poseFor('idle')) {
+  const bones = {};
+  for (const name of BONES) {
+    let b = base.bones[name];
+    if (LEDGE[name]) b = b.map((a, i) => a + (four(LEDGE[name])[i] - a) * ledge);
+    if (CROUCH[name]) b = b.map((a, i) => a + (four(CROUCH[name])[i] - a) * crouch);
+    bones[name] = b;
+  }
+  return { bones, expressions: { ...base.expressions }, lift: -CROUCH_DROP * crouch };
+}
+
+/** Her legs swinging now and then while she sits on an edge: a slow kick, one foot after the other. */
+export function dangle(t) {
+  const now = Math.max(0, Math.sin(t * 0.37) * Math.sin(t * 0.23 + 1));      // comes and goes
+  const kick = 0.28 * now;
+  return { leftLowerLeg: [kick * Math.sin(t * 2.4), 0, 0], rightLowerLeg: [kick * Math.sin(t * 2.4 + 2.2), 0, 0] };
+}
+
+const JUMP_PREP = 0.3, JUMP_LAND = 0.45;
+const jumpFlight = dy => dy > 0 ? 0.4 + 0.2 * Math.sqrt(dy) : 0.3 + 0.25 * Math.sqrt(-dy);
+
+/** How long a jump `dy` units up (onto an edge) or down (off it, to the floor) takes. */
+export function jumpLength(dy) { return JUMP_PREP + jumpFlight(dy) + JUMP_LAND; }
+
+/** A jump `t` seconds in: up onto an edge (dy > 0, from standing: crouch, spring up, legs tucking under her as she
+ *  rises, land sitting with a small bounce) or down from one (dy < 0: lean and push off, drop, land in a crouch and
+ *  stand up). { y (how far up she is, units), ledge, crouch (pose weights), lean (forward) }, or null once over.
+ *  Her height follows one parabola, as a body in the air does. */
+export function jump(t, dy) {
+  const T = jumpFlight(dy), up = dy > 0;
+  if (t < 0 || t >= JUMP_PREP + T + JUMP_LAND) return null;
+  if (t < JUMP_PREP) {
+    const p = smooth(t / JUMP_PREP);
+    return up ? { y: 0, ledge: 0, crouch: p, lean: 0 } : { y: 0, ledge: 1, crouch: 0, lean: 0.25 * p };
+  }
+  if (t < JUMP_PREP + T) {
+    // up: an arc that comes over the edge and down onto it; down: a fall from rest after a tiny push off (it
+    // speeds up all the way, as falling does)
+    const u = (t - JUMP_PREP) / T, hump = up ? 0.1 + 0.08 * dy : -dy / 4 + 0.05;
+    const y = dy * u + hump * 4 * u * (1 - u);
+    if (up) return { y, ledge: smooth((u - 0.25) / 0.6), crouch: 1 - smooth(u / 0.3), lean: 0.1 * (1 - u) };
+    return { y, ledge: 1 - smooth(u / 0.5), crouch: smooth((u - 0.55) / 0.45), lean: 0.25 * (1 - smooth(u / 0.4)) };
+  }
+  const l = (t - JUMP_PREP - T) / JUMP_LAND;
+  if (up) return { y: dy - 0.012 * Math.sin(Math.PI * l), ledge: 1, crouch: 0, lean: 0.06 * Math.sin(Math.PI * l) };
+  return { y: dy, ledge: 0, crouch: 1 - smooth(l), lean: 0 };
+}
+
+/** Which seat to go to: `seats` are [{ x, half, y }] in pixels from the middle of the bottom of her box (x: the
+ *  middle of a free stretch of a window's top edge, half: half its width, y: the edge, negative above). The
+ *  nearest is likelier; on it, the spot nearest to her (keeping clear of the stretch's ends). `r` (0…1) picks.
+ *  { dx, y } in pixels, or null when there is none. */
+export function planPerch(seats, r, margin = 60) {
+  const ok = (seats || []).filter(s => s.half > margin && s.y < 0);
+  if (!ok.length) return null;
+  const weights = ok.map(s => 1 / (1 + Math.abs(s.x) / 300));
+  let left = r * weights.reduce((a, b) => a + b, 0), pick = ok.at(-1);
+  for (let i = 0; i < ok.length; i++) if ((left -= weights[i]) < 0) { pick = ok[i]; break; }
+  const dx = Math.max(pick.x - pick.half + margin, Math.min(pick.x + pick.half - margin, 0));
+  return { dx, y: pick.y };
+}
+
 // ── while she talks ──
 
 /** Small movements of her whole upper body in time with her own voice (`level` 0…1), added to the speaking pose.
@@ -406,13 +492,21 @@ export const IDLE = {
   rock: { weight: 0.8 }, shoulderRoll: { weight: 1 }, hairTuck: { weight: 1.2 }, tugJacket: { weight: 0.8 },
   think: { weight: 1 }, smile: { weight: 1.2 }, sigh: { weight: 0.8 }, curious: { weight: 1.5 },
   sit: { weight: 2.5, after: 45 }, standUp: { weight: 0 },
+  perch: { weight: 2, after: 15 }, hopDown: { weight: 0 },
 };
+/** What she does while sitting on top of a window. */
+export const PERCHED_FIDGETS = ['lookAround', 'curious', 'smile', 'sigh', 'shoulderRoll', 'hairTuck', 'think', 'hopDown'];
 
 /** What she does next while idle. `recent`: the names of what she did last (never repeated straight away);
  *  `idleFor`: seconds with nothing going on; `seated`, `seatedFor`. Two random numbers 0…1 pick it. Returns
- *  { stroll: ±1, peek } | { gesture, side: ±1 } | { sit: true } | { stand: true }. */
-export function chooseIdle({ recent = [], idleFor = 0, seated = false, seatedFor = 0 }, r1, r2) {
+ *  { stroll: ±1, peek } | { gesture, side: ±1 } | { sit: true } | { stand: true } | { perch: true } | { hopDown: true }.
+ *  `perched`: sitting on top of a window (for `perchedFor` s); `canPerch`: a window she could sit on is there. */
+export function chooseIdle({ recent = [], idleFor = 0, seated = false, seatedFor = 0, perched = false, perchedFor = 0,
+                             canPerch = false }, r1, r2) {
   const weightOf = name => {
+    if (name === 'hopDown') return perched ? Math.min(4, Math.max(0, (perchedFor - 25) / 8)) : 0;
+    if (perched) return PERCHED_FIDGETS.includes(name) ? IDLE[name].weight : 0;
+    if (name === 'perch' && (!canPerch || seated)) return 0;
     if (name === 'standUp') return seated ? Math.min(4, Math.max(0, (seatedFor - 20) / 8)) : 0;
     if (seated) return SEATED_FIDGETS.includes(name) ? IDLE[name].weight : 0;
     return idleFor >= (IDLE[name].after || 0) ? IDLE[name].weight : 0;
@@ -430,6 +524,8 @@ export function chooseIdle({ recent = [], idleFor = 0, seated = false, seatedFor
   if (pick === 'stroll') return { stroll: r2 < 0.5 ? -1 : 1, peek: frac(r2 * 7) < 0.5 };
   if (pick === 'sit') return { sit: true, side: frac(r2 * 5) < 0.5 ? -1 : 1 };
   if (pick === 'standUp') return { stand: true };
+  if (pick === 'perch') return { perch: true };
+  if (pick === 'hopDown') return { hopDown: true };
   return { gesture: pick, side: frac(r2 * 3) < 0.5 ? -1 : 1 };
 }
 

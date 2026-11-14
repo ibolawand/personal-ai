@@ -429,6 +429,9 @@ class Overlay(QWidget):
         self._fed = {"level": 0.0, "look": 0.0, "props": 0.0, "room": 0.0}
         from ui.avatar_view import Travel
         self._travel = Travel()         # her window following her walks across the screen
+        self._seat_h = None             # how far above the bottom of her box a window's top is when she sits on it
+        self._perch = None              # (window id, its left, its top) while she sits on top of another window
+        self._aloft = False             # she jumped up onto a window and hasn't come down yet
         self._hide_avatar = QTimer(self)
         self._hide_avatar.setSingleShot(True)
         self._hide_avatar.timeout.connect(lambda: self.avatar and not self._avatar_on and self.avatar.hide())
@@ -479,6 +482,7 @@ class Overlay(QWidget):
         bridge.cardRequested.connect(self._on_card)
 
         self._restore_position()
+        self._floor_y = self.y()        # where her window is when she stands (she jumps back down to it)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
@@ -584,6 +588,11 @@ class Overlay(QWidget):
         if now - self._fed.get("room", 0.0) >= 0.5:
             self._fed["room"] = now
             link.set_room(*self._room())
+        if self._seat_h is None and hasattr(self.avatar, "ask_seat_height"):
+            self.avatar.ask_seat_height(self._got_seat_height)
+        if now - self._fed.get("seats", 0.0) >= (0.25 if self._perch else 0.6) and self._seat_h:
+            self._fed["seats"] = now
+            self._watch_seats(link)
         if self._drag_from is None and hasattr(self.avatar, "ask_travel"):
             self.avatar.ask_travel(self._on_travel)
         if now - self._fed["props"] >= 1.0:
@@ -597,11 +606,70 @@ class Overlay(QWidget):
         screen = (self.screen() or QApplication.primaryScreen()).availableGeometry()
         return max(0, box.left() - screen.left()), max(0, screen.right() - box.right())
 
+    def _got_seat_height(self, px):
+        self._seat_h = px
+
+    def _seats_here(self):
+        """The open windows and the seats on them (ui/desktop_windows.py), for her box on this screen."""
+        from ui.desktop_windows import open_windows, seats
+        screen = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+        windows = open_windows(own=int(self.winId()))
+        room = (screen.left(), screen.top(), screen.right(), screen.bottom())
+        return windows, seats(windows, room, above=int(self.avatar_h - self._seat_h) + 4), screen
+
+    def _watch_seats(self, link):
+        """Tell her where she could sit, and while she sits on a window, keep her on it: it moves, she rides along;
+        it goes (closed, covered, made full-size), she hops down."""
+        windows, free, screen = self._seats_here()
+        box = self._avatar_rect().translated(self.pos())
+        if not self._aloft and self._travel.done:
+            self._floor_y = self.y()                                 # standing: this is her floor
+        if self._perch:
+            wid, left, top = self._perch
+            mine = next((w for w in windows if w.id == wid), None)
+            if mine and (mine.left, mine.top) != (left, top):        # it moved: so does she
+                self.move(self.x() + mine.left - left, self.y() + mine.top - top)
+                self._perch = (wid, mine.left, mine.top)
+                box = self._avatar_rect().translated(self.pos())
+            cx = box.center().x()
+            if not any(s.id == wid and s.left <= cx <= s.right for s in free):
+                self._perch = None
+                link.drop_down()
+        # where she could go: the free stretches, kept to where her whole box stays on the screen
+        half_box = self.avatar_w // 2
+        out = []
+        if not self._perch:
+            for s in free:
+                left, right = max(s.left, screen.left() + half_box), min(s.right, screen.right() - half_box)
+                if right - left >= 2 * 60 + 20:
+                    out.append({"x": (left + right) // 2 - box.center().x(), "half": (right - left) // 2,
+                                "y": s.top - box.bottom()})
+        link.set_seats(out, max(0, self._floor_y - self.y()))
+
     def _on_travel(self, report):
-        """The page said where her walk has got to: her window goes along (ui/avatar_view.Travel)."""
-        x = self._travel.follow(report, self.x())
-        if x is not None and self._drag_from is None and x != self.x():
-            self.move(x, self.y())
+        """The page said where her walk (or jump) has got to: her window goes along (ui/avatar_view.Travel)."""
+        at = self._travel.follow(report, (self.x(), self.y()))
+        if at is None or self._drag_from is not None:
+            return
+        if at != (self.x(), self.y()):
+            self.move(*at)
+        if self._travel.done and len(report) == 4:                  # a jump just ended: up onto a window, or down
+            self._aloft = report[3] < 0
+            self._perch = self._window_under() if self._aloft else None
+            if self._aloft and not self._perch:                     # landed on something we can't follow
+                self.avatar.link.drop_down()
+
+    def _window_under(self):
+        """The window whose top edge she has just landed on: (id, left, top), or None."""
+        if not self._seat_h:
+            return None
+        windows, free, _ = self._seats_here()
+        box = self._avatar_rect().translated(self.pos())
+        edge, cx = box.bottom() - self._seat_h, box.center().x()
+        for w in reversed(windows):
+            if abs(w.top - edge) <= 12 and w.left <= cx <= w.right:
+                return w.id, w.left, w.top
+        return None
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -1278,6 +1346,7 @@ class Overlay(QWidget):
         if e.button() == Qt.LeftButton and self._drag_from is not None:
             if self._dragged:
                 self._save_position()
+                self._perch, self._aloft, self._floor_y = None, False, self.y()     # she stands where she's put
             else:
                 self._add_wave(0.6)
                 self._burst(14)

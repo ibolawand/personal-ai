@@ -141,6 +141,19 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
       (`Travel` in `ui/avatar_view.py`). Inside the page the camera follows her, so her hair still swings with the
       walk. Her box always stays fully on the screen. With no room on either side she strolls inside her box and
       back instead.
+    - **sitting on top of a window:** after about 15 seconds of nothing she may walk under an open window (the
+      nearest one is likelier), crouch, jump up and land sitting on its top edge, legs hanging over the front of
+      the app and swinging now and then, hands in her lap, turned a little (square on, her skirt flips up) with
+      her head and eyes on you. Her text box, bubbles and cards go up with her. Up there she only does what fits
+      sitting (looking around, a smile, her hair, thinking…), and after half a minute or more she hops down: a
+      push off, a fall that speeds up, a crouch to land, back where she was standing. If the window moves she
+      rides along; if it closes, is minimized, made full-size or another window covers her spot, she hops down.
+      Drag her off and she stands where you put her. Only windows with a free stretch of top edge (not covered by
+      a window above it) and room above it for her qualify; maximized and fullscreen ones never do. The windows
+      are read from X11 (`ui/desktop_windows.py`, python-xlib: visible top edges, title bars included, shadows
+      left out); the overlay sends her the seats and her floor and keeps her on the window (`_watch_seats` in
+      `ui/overlay.py`); the jump and the pose are in `ui/avatar/logic.mjs` (`jump`, `perchPose`, `planPerch`).
+      Only with a full-size character. To try it: `tools/avatar_look.py OUT --seat X,Y,W,H 'window.aria.act("perch")|3500|'`.
     - **a stretch:** both arms swung up in front of her and over her head, leaning back a little, and down the same way.
     - **a shoulder roll:** shoulders up and down, then a slow neck stretch to each side.
     - **tucking her hair** behind her ear: her fingers go to her temple and slide back past her ear, and the lock
