@@ -2,7 +2,7 @@
 // with her body is decided in logic.mjs; her shape is figure.mjs, or a VRM file when one is given (vrmrig.mjs).
 // It reports once through window.ariaStatus: "ready" after the first frame, or "failed: <why>".
 import * as THREE from 'three';
-import { BONES, GESTURES, FIDGETS, avatarState, poseFor, idleMotion, gesture, walkCycle, stroll, trip, planTrip, cutLeg, legLength, perchPose, dangle, jump, edgeSit, planPerch, LEDGE_Y, PERCH_YAW, PERCH_HEADROOM, PEEK, planHide, peekOut, talkMotion, visemes,
+import { BONES, GESTURES, FIDGETS, avatarState, poseFor, idleMotion, gesture, walkCycle, stroll, trip, planTrip, cutLeg, legLength, perchPose, dangle, jump, edgeSit, planPerch, LEDGE_Y, PERCH_YAW, PERCH_HEADROOM, PEEK, planHide, peekOut, talkMotion, visemes, reactionFor, cardText, bobMotion, beatClock, beatsAt,
          saccade, lookBlink, chooseIdle, sitting, sitPose, spring, gazeWander, withinLimits, ease, nextBlink, blinkWeight,
          mouthWeight, ringPosition } from './logic.mjs';
 import { buildFigure } from './figure.mjs';
@@ -103,7 +103,7 @@ let lookMovedAt = 0, lastLook = [0, 0];             // when the mouse last moved
 let lean = [0, 0];                                  // the spring of her forward lean as she walks and stops [angle, speed]
 // she starts standing relaxed, not in the T-pose her model is built in (her arms used to drop from straight out)
 const now = { bones: poseFor('idle').bones, look: [0, 0], eyes: [0, 0], mouth: 0, surprised: 0, relaxed: 0, happy: 0,
-              nod: 0, lift: 0, talk: 0, wander: 0, hair: 0, ledge: 0 };
+              nod: 0, lift: 0, talk: 0, wander: 0, hair: 0, ledge: 0, bob: 0 };
 let hairUntil = 0;                                  // her hair stays tucked behind her ear until then
 const LEGS = new Set(['leftUpperLeg', 'rightUpperLeg', 'leftLowerLeg', 'rightLowerLeg']);
 const SEAT_YAW = 1.15;      // how far she turns to sit (radians)
@@ -174,6 +174,185 @@ function setProps(list) {
     Object.assign(props.get(kind), { caption, wanted: true });
   }
   for (const [kind, prop] of props) if (!wanted.has(kind)) prop.wanted = false;
+}
+
+// ── the test card she holds up now and then (Engines/Companion.py sends the next test) ──
+const CARD_W = 0.2, CARD_H = 0.13;           // her hands hold its bottom edge, a little in from the corners
+let testCard = null;                                // { big, small } while a test is coming up
+let cardAt = -Infinity;                             // when she last held it up (once an hour at most)
+const cardCanvas = document.createElement('canvas');
+cardCanvas.width = 512; cardCanvas.height = 360;
+const cardTexture = new THREE.CanvasTexture(cardCanvas);
+cardTexture.colorSpace = THREE.SRGBColorSpace;
+cardTexture.anisotropy = 4;
+function cardShape(w, h, r) {
+  const s = new THREE.Shape();
+  s.moveTo(-w / 2 + r, -h / 2);
+  s.lineTo(w / 2 - r, -h / 2); s.quadraticCurveTo(w / 2, -h / 2, w / 2, -h / 2 + r);
+  s.lineTo(w / 2, h / 2 - r); s.quadraticCurveTo(w / 2, h / 2, w / 2 - r, h / 2);
+  s.lineTo(-w / 2 + r, h / 2); s.quadraticCurveTo(-w / 2, h / 2, -w / 2, h / 2 - r);
+  s.lineTo(-w / 2, -h / 2 + r); s.quadraticCurveTo(-w / 2, -h / 2, -w / 2 + r, -h / 2);
+  return s;
+}
+function bentCard(w, h, r) {
+  // a paper card bowed a little toward her (the middle further back than the edges she holds)
+  const g = new THREE.ShapeGeometry(cardShape(w, h, r), 10);
+  const pos = g.attributes.position, uv = g.attributes.uv;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i);
+    pos.setZ(i, -0.012 * Math.cos(Math.PI * x / w));
+    uv.setXY(i, x / w + 0.5, y / h + 0.5);
+  }
+  g.computeVertexNormals();
+  return g;
+}
+const cardGroup = new THREE.Group();
+const cardFace = new THREE.Mesh(bentCard(CARD_W, CARD_H, 0.014),
+  new THREE.MeshBasicMaterial({ map: cardTexture, transparent: true, side: THREE.DoubleSide }));
+// her outline: the same card a little bigger, dark, drawn behind (like the line round her body)
+const cardLine = new THREE.Mesh(bentCard(CARD_W + 0.008, CARD_H + 0.008, 0.017),
+  new THREE.MeshBasicMaterial({ color: 0x3a2a4a, transparent: true, side: THREE.DoubleSide }));
+cardLine.position.z = -0.002;
+cardGroup.add(cardLine, cardFace);
+cardGroup.visible = false;
+scene.add(cardGroup);
+
+/** Sets the font for `text` (as big as fits, down to a size that can still be read from her box) and returns the
+ *  text, cut short with "…" when even that size doesn't fit. */
+function fitText(ctx, text, weight, size, maxW, least = 50) {
+  const font = px => { ctx.font = `${weight} ${px}px "Nunito", "Segoe UI", "Noto Sans", sans-serif`; };
+  for (; size > least; size -= 4) {
+    font(size);
+    if (ctx.measureText(text).width <= maxW) return text;
+  }
+  font(least);
+  let cut = text;
+  while (cut.length > 1 && ctx.measureText(cut + '…').width > maxW) cut = cut.slice(0, -1);
+  return cut === text ? text : cut.trimEnd() + '…';
+}
+function drawCard() {
+  const c = cardCanvas.getContext('2d'), W = cardCanvas.width, H = cardCanvas.height;
+  c.clearRect(0, 0, W, H);
+  c.fillStyle = '#fff6e8';                          // paper
+  c.fillRect(0, 0, W, H);
+  c.fillStyle = 'rgba(185, 163, 255, 0.35)';        // a pale stripe across the top, like an index card
+  c.fillRect(0, 34, W, 10);
+  if (!testCard) return;
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  c.fillStyle = '#5b3fa0';                          // above her fingers (they hold the bottom edge)
+  c.fillText(fitText(c, testCard.big, 800, 100, W - 70, 62), W / 2, H * 0.35);   // text only, never markup
+  if (testCard.small) {
+    c.fillStyle = '#2b2740';
+    c.fillText(fitText(c, testCard.small, 700, 58, W - 140, 44), W / 2, H * 0.58);
+  }
+  // a little star doodle in the corner
+  c.save();
+  c.translate(W - 58, 78);
+  c.rotate(0.2);
+  c.fillStyle = '#ffb3d1';
+  c.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const r = i % 2 ? 11 : 26, a = -Math.PI / 2 + i * Math.PI / 5;
+    c.lineTo(r * Math.cos(a), r * Math.sin(a));
+  }
+  c.closePath();
+  c.fill();
+  c.restore();
+  cardTexture.needsUpdate = true;
+}
+drawCard();
+
+const handL = new THREE.Vector3(), handR = new THREE.Vector3(), cardMid = new THREE.Vector3();
+/** The card goes where her hands are, every frame: it stays in her grip whatever her arms do. */
+function placeCard(up) {
+  const both = up > 0.01 ? rig.where?.('leftHand') && rig.where?.('rightHand') : null;
+  if (!both) { cardGroup.visible = false; return; }
+  handL.fromArray(rig.where('leftHand'));
+  handR.fromArray(rig.where('rightHand'));
+  cardMid.addVectors(handL, handR).multiplyScalar(0.5);
+  cardGroup.position.copy(cardMid);
+  cardGroup.position.z += 0.02;                     // in front of her fingers, not through them
+  cardGroup.quaternion.copy(camera.quaternion);
+  cardGroup.rotateZ(Math.atan2(handL.y - handR.y, handL.x - handR.x) * 0.6);   // tilted as her hands are
+  cardGroup.translateY(CARD_H / 2 - 0.022);         // her fingers on its bottom edge: the card stands up above them
+  cardGroup.scale.setScalar(0.6 + 0.4 * up);
+  cardFace.material.opacity = cardLine.material.opacity = up;
+  cardGroup.visible = true;
+}
+
+// ── her umbrella, when rain is coming (Engines/Companion.py sends it; logic.mjs moves it) ──
+let rainComing = false;
+let beat = null, beatTold = -1e9;      // the music's beat clock (bob to music), and when it was last reported
+let umbrellaAt = -Infinity;                         // when she last brought it out (every 20 min at most)
+const RIBS = 8, RIB_R = 0.2, APEX_Y = 0.31;      // a parasol for her size, and it stays inside her box
+const umbrella = new THREE.Group();
+const umbMats = [];
+const umbMat = (o) => { const m = new THREE.MeshBasicMaterial({ transparent: true, ...o }); umbMats.push(m); return m; };
+const canopyGeo = new THREE.BufferGeometry();
+const canopyPos = new Float32Array(RIBS * 6 * 3 * 3);        // per panel: 6 triangles
+const canopyCol = new Float32Array(canopyPos.length);
+canopyGeo.setAttribute('position', new THREE.BufferAttribute(canopyPos, 3));
+canopyGeo.setAttribute('color', new THREE.BufferAttribute(canopyCol, 3));
+const PANEL = [new THREE.Color(0xffb3d1), new THREE.Color(0xc9a8ff)];
+for (let i = 0; i < RIBS; i++) for (let v = 0; v < 18; v++) PANEL[i % 2].toArray(canopyCol, (i * 18 + v) * 3);
+const canopyOut = new THREE.Mesh(canopyGeo, umbMat({ vertexColors: true, side: THREE.FrontSide }));
+const canopyIn = new THREE.Mesh(canopyGeo, umbMat({ vertexColors: true, side: THREE.BackSide, color: 0x9d8cb0 }));
+const linesGeo = new THREE.BufferGeometry();
+const linesPos = new Float32Array(RIBS * 4 * 2 * 3);          // per rib: apex-half, half-tip, tip-scallop, scallop-next tip
+linesGeo.setAttribute('position', new THREE.BufferAttribute(linesPos, 3));
+const lines = new THREE.LineSegments(linesGeo, new THREE.LineBasicMaterial({ color: 0x3a2a4a, transparent: true }));
+umbMats.push(lines.material);
+const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, 0.42, 8), umbMat({ color: 0x6b4fa0 }));
+shaft.position.y = 0.14;
+const tip = new THREE.Mesh(new THREE.ConeGeometry(0.006, 0.03, 8), umbMat({ color: 0xf6f3ff }));
+tip.position.y = APEX_Y + 0.025;
+const handle = new THREE.Mesh(new THREE.TorusGeometry(0.02, 0.0055, 8, 16, Math.PI), umbMat({ color: 0x6b4fa0 }));
+handle.rotation.z = Math.PI;                        // the lower half of a ring: a J under her hand
+handle.position.set(0.02, -0.07, 0);
+umbrella.add(shaft, tip, handle, canopyOut, canopyIn, lines);
+umbrella.visible = false;
+scene.add(umbrella);
+
+/** The canopy at `open` (0 closed against the shaft … 1 open, a little more as it snaps): ribs from the apex, a
+ *  half-way ring bulging out a touch (a dome, not a cone), and a rim that dips between the rib tips (scallops). */
+function shapeCanopy(open) {
+  const a = 0.1 + 1.12 * Math.max(0, open);         // each rib's angle from hanging straight down
+  const at = (r, ang, phi) => [r * Math.sin(ang) * Math.cos(phi), APEX_Y - r * Math.cos(ang), r * Math.sin(ang) * Math.sin(phi)];
+  const apex = [0, APEX_Y, 0];
+  let p = 0, l = 0;
+  const put = (...vs) => { for (const v of vs) { canopyPos.set(v, p); p += 3; } };
+  const line = (u, v) => { linesPos.set(u, l); linesPos.set(v, l + 3); l += 6; };
+  for (let i = 0; i < RIBS; i++) {
+    const f0 = 2 * Math.PI * i / RIBS, f1 = 2 * Math.PI * (i + 1) / RIBS, fm = (f0 + f1) / 2;
+    const h0 = at(RIB_R / 2, a * 1.3, f0), h1 = at(RIB_R / 2, a * 1.3, f1), hm = at(RIB_R / 2 * 0.96, a * 1.27, fm);   // the dome
+    const t0 = at(RIB_R, a, f0), t1 = at(RIB_R, a, f1), tm = at(RIB_R * 0.9, a * 0.94, fm);
+    put(apex, h1, hm, apex, hm, h0);                // the top of the panel
+    put(h0, hm, tm, h0, tm, t0, hm, h1, t1, hm, t1, tm);
+    line(apex, h0); line(h0, t0); line(t0, tm); line(tm, t1);
+  }
+  canopyGeo.attributes.position.needsUpdate = true;
+  linesGeo.attributes.position.needsUpdate = true;
+  canopyGeo.computeBoundingSphere();
+}
+shapeCanopy(0);
+
+const UP_Y = new THREE.Vector3(0, 1, 0), umbDir = new THREE.Vector3(), bodyTurn = new THREE.Quaternion(),
+  spinQ = new THREE.Quaternion(), umbHand = new THREE.Vector3();
+/** The umbrella in her right hand: the grip at her hand, the shaft along `dir` (in her body's frame, so it turns
+ *  with her), turned `spin` about itself. */
+function placeUmbrella(u) {
+  const hand = u && u.shown > 0.01 ? rig.where?.('rightHand') : null;
+  if (!hand) { umbrella.visible = false; return; }
+  umbHand.fromArray(hand);
+  rig.root.getWorldQuaternion(bodyTurn);
+  umbDir.fromArray(u.dir).applyQuaternion(bodyTurn).normalize();
+  umbrella.position.copy(umbHand);
+  umbrella.quaternion.setFromUnitVectors(UP_Y, umbDir).multiply(spinQ.setFromAxisAngle(UP_Y, u.spin));
+  umbrella.scale.setScalar(0.7 + 0.3 * u.shown);
+  shapeCanopy(u.open);
+  for (const m of umbMats) m.opacity = u.shown;
+  umbrella.visible = true;
 }
 
 const ray = new THREE.Raycaster(), pointer = new THREE.Vector2(), spot = new THREE.Vector3();
@@ -254,7 +433,9 @@ function move(dt) {
                                           seatedFor: sit ? t - sit.start : 0, perched: !!perched,
                                           perchedFor: perched ? t - perched.since : 0,
                                           canPerch: rig.canSit && seatsPx.length > 0,
-                                          canHide: rig.canSit && hideoutsPx.length > 0 && !hide },
+                                          canHide: rig.canSit && hideoutsPx.length > 0 && !hide,
+                                          canCard: !!testCard && t - cardAt > 3600 && !!rig.where?.('leftHand'),
+                                          canUmbrella: rainComing && t - umbrellaAt > 1200 && !!rig.where?.('rightHand') },
                                 Math.random(), Math.random()));
   // spoken to while she is behind a window: she comes out (straight away from the peek, or once she has stopped)
   if (hide && !waiting && !hide.early) {
@@ -328,6 +509,12 @@ function move(dt) {
   const facing = going ? Math.max(0, 1 - Math.abs(going.yaw)) : 1;    // side-on, her head stops following the mouse
   now.talk = ease(now.talk, state === 'speaking' ? Math.min(1, told.out * 5) : 0, dt, 0.18);
   const talking = now.talk > 0.01 ? talkMotion(t, now.talk) : null;
+  // music with a clear beat: she bobs along, standing, sitting or perched, but not on the move, mid-gesture,
+  // behind a window or while she speaks; no report for 2 s (the music stopped, Aria quit) and it fades out
+  const grooving = beat && beat.bpm > 0 && t - beatTold < 2 && state !== 'speaking' && !going && !jumping &&
+                   !hide && !(act && !FIDGETS.includes(doing?.name));
+  now.bob = ease(now.bob, grooving ? Math.min(1, 0.4 + beat.conf) : 0, dt, grooving ? 0.6 : 0.3);
+  const bobbing = now.bob > 0.01 && beat?.bpm ? bobMotion(beatsAt(beat, t), now.bob, beat.bpm) : null;
   // walking she leans a little into her speed; slowing down, her body carries on a moment and settles back (a spring)
   lean = spring(lean[0], lean[1], going ? 0.035 * going.speed - 0.022 * going.accel : 0, dt, 1.6, 0.35);
 
@@ -365,7 +552,8 @@ function move(dt) {
     const exact = (seat || onEdge) && LEGS.has(name);
     for (let i = 0; i < 4; i++) {
       cur[i] = exact ? want[i] : ease(cur[i], want[i], dt);
-      out[i] = cur[i] + (exact && onEdge ? 0 : idle[name]?.[i] || 0) + (talking?.[name]?.[i] || 0);
+      out[i] = cur[i] + (exact && onEdge ? 0 : idle[name]?.[i] || 0) + (talking?.[name]?.[i] || 0) +
+               (exact ? 0 : bobbing?.[name]?.[i] || 0);
       if (perched && !air && LEGS.has(name)) out[i] += (dangled[name]?.[i] || 0) * now.ledge;
       if (steps?.bones[name]) out[i] += steps.bones[name][i] * going.amount;
     }
@@ -398,7 +586,8 @@ function move(dt) {
     else rig.setBone(name, withinLimits(name, out), null, 0, follow);
   }
 
-  const lift = (act?.lift || 0) + (steps ? steps.lift * going.amount : 0) + (seat ? seat.lift : 0) + perchLift;
+  const lift = (act?.lift || 0) + (steps ? steps.lift * going.amount : 0) + (seat ? seat.lift : 0) + perchLift +
+               (bobbing && !seat && !onEdge ? bobbing.lift : 0);
   const liftSpeed = (lift - now.lift) / dt;
   now.lift = lift;
   rig.root.position.y = stageY + lift;
@@ -428,6 +617,10 @@ function move(dt) {
   if (going && going.glance > 0) eyeX += (-Math.max(-4, Math.min(4, 2 * Math.tan(going.yaw))) - eyeX) * going.glance;
   rig.look(eyeX, eyeY);
   rig.update(dt, liftSpeed);
+  placeCard(doing?.name === 'showCard' && act ? Math.min(act.card ?? 0, act.weight) : 0);   // cut short: it goes down with her hands
+  // cut short: it folds as it fades, going down with her arm
+  placeUmbrella(doing?.name === 'umbrella' && act ? { ...act.umbrella, shown: Math.min(act.umbrella.shown, act.weight),
+                                                        open: act.umbrella.open * act.weight ** 2 } : null);
   moveProps(dt);
 }
 
@@ -497,6 +690,8 @@ function start(name, side = 1) {
 function begin(act) {
   let name = act.gesture;
   if (act.gesture) start(act.gesture, act.side);
+  if (act.gesture === 'showCard') cardAt = t;
+  if (act.gesture === 'umbrella') umbrellaAt = t;
   else if (act.perch && !sit && !walk && !perched && !jumping && !hide && rig.canSit) {
     // the nearest window she can sit on: walk under the spot, then jump up onto it
     const plan = planPerch(seatsPx, Math.random());
@@ -587,6 +782,27 @@ window.aria = {
   setLevel(mic, out) { told.mic = +mic || 0; told.out = +out || 0; },
   lookAt(x, y) { told.lookX = Math.max(-1, Math.min(1, +x || 0)); told.lookY = Math.max(-1, Math.min(1, +y || 0)); },
   setProps,
+  /** The next test for her card ({ subject, when }) or null. */
+  setTest(test) { testCard = cardText(test); drawCard(); },
+  /** Rain is coming: she brings out her umbrella now and then. */
+  setRain(on) { rainComing = !!on; },
+  setBeat(bpm, nextIn, conf) {
+    beatTold = bpm > 0 ? t : -1e9;
+    if (bpm > 0) beat = { ...beatClock(beat, +bpm, +nextIn, t), conf: +conf };   // stopped: the old clock fades out
+  },
+  /** Her picture as a PNG data URL, drawn now (for tools/avatar_look.py when the screen can't be grabbed). */
+  snapshot() { renderer.render(scene, camera); return canvas.toDataURL('image/png'); },
+  /** Move her on by `seconds` without waiting for the screen (a locked screen pauses the page's frames): for
+   *  tools/avatar_look.py, which then drives her itself. */
+  debug() { return { t: +t.toFixed(3), doing: doing && { ...doing } }; },    // for tools/avatar_look.py
+  advance(seconds) {
+    for (let left = +seconds || 0; left > 1e-6; left -= 1 / FPS) {
+      const dt = Math.min(1 / FPS, left);
+      t += dt;
+      move(dt);
+    }
+    renderer.render(scene, camera);
+  },
   fade(visible) { canvas.style.opacity = visible ? '1' : '0'; },
   hop() { start('hop'); },
   wave() { start('wave'); },
@@ -603,6 +819,12 @@ window.aria = {
     else if (what === 'sit') begin({ sit: true, side: dir });
     else if (what === 'stand') begin({ stand: true });
     else begin({ gesture: what, side: dir });
+  },
+  // a reaction from the companion (Engines/Companion.py): only one that fits what she's doing right now
+  react(name) {
+    const g = reactionFor(String(name), { walking: !!walk, jumping: !!jumping, hiding: !!hide, gesturing: !!doing,
+                                          seated: !!sit, perched: !!perched });
+    if (g) begin({ gesture: g, side: Math.random() < 0.5 ? -1 : 1 });
   },
   pause() { running = false; cancelAnimationFrame(raf); },
   resume() {

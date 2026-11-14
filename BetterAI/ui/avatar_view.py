@@ -97,7 +97,7 @@ class AvatarLink:
 
     Until the page reports ready, calls are kept (the latest of each kind) and then replayed; once it has failed,
     they are dropped. A value that hasn't changed isn't sent again."""
-    REPLAY = ("state", "props", "level", "look", "room", "seats", "hideouts", "cover", "engaged", "fade", "run")
+    REPLAY = ("state", "props", "level", "look", "room", "seats", "hideouts", "cover", "engaged", "test", "rain", "fade", "run")
 
     def __init__(self, run_js):
         self._run_js = run_js
@@ -130,6 +130,22 @@ class AvatarLink:
     def set_props(self, props):
         text = json.dumps(list(props), ensure_ascii=False)
         self._send("props", f"window.aria.setProps({text})", text, repeat=False)
+
+    def set_test(self, card):
+        """The next test for her card ({"subject", "when"}), or None: kept and replayed, repeats skipped."""
+        text = json.dumps({"subject": str(card.get("subject", "")), "when": str(card.get("when", ""))}
+                          if card else None, ensure_ascii=False)
+        self._send("test", f"window.aria.setTest({text})", text, repeat=False)
+
+    def set_beat(self, bpm, next_in, confidence):
+        """The music's beat (bob to music): `bpm` 0 = no beat. Live only, never kept for a reload (a stale beat would
+        set her nodding to music that stopped)."""
+        self._send(None, f"window.aria.setBeat({json.dumps(_num(bpm))},{json.dumps(_num(next_in))},"
+                         f"{json.dumps(_num(confidence))})")
+
+    def set_rain(self, on):
+        """Rain is coming (her umbrella): kept and replayed, repeats skipped."""
+        self._send("rain", f"window.aria.setRain({json.dumps(bool(on))})", bool(on), repeat=False)
 
     def fade(self, visible):
         self._send("fade", f"window.aria.fade({json.dumps(bool(visible))})", bool(visible), repeat=False)
@@ -174,6 +190,10 @@ class AvatarLink:
 
     def hop(self):
         self._send(None, "window.aria.hop()")        # a moment, not a state: never replayed
+
+    def act(self, name):
+        # a companion reaction: the page plays it only if it fits what she's doing (reactionFor); a moment, never replayed
+        self._send(None, f"window.aria.react({json.dumps(str(name))})")
 
     def wave(self):
         self._send(None, "window.aria.wave()")       # her hello when she appears

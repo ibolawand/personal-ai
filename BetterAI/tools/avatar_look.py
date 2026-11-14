@@ -20,9 +20,15 @@ Calls: window.aria.setState("listening|thinking|speaking|idle"), setLevel(mic, o
 wave(), hop(), act("trip" (across the screen; the window goes along) | "perch" | "hopDown" | "stroll" | "strollPeek" | "sit:1" | "stand" | a fidget like "curious:-1"),
 tune({bone: [x, y, z, twist]}) to pin bones while fitting a pose (tune() lets go). Her pose waits for the
 model: act on it after about 3000 ms.
+Step times are from the start, not from the previous step. A fidget plays only while she is idle: set
+window.aria.setState("idle") first. With the screen locked (a grab would show the lock screen, and the page's
+frames are paused) each step first moves her on by the time since the last one (window.aria.advance) and her page
+draws the shots (window.aria.snapshot). ARIA_LOOK_SNAPSHOT=1 does that unlocked too (shots no window can cover).
 """
+import base64
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -49,6 +55,14 @@ def main(argv):
     steps = [a.rsplit("|", 2) for a in args]
     os.makedirs(out, exist_ok=True)
 
+    try:
+        from Engines.Desk import screen_locked
+        # ARIA_LOOK_SNAPSHOT=1: the page draws the shots even when unlocked (another window can't cover them)
+        locked = [screen_locked()]
+    except Exception:
+        locked = [False]
+    drawn = locked[0] or os.environ.get("ARIA_LOOK_SNAPSHOT") == "1"   # her page draws the shots (her frames run
+                                                                        # live unless locked: no advance() then)
     app = QApplication(sys.argv[:1])
     win = QWidget(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
     win.setStyleSheet("background: #4a5568")
@@ -62,6 +76,18 @@ def main(argv):
     win.show()
     view.link.resume()
     view.link.fade(True)
+    # A locked screen pauses her page's frames (and a grab shows the lock screen): then every step first moves her
+    # on by the time since the last one (window.aria.advance), and her page draws the shots.
+    started, driven = time.monotonic(), [0.0]
+
+    def catch_up():
+        if not locked[0]:
+            return ""
+        due = time.monotonic() - started - driven[0]
+        driven[0] += due
+        return f"window.aria && window.aria.advance && window.aria.advance({due:.3f});"
+    if locked[0]:
+        print("screen locked: moving her on step by step, shots drawn by her page")
     if seat_at:
         bench = QWidget(None)
         bench.setWindowTitle("A window to sit on")
@@ -75,7 +101,18 @@ def main(argv):
         QTimer.singleShot(2500, lambda: view.page().runJavaScript(f"window.benchId = {int(bench.winId())}"))
 
     def shoot(name):
-        screen.grabWindow(0, win.x(), win.y(), w, h).save(os.path.join(out, name + ".png"))
+        if not drawn:
+            screen.grabWindow(0, win.x(), win.y(), w, h).save(os.path.join(out, name + ".png"))
+            return
+
+        def save(url):                  # the screen is locked (a grab shows the lock screen): her page draws it
+            from PySide6.QtGui import QColor, QImage, QPainter
+            img = QImage.fromData(base64.b64decode((url or ",").split(",", 1)[1]), "PNG")
+            shot = QImage(w, h, QImage.Format_ARGB32)
+            shot.fill(QColor("#4a5568"))
+            QPainter(shot).drawImage(0, 0, img.scaled(w, h))
+            shot.save(os.path.join(out, name + ".png"))
+        view.page().runJavaScript(catch_up() + "window.aria && window.aria.snapshot ? window.aria.snapshot() : ''", save)
 
     def shoot_wide(name):
         screen.grabWindow(0, area.left(), area.top(), area.width(), area.height()).save(os.path.join(out, name + ".png"))
@@ -134,7 +171,7 @@ def main(argv):
 
     for js, at, name in steps:
         if js:
-            QTimer.singleShot(int(at), lambda js=js: view.page().runJavaScript(js))
+            QTimer.singleShot(int(at), lambda js=js: view.page().runJavaScript(catch_up() + js))
         if name and "*" in name:            # "name*N": N shots of the whole width of the screen, 150 ms apart
             stem, n = name.split("*")
             for i in range(int(n)):

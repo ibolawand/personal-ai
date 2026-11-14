@@ -256,6 +256,50 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
     angles while you measure (the sitting arms were fitted that way to points round her knees).
   - How she moves is decided in `ui/avatar/logic.mjs` (poses, idle movement, the wave and the hop, blinking, the
     mouth), which the page only applies. Tests: `node --test ui/avatar/logic.test.mjs`, `tests/test_avatar.py`.
+- **Companion after school** (`Engines/Companion.py`, `tests/test_companion.py`): once school is over for the day
+  (the last lesson in your WebUntis timetable; a day without lessons counts as free; if the timetable can't be
+  read, weekdays count as school until 16:00), she wakes herself the moment you use the laptop: the orb turns into
+  her, she waves and puts one line in her bubble ("school's done! Maths test Thursday, btw", "+ take an umbrella
+  later ☔" when rain is likely). **She never speaks, never opens the microphone and never calls the model** in this
+  mode. She then stays on screen while you use the laptop, sitting, wandering and peeking as usual, and falls asleep
+  after 10 min without keyboard or mouse. Once a day, and again after you were away 2 hours.
+  - **She reacts to the app in front** now and then: a gesture and a glance at it (VS Code: she thinks; a video:
+    curious; MyNotion: a smile; …), at most every 5 min and not in the first minute after you switch, plus rarely
+    one short line ("coding again? don't forget to commit 👀"), at most every 30 min, never two about the same kind
+    of app in a row and no repeats until all of that kind's lines were used. The lines are written in code.
+    The gesture fits what she's doing (`reactionFor` in `ui/avatar/logic.mjs`): none while she walks, jumps or
+    peeks from behind a window; sitting on the floor or on a window, a move that works sitting down.
+  - **She holds up your next test:** when WebUntis has a test in the next 7 days, now and then (at most once an
+    hour, while she stands free and nothing's going on) she holds up a small paper card in both hands with the
+    subject and when ("Maths · Thursday"), smiles at you and puts it away. The card is drawn in code in her style
+    (bent paper, dark outline, a little star; `placeCard`/`drawCard` in `ui/avatar/avatar.js`, the gesture
+    `showCard` in `logic.mjs`) and stays in her grip because it is placed between her hands every frame; a long
+    subject is cut short with "…" rather than shrunk unreadably. A test dated today counts as written once school is
+    over (the card and her greeting show the next one). The next test comes from the companion loop
+    (`Companion._send_test` → `set_test` → `window.aria.setTest`), which keeps doing that much even with
+    `ARIA_COMPANION=0`. The hour starts again when Aria restarts.
+  - **Her umbrella when rain is coming:** when the forecast for your home city gives rain a 60 % chance or more in
+    the next 3 hours (`Weather.rain_soon`, asked at most every 30 min, every 5 min when offline), now and then (at
+    most every 20 min, while she stands free) she pulls an umbrella from behind her back, brings it up closed, opens
+    it with a little snap and smiles up at it, rests it on her right shoulder, twirls it twice, then closes it and
+    puts it away (16 s; `umbrellaMotion` in `ui/avatar/logic.mjs`, the arm fitted on her model). The umbrella is
+    built in code in her colours (8 pink and lilac panels with a scalloped rim, dark rib lines, a J-handle;
+    `placeUmbrella`/`shapeCanopy` in `ui/avatar/avatar.js`) and placed in her hand every frame, turning with her.
+    Interrupted, it folds and goes with her arm. Like the card, it works with `ARIA_COMPANION=0` too.
+  - **Bobs to music** (`Engines/Beat.py`, `bobMotion` in `ui/avatar/logic.mjs`, `tests/test_beat.py`): while another
+    app plays music with a steady beat (Spotify, YouTube, anything), her head nods on the beat, she sways side to
+    side every other beat and bounces lightly (only nods while sitting). A fast song gets a nod every other beat. The
+    beat is found on the laptop from the speaker's loudness pulses (`parec` on the speaker monitor, a few seconds in
+    memory, nothing written down or sent; only listened to while her avatar shows and another app is playing).
+    Talk, podcasts and noise have no clear beat, so she doesn't bob to them. She stops while she speaks, walks,
+    hides or makes a gesture, and in lessons; it fades out within about a second when the music stops.
+  - **Never:** during a lesson (even if you woke her yourself), in quiet hours, with the screen locked, while
+    something is fullscreen (a game, a film) or during a call (a call app in front, or another app recording the
+    microphone; only which apps record is checked, never the sound). Nothing about your apps is stored.
+  - Type to her and it becomes a normal conversation; afterwards she stays on screen and goes straight back to
+    keeping you company, no fade (talking to her after school counts as the day's greeting; quietly reading her
+    reply counts as being there). She doesn't doze off while you're typing to her (a key in the last 15 s). A Telegram message or MyNotion's panel doesn't send her away either. "Go to sleep" (said, typed or from the menu) means it: no
+    companion until you were away 2 hours or the next day. `ARIA_COMPANION=0` in `Engines/.env` turns it off.
 - **Animated orb per state:**
   - **sleeping:** dim breathing, dust drifting up, floating "z"s
   - **listening:** cyan orb, equaliser spikes and particles pulled inward, both following your mic volume

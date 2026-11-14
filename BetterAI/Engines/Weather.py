@@ -8,6 +8,7 @@ The morning briefing gets one line about today's weather when a home city is kno
 
 import json
 import os
+import time
 
 import requests
 
@@ -49,6 +50,7 @@ class Weather:
         env = os.environ.get("ARIA_LOCATION", "").strip()
         if env and not self.state.get("home"):
             self.state["home_name"] = env
+        self._rain = None           # (when asked, answer): rain_soon is asked often, the forecast changes slowly
 
     def _load(self):
         try:
@@ -108,6 +110,30 @@ class Weather:
             "current": "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation",
             "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
         }, timeout=TIMEOUT).json()
+
+    def _forecast_hourly(self, place, hours: int) -> list:
+        r = requests.get("https://api.open-meteo.com/v1/forecast", params={
+            "latitude": place["lat"], "longitude": place["lon"], "timezone": "auto",
+            "hourly": "precipitation_probability", "forecast_hours": hours}, timeout=TIMEOUT).json()
+        return [p for p in (r.get("hourly") or {}).get("precipitation_probability") or [] if p is not None]
+
+    def rain_soon(self, hours: int = 3, threshold: int = 60):
+        """Is rain likely (≥ `threshold` %) in the next `hours` hours at home? None when it can't tell (no home
+        city, offline). Asked again at most every 30 min. For Aria's companion: her greeting, later her umbrella."""
+        if self._rain and time.monotonic() - self._rain[0] < (30 if self._rain[1] is not None else 5) * 60:
+            return self._rain[1]
+        try:
+            place = self._home()
+            if not place:
+                self._rain = (time.monotonic(), None)    # no home city (or one that can't be found): ask later
+                return None
+            probs = self._forecast_hourly(place, hours)
+        except (requests.RequestException, ValueError, KeyError):
+            self._rain = (time.monotonic(), None)        # offline: try again in 5 min, not on every call
+            return None
+        answer = max(probs) >= threshold if probs else None
+        self._rain = (time.monotonic(), answer)
+        return answer
 
     def get_weather(self, when: str = "now", city: str = ""):
         try:

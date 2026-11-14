@@ -853,3 +853,108 @@ def test_sitting_down_on_the_panel_her_box_reaches_below_it_and_the_window_does_
     tick()
     assert calls(view, "setSeats")[-1].endswith(",-244)"), "her floor is 244 px above her now"
     assert not calls(view, "dropDown"), "the panel doesn't go away"
+
+
+# ── companion mode (Engines/Companion.py): she's on screen while Aria sleeps, and acts and glances on request ──
+
+def test_link_act_is_a_moment_never_replayed(link):
+    link.act("think")
+    link.mark_ready()
+    assert link.sent == []
+    link.act("curious")
+    assert link.sent == ['window.aria.react("curious")']
+
+
+def test_companion_state_shows_her_idle(app, stage):
+    overlay, bridge, view = stage()
+    state(app, bridge, "companion")
+    overlay._tick()
+    assert overlay._shows_avatar() and view.shown
+    assert calls(view, "setState")[-1] == 'window.aria.setState("idle")'
+
+
+def test_avatar_act_reaches_the_page_only_while_she_shows(app, stage):
+    overlay, bridge, view = stage()
+    state(app, bridge, "sleeping")
+    bridge.avatar_act("think")
+    app.processEvents()
+    assert calls(view, "react") == []
+    state(app, bridge, "companion")
+    bridge.avatar_act("think")
+    app.processEvents()
+    assert calls(view, "react") == ['window.aria.react("think")']
+
+
+def test_glance_overrides_the_cursor_then_expires(app, stage, monkeypatch):
+    import ui.overlay as O
+    overlay, bridge, view = stage()
+    state(app, bridge, "companion")
+    overlay.timer.stop()
+    clock = [1000.0]
+    monkeypatch.setattr(O.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(O.QCursor, "pos", staticmethod(lambda: overlay.mapToGlobal(overlay._avatar_rect().center()) + O.QPoint(5000, 0)))
+    far_left = overlay.mapToGlobal(overlay._avatar_rect().center()) - O.QPoint(5000, 0)
+    bridge.glance(far_left.x(), far_left.y(), 2.0)
+    app.processEvents()
+
+    def look_x():
+        overlay._fed["look"] = 0.0
+        del view.sent[:]
+        overlay._feed_avatar(clock[0])
+        return float(calls(view, "lookAt")[-1][len("window.aria.lookAt("):].split(",")[0])
+    assert look_x() == -1.0
+    clock[0] += 2.5
+    assert look_x() == 1.0
+
+
+# ── the test card: the next test goes to her page, which shows it now and then ──
+
+def test_test_card_data_is_replayed_and_repeats_skipped(link):
+    link.set_test({"subject": "Maths", "when": "Thursday"})
+    link.mark_ready()
+    assert link.sent == ['window.aria.setTest({"subject": "Maths", "when": "Thursday"})']
+    link.set_test({"subject": "Maths", "when": "Thursday"})
+    link.set_test(None)
+    assert link.sent[1:] == ['window.aria.setTest(null)']
+
+
+def test_bridge_set_test_reaches_the_page(app, stage):
+    overlay, bridge, view = stage()
+    bridge.set_test({"subject": "Maths", "when": "Thursday"})
+    app.processEvents()
+    assert calls(view, "setTest") == ['window.aria.setTest({"subject": "Maths", "when": "Thursday"})']
+
+
+# ── the umbrella: whether rain is coming goes to her page, which brings out an umbrella now and then ──
+
+def test_rain_flag_is_replayed_and_repeats_skipped(link):
+    link.set_rain(True)
+    link.mark_ready()
+    assert link.sent == ['window.aria.setRain(true)']
+    link.set_rain(True)
+    link.set_rain(False)
+    assert link.sent[1:] == ['window.aria.setRain(false)']
+
+
+def test_bridge_set_rain_reaches_the_page(app, stage):
+    overlay, bridge, view = stage()
+    bridge.set_rain(True)
+    app.processEvents()
+    assert calls(view, "setRain") == ['window.aria.setRain(true)']
+
+
+# ── bob to music: the beat goes to her page live (never replayed: a stale beat would set her nodding) ──
+
+def test_beat_is_sent_live_and_not_replayed(link):
+    link.set_beat(120, 0.25, 0.8)
+    link.mark_ready()
+    assert link.sent == []
+    link.set_beat(120, 0.25, 0.8)
+    assert link.sent == ['window.aria.setBeat(120,0.25,0.8)']
+
+
+def test_bridge_set_beat_reaches_the_page(app, stage):
+    overlay, bridge, view = stage()
+    bridge.set_beat(100, 0.1, 0.5)
+    app.processEvents()
+    assert calls(view, "setBeat") == ['window.aria.setBeat(100,0.1,0.5)']

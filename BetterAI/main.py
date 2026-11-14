@@ -19,6 +19,8 @@ from Controller.arduino_controller import ArduinoLEDController
 from Controller.homeController import HomeAssistantController
 from Controller.Spotify_controll import SpotifyEngine
 from database import AriaMemory
+from Engines.Companion import Companion, Probes, school_over, UNKNOWN
+from Engines.Beat import BeatReader
 from Engines.Confirm import Confirmer
 from Engines.Emotionengine import EmotionEngine
 from Engines.FilesEngine import FilesEngine
@@ -121,6 +123,7 @@ ASK_NAME_EVERY_S = 6 * 3600
 WAKE_HEARD_RE = re.compile(r"\b(?:aria|arya|ariya|ariah|ahria|aaria)\b|\b(?:hey|hi|okay|ok)\W+(?:area|ari|aria)\b", re.I)    # "what's your name?" to an unknown face at most this often
 MOOD_CHECK = os.environ.get("ARIA_MOOD_CHECK", "0") == "1"
 MOOD_STALE_S = 180
+TYPING_KEEPS_S = 15        # a key typed in her text box this recently: she doesn't doze off mid-sentence
 CHAT_TIMEOUT = 120         # after Aria asked a question, give Lala longer to answer
 DICTATION_TIMEOUT = 180    # while dictating, a long pause to think is fine (what was said is saved on timeout)
 DICTATION_SILENCE_S = 2.2  # and a pause mid-thought shouldn't cut a sentence in two
@@ -427,7 +430,7 @@ def _write_marker(path, value):
 
 class NullUI:
     """Used when running without the overlay. ui/overlay.py's bridge implements the same methods."""
-    def set_state(self, state): pass          # booting|sleeping|listening|thinking|speaking + flashes: unknown|alert
+    def set_state(self, state): pass          # booting|sleeping|companion|listening|thinking|speaking + flashes: unknown|alert
     def set_timers(self, items): pass         # pending reminders, for the countdown ring
     def message(self, role, text): pass       # role: "user" | "aria"
     def mic_level(self, volume): pass         # called from STT while recording
@@ -436,6 +439,11 @@ class NullUI:
     def show_card(self, card): pass           # list / agenda / yes-no card next to the orb
     def clear_card(self, kind=None): pass
     def set_mic_open(self, is_open): pass     # she is transcribing what is said (the avatar leans in only then)
+    def avatar_act(self, name): pass          # companion: a gesture for her avatar
+    def glance(self, x, y, seconds): pass     # companion: her avatar looks at a screen point for a while
+    def set_test(self, card): pass            # the next test, for the card her avatar holds up now and then
+    def set_rain(self, on): pass              # rain is coming: her avatar brings out an umbrella now and then
+    def set_beat(self, bpm, next_in, conf): pass   # the music's beat: her avatar bobs to it (bpm 0 = stop)
 
 
 class Aria:
@@ -537,6 +545,8 @@ class Aria:
         self.untis = self._try("WebUntis", Untis)      # timetable, homework, tests; asks nothing until used
         self.test_prep = (self._try("Test prep", lambda: TestPrep(self.untis, self.notion, self.quiz))
                           if self.untis and self.notion and self.quiz else None)   # "quiz me for my DBI test"
+        # after school her avatar keeps you company while Aria sleeps, and reacts to your apps (never speaks)
+        self.companion = self._try("Companion", lambda: Companion(self, self.ui, Probes.real(self)))
         self.dictation = Dictation(self._save_dictation, confirm=self.confirm, model=LLM_MODEL,
                                    on_card=self.ui.show_card)
         self.activity = Activity(menu=self.laptop.menu)
@@ -586,6 +596,12 @@ class Aria:
         self.activity.start()
         self.focus.start_watching()
         BatteryWatch(self._announce).start()
+        if self.companion:
+            self.companion.start()
+            # bob to music: only while her avatar shows, she isn't speaking and no lesson is on (Engines/Beat.py)
+            self.beat = self._try("Beat", lambda: BeatReader(self.ui, self._may_bob))
+            if self.beat:
+                self.beat.start()
         self.files.start_indexing()
         self._start_app_bridge()
 
@@ -885,7 +901,14 @@ class Aria:
         return result
 
     def request_sleep(self):
-        self._sleep_request.set()
+        if getattr(self, "awake", False):
+            self._sleep_request.set()           # her conversation loop ends it
+            return
+        companion = getattr(self, "companion", None)
+        if companion and companion.on:          # only her avatar keeping you company: send it to sleep
+            companion.dismissed()
+            self.ui.set_state("sleeping")
+        # already asleep: nothing to do (a request left lying around would end her next wake at once)
 
     def toggle_mute(self) -> bool:
         self.muted = not self.muted
@@ -909,9 +932,10 @@ class Aria:
     def answer_phone(self, text: str) -> str:
         """A message from Lala's Telegram chat: a normal turn, but only phone tools, no voice, no camera check."""
         with self._turn_lock():
+            before = getattr(self, "_ui_state", None)
             with self.tools.phone():
                 reply, _ = self.handle_turn(text, check_state=False)
-            self.ui.set_state("listening" if getattr(self, "awake", False) else "sleeping")
+            self._restore_orb(before)       # back to what showed before (asleep, awake, or the companion)
         return tidy_reply(reply) or reply
 
     def answer_app(self, text: str, on_text=None, tools: bool = True):
@@ -1543,7 +1567,27 @@ class Aria:
             return "I'm listening."
         return None
 
-    def _go_to_sleep(self, line=None):
+    def _may_bob(self) -> bool:
+        """Her avatar may bob to music now: it shows (awake or keeping you company), she isn't speaking (her own
+        voice), and no lesson is on (in class she behaves as always)."""
+        companion = getattr(self, "companion", None)
+        if not companion or not (getattr(self, "awake", False) or companion.on):
+            return False
+        if getattr(self, "_ui_state", None) == "speaking":
+            return False
+        try:
+            span = companion.probes.school_span()
+        except Exception:
+            span = UNKNOWN
+        return school_over(companion.now(), span)
+
+    def _typing_now(self) -> bool:
+        """You typed in her text box in the last 15 s: you're writing to her, the conversation isn't over."""
+        return time.monotonic() - getattr(self.ui, "typed_at", 0.0) < TYPING_KEEPS_S
+
+    def _go_to_sleep(self, line=None, by_user=False, talked=False):
+        if by_user and getattr(self, "companion", None):
+            self.companion.dismissed()           # "go to sleep" means it: no companion until you were away a while
         self._ears = False                       # the microphone never stays open past a conversation
         self.ui.set_mic_open(self._uses_mic())
         if self._dictating():
@@ -1552,7 +1596,10 @@ class Aria:
             self.speak(saved)
         if line:
             self.speak(line)
-        self.ui.set_state("sleeping")
+        companion = getattr(self, "companion", None)
+        # after school her avatar stays to keep you company (Engines/Companion.py): straight on, no fade between
+        stays = bool(companion and not by_user and companion.after_conversation(talked=talked))
+        self.ui.set_state("companion" if stays else "sleeping")
         self._sleep_request.clear()
         self._slept_at = time.time()
         self.awake = False
@@ -1690,7 +1737,8 @@ class Aria:
 
     def _wait_for_wake(self) -> bool:
         """Blocks until Aria should wake up. Returns True if she should."""
-        self.ui.set_state("sleeping")
+        if not getattr(getattr(self, "companion", None), "on", False):
+            self.ui.set_state("sleeping")       # (the companion, when she stays, is already showing)
         if self.option == 2:
             heard = self.wake.listen_for_wake_word(stop_event=self._wake_event)
             # the camera keeps running while she's awake, like in typing mode: posture, "who's there",
@@ -1735,19 +1783,21 @@ class Aria:
             # ── Conversation loop ──────────────────────────────────────
             while True:
                 if self._sleep_request.is_set():
-                    self._go_to_sleep()
+                    self._go_to_sleep(by_user=True)
                     break
 
                 if self._speak_announcements():
                     last_interaction = time.time()
 
+                if self._typing_now():
+                    last_interaction = time.time()
                 remaining = timeout - (time.time() - last_interaction)
                 if remaining <= 0:
                     print("\n[Wake] Going back to sleep.")
                     if not said_anything and self.option == 2:
                         Diagnostics.problem("woke_for_nothing")
                     # say it in voice mode; in text mode the orb dimming is enough
-                    self._go_to_sleep("Going to sleep." if self._uses_mic() else None)
+                    self._go_to_sleep("Going to sleep." if self._uses_mic() else None, talked=said_anything)
                     break
 
                 # ── Get input ──
@@ -1800,7 +1850,7 @@ class Aria:
                 # dictation; only a clear "go to sleep" / "goodbye" ends the conversation
                 dictating = self._dictating()
                 if (matches_phrase(["go to sleep", "goodbye"], user_input) if dictating else wants_sleep(user_input)):
-                    self._go_to_sleep("Alright, going to sleep.")
+                    self._go_to_sleep("Alright, going to sleep.", by_user=True)
                     break
 
                 if not dictating and matches_phrase(SHUTDOWN_PHRASES, user_input):
@@ -1832,7 +1882,7 @@ class Aria:
 
                 if any(name in MUSIC_TOOLS for name, _ in used):
                     # Music keeps playing, so end the session after one command
-                    self._go_to_sleep()
+                    self._go_to_sleep(talked=True)
                     break
 
 

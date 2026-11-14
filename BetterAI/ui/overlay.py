@@ -53,6 +53,7 @@ STATE_COLORS = {
     "booting":   (140, 140, 165),
     "sleeping":  (140, 85, 225),
     "listening": (105, 195, 255),
+    "companion": (105, 195, 255),   # Aria asleep, but her avatar keeps you company (Engines/Companion.py)
     "thinking":  (185, 120, 255),
     "speaking":  (235, 125, 255),
     "error":     (255, 95, 95),
@@ -60,7 +61,7 @@ STATE_COLORS = {
 FLASH_COLORS = {"unknown": (255, 180, 70), "alert": (255, 110, 160)}
 RING_COLORS = {"focus": (255, 165, 60), "focusbreak": (110, 220, 150), "timer": (235, 230, 255)}
 STATE_LABELS = {
-    "booting": "starting up…", "sleeping": "asleep", "listening": "listening",
+    "booting": "starting up…", "sleeping": "asleep", "companion": "here with you", "listening": "listening",
     "thinking": "thinking…", "speaking": "speaking", "error": "something broke — see terminal",
 }
 
@@ -129,6 +130,11 @@ class OverlayBridge(QObject):
     remoteCommand = Signal(str)   # from ui/instance.py: toggle / show / quit
     cardRequested = Signal(object)  # a card dict, or {"type": "clear", "kind": ...}
     micOpenChanged = Signal(bool)   # she started or stopped transcribing what is said
+    actRequested = Signal(str)      # companion: a gesture for her avatar
+    glanceRequested = Signal(int, int, float)   # companion: look at this screen point for a few seconds
+    testChanged = Signal(object)    # the next test for her card ({"subject", "when"}) or None
+    rainChanged = Signal(bool)      # rain is coming: she brings out her umbrella now and then
+    beatChanged = Signal(float, float, float)   # the music's beat (bpm, seconds to the next beat, confidence)
 
     def __init__(self):
         super().__init__()
@@ -139,6 +145,7 @@ class OverlayBridge(QObject):
         self.timers = []    # pending reminders: [{"text", "kind", "due", "created"}]
         self.avatar_status = ""     # why the avatar can or can't show, for the self-check
         self.mic_open = False   # the microphone is really open (awake but only typing is "listening" too)
+        self.typed_at = 0.0     # time.monotonic() of the last key typed in the text box: she doesn't doze off then
         self._clip_lock = threading.Lock()
         self._clip_done = threading.Event()
         self._clip_result = None
@@ -221,6 +228,21 @@ class OverlayBridge(QObject):
 
     def clear_card(self, kind=None):
         self.cardRequested.emit({"type": "clear", "kind": kind})
+
+    def avatar_act(self, name):
+        self.actRequested.emit(str(name))
+
+    def set_test(self, card):
+        self.testChanged.emit(dict(card) if card else None)
+
+    def set_rain(self, on):
+        self.rainChanged.emit(bool(on))
+
+    def set_beat(self, bpm, next_in, confidence):
+        self.beatChanged.emit(float(bpm), float(next_in), float(confidence))
+
+    def glance(self, x, y, seconds):
+        self.glanceRequested.emit(int(x), int(y), float(seconds))
 
     def mic_level(self, volume):
         self.mic = volume
@@ -486,7 +508,7 @@ class Overlay(QWidget):
         self.input.setPlaceholderText("Message Aria…")
         self.input.setGeometry(self._input_rect())
         self.input.returnPressed.connect(self._submit)
-        self.input.textEdited.connect(lambda _: setattr(self, "_input_used", time.monotonic()))
+        self.input.textEdited.connect(self._typed)
         self.capture_mode = False      # quick capture (Ctrl+Alt+N): the text is filed, not chatted about
         self.history = []              # what was typed, for ↑ / ↓ in the text box
         self._hist_pos = 0
@@ -498,6 +520,12 @@ class Overlay(QWidget):
         bridge.messageAdded.connect(self._on_message)
         bridge.remoteCommand.connect(self._on_remote)
         bridge.cardRequested.connect(self._on_card)
+        bridge.actRequested.connect(self._on_act)
+        bridge.glanceRequested.connect(self._on_glance)
+        bridge.testChanged.connect(lambda card: self.avatar and self.avatar.link.set_test(card))
+        bridge.rainChanged.connect(lambda on: self.avatar and self.avatar.link.set_rain(on))
+        bridge.beatChanged.connect(lambda *b: self.avatar and self.avatar.link.set_beat(*b))
+        self._glance = None             # (global QPoint, until monotonic time): where she looks instead of the mouse
 
         self._restore_position()
         self._floor_y = self._box_screen.y()    # where her box is when she stands (she jumps back down to it)
@@ -650,7 +678,7 @@ class Overlay(QWidget):
     def _feed_avatar(self, now):
         """What she needs to know while she shows, no more often than it can matter."""
         link = self.avatar.link
-        link.set_state(self.state)
+        link.set_state("idle" if self.state == "companion" else self.state)
         # the text box open or a card up: you're dealing with her, so she stays where she is
         link.set_engaged(bool(self.input.isVisible() or self.card))
         if now - self._fed["level"] >= 1 / 20:
@@ -658,7 +686,8 @@ class Overlay(QWidget):
             link.set_level(self.bridge.mic, self.bridge.out)
         if now - self._fed["look"] >= 1 / 15:
             self._fed["look"] = now
-            r, p = self._avatar_rect(), self.mapFromGlobal(QCursor.pos())
+            glance = self._glance if self._glance and time.monotonic() < self._glance[1] else None
+            r, p = self._avatar_rect(), self.mapFromGlobal(glance[0] if glance else QCursor.pos())
             # near her the mouse is where she looks (and what it hovers); far across the screen she only glances
             link.look_at(max(-1.0, min(1.0, (p.x() - r.center().x()) / LOOK_REACH)),
                          max(-1.0, min(1.0, (r.center().y() - p.y()) / LOOK_REACH)))
@@ -858,6 +887,13 @@ class Overlay(QWidget):
             return
         self.state = state
         self._sync_avatar()
+
+    def _on_act(self, name):
+        if self._shows_avatar():
+            self.avatar.link.act(name)
+
+    def _on_glance(self, x, y, seconds):
+        self._glance = (QPoint(x, y), time.monotonic() + seconds)
 
     def _on_remote(self, cmd):
         """Hotkey / second launch. Bring the orb forward and focus the text box."""
@@ -1449,6 +1485,9 @@ class Overlay(QWidget):
             self.history = (self.history + [text])[-50:]
         self._hist_pos = len(self.history)
         self._draft = ""
+
+    def _typed(self, _text):
+        self._input_used = self.bridge.typed_at = time.monotonic()
 
     def _submit(self):
         text = self.input.text().strip()

@@ -145,6 +145,16 @@ def window_rect(wid):
         return None
 
 
+def active_window_rect():
+    """The window in front (for Aria's companion to glance at), or None."""
+    try:
+        d, root, prop = _x()
+        wid = (prop(root, "_NET_ACTIVE_WINDOW") or [0])[0]
+        return _where(d.create_resource_object("window", wid), root, prop) if wid else None
+    except Exception:
+        return None
+
+
 def any_maximized(own=None):
     """Is an app maximized (or fullscreen) on the current workspace? (Then she may sit on the bottom panel.)"""
     try:

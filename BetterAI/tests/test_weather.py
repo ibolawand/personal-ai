@@ -68,3 +68,45 @@ def test_offline_is_handled(weather, monkeypatch):
     monkeypatch.setattr(W.requests, "get", boom)
     assert weather.get_weather() == "I couldn't reach the weather service."
     assert weather.brief() == ""
+
+
+def test_rain_soon_from_the_hourly_forecast(weather, monkeypatch):
+    weather.set_home_city("vienna")
+    hourly = [[10, 70, 20]]
+    monkeypatch.setattr(weather, "_forecast_hourly", lambda place, hours: hourly[0])
+    assert weather.rain_soon() is True
+    weather._rain = None                                    # forget the cached answer
+    hourly[0] = [10, 20, 30]
+    assert weather.rain_soon() is False
+
+
+def test_rain_soon_unknown_when_it_cannot_tell(weather, monkeypatch):
+    assert weather.rain_soon() is None                     # no home city
+    weather.set_home_city("vienna")
+
+    def boom(place, hours):
+        raise W.requests.RequestException("offline")
+    monkeypatch.setattr(weather, "_forecast_hourly", boom)
+    assert weather.rain_soon() is None
+
+
+def test_rain_soon_offline_does_not_retry_every_call(weather, monkeypatch):
+    """The companion asks every few seconds: offline, the weather service is tried again only after a while."""
+    weather.set_home_city("vienna")
+    tries = []
+
+    def boom(place, hours):
+        tries.append(1)
+        raise W.requests.RequestException("offline")
+    monkeypatch.setattr(weather, "_forecast_hourly", boom)
+    assert weather.rain_soon() is None and weather.rain_soon() is None
+    assert len(tries) == 1
+
+
+def test_rain_soon_with_a_city_that_cannot_be_found_does_not_ask_every_call(weather, monkeypatch):
+    """Review (piece 3): a home city the geocoder can't find made a request on every companion tick."""
+    weather.state["home_name"] = "Nowhereville"
+    asked = []
+    monkeypatch.setattr(W.Weather, "geocode", staticmethod(lambda city: asked.append(city)))
+    assert weather.rain_soon() is None and weather.rain_soon() is None
+    assert len(asked) == 1

@@ -161,3 +161,11 @@ def test_the_bridge_reports_the_microphone_only_when_it_changes(app):
     b.set_mic_open(True); b.set_mic_open(True); b.set_mic_open(False)
     app.processEvents()
     assert seen == [True, False] and b.mic_open is False
+
+
+def test_typing_in_the_box_tells_aria_you_are_still_there(overlay):
+    """She fell asleep (back to the orb) while you were writing a long answer: the conversation's minute ran out."""
+    import time
+    assert overlay.bridge.typed_at == 0.0
+    QTest.keyClicks(overlay.input, "wait")
+    assert time.monotonic() - overlay.bridge.typed_at < 1

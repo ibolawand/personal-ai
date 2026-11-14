@@ -213,6 +213,12 @@ class Untis:
                 out.append(f"{su} at {at}: {l.get('substText') or 'changed'}")
         return out
 
+    def school_span(self, day: dt.date):
+        """(first start, last end) as HHMM of the lessons that take place on `day`, or None with none. Raises like
+        any WebUntis call (no login, offline): for Aria's companion, which then plays it safe."""
+        blocks = self._blocks(self._lessons(day))
+        return (blocks[0][0], blocks[-1][1]) if blocks else None
+
     def school_day(self, when="today") -> str:
         day = parse_day(when or "today", self.today())
         if not day:

@@ -237,3 +237,10 @@ def test_upcoming_tests_without_a_login(make, monkeypatch):
     u = make(FakeUntis(exams=[exam(20261112, "DBI")]))   # make() saves a login, so drop it afterwards
     monkeypatch.setattr(U, "load_login", lambda: None)
     assert u.upcoming_tests() == []
+
+
+def test_school_span_is_first_to_last_real_lesson(make):
+    """For Aria's companion: school is over after the last lesson that still takes place."""
+    fake = FakeUntis([lesson(755, 845, "AM"), lesson(1235, 1325, "E"), lesson(1330, 1415, "D", code="cancelled")])
+    assert make(fake).school_span(MON) == (755, 1325)
+    assert make(FakeUntis()).school_span(MON) is None

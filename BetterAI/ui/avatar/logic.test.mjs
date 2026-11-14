@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { STATES, BONES, GESTURES, FIDGETS, WALK, avatarState, poseFor, idleMotion, gesture, walkCycle, stroll, strollLength,
   talkMotion, visemes, saccade, chooseIdle, IDLE, SEATED_FIDGETS, sitting, sitPose, LEG, spring, gazeWander, withinLimits, ease, nextBlink, blinkWeight, mouthWeight, ringPosition,
   TRIP, planTrip, trip, tripLength, cutLeg, LEDGE_Y, perchPose, dangle, jump, jumpLength, planPerch,
-  PERCHED_FIDGETS, PEEK, planHide, peekOut, headPastEdge, lookBlink, edgeSit, edgeSitLength } from './logic.mjs';
+  PERCHED_FIDGETS, PEEK, planHide, peekOut, headPastEdge, lookBlink, edgeSit, edgeSitLength, bobMotion, beatClock, beatsAt } from './logic.mjs';
 
 test('the microphone decides between listening and idle', () => {
   assert.equal(avatarState('listening', true), 'listening');
@@ -91,10 +91,10 @@ test('the wave bends the elbow, lifts and turns the arm, swings, and comes down 
 });
 test('the hop bends her knees, leaves the ground, sinks on landing and settles', () => {
   assert.equal(gesture('hop', 0).lift, 0);
-  assert.ok(gesture('hop', 0.12).bones.leftLowerLeg[0] > 0.5 && gesture('hop', 0.12).lift === 0);   // crouched, still down
+  assert.ok(gesture('hop', 0.12).bones.leftLowerLeg[0] > 0.5 && gesture('hop', 0.12).lift < 0);    // crouched: her body sinks
   const lifts = Array.from({ length: 75 }, (_, i) => gesture('hop', i * 0.01).lift);
-  assert.ok(Math.max(...lifts) > 0.1 && Math.min(...lifts) >= 0);
-  assert.equal(gesture('hop', 0.45).lift, 0);
+  assert.ok(Math.max(...lifts) > 0.1 && Math.min(...lifts) > -0.04);   // never sinks further than her knees let her
+  assert.ok(Math.abs(gesture('hop', 0.45).lift) < 0.005);                          // touching down
   assert.ok(gesture('hop', 0.5).bones.leftLowerLeg[0] > 0.3);                       // knees give on landing
   assert.ok(gesture('hop', 0.3).bones.leftLowerLeg[0] < 0.05);                      // legs straight in the air
   assert.ok(gesture('hop', 0.16).bones.spine[0] > gesture('hop', 0.16).bones.chest[0]);   // her chest follows her spine late
@@ -214,7 +214,7 @@ test('talking, her hands stay down by her sides: small beats, no pumping back an
 test('every fidget eases in from her pose and out again, within what a body can do', () => {
   for (const name of FIDGETS) {
     const length = GESTURES[name];
-    assert.ok(length >= 2 && length <= 5, name);
+    assert.ok(length >= 2 && length <= (name === 'umbrella' ? 16 : 5), name);   // the umbrella rests on her shoulder a while
     assert.ok(gesture(name, 0).weight === 0 && gesture(name, length - 0.001).weight < 0.01, name);
     assert.ok(gesture(name, length / 2).weight > 0.9 && gesture(name, length / 2).weight < 1.15, name);
     assert.equal(gesture(name, length), null);
@@ -645,4 +645,152 @@ test('sitting down onto a low edge: knees bend, she lowers herself over it and s
   assert.ok(edgeSit(0.25, up).lean > 0.1, 'leans forward to push up');
   const end = edgeSit(m - 1e-6, up);
   assert.ok(Math.abs(end.y - up) < 1e-6 && end.ledge < 0.01 && end.crouch < 0.01, 'standing at the end');
+});
+
+// ── companion reactions (Engines/Companion.py asks for a gesture; it has to fit what she's doing) ──
+import { reactionFor, SEATED_FIDGETS as SEATED, PERCHED_FIDGETS as PERCHED } from './logic.mjs';
+
+test('a reaction plays as asked while she stands free', () => {
+  assert.equal(reactionFor('think'), 'think');
+  assert.equal(reactionFor('lean'), 'lean');
+  assert.equal(reactionFor('nonsense'), null);
+});
+
+test('no reaction while she walks, jumps, hides or is busy with another gesture', () => {
+  for (const busy of ['walking', 'jumping', 'hiding', 'gesturing']) assert.equal(reactionFor('think', { [busy]: true }), null);
+});
+
+test('sitting or perched she reacts with something that works sitting down', () => {
+  for (const name of ['think', 'lean', 'rock', 'stretch', 'curious', 'smile', 'lookAround']) {
+    const seated = reactionFor(name, { seated: true });
+    const perched = reactionFor(name, { perched: true });
+    assert.ok(SEATED.includes(seated) && seated !== 'standUp', `${name} seated -> ${seated}`);
+    assert.ok(PERCHED.includes(perched) && perched !== 'hopDown', `${name} perched -> ${perched}`);
+  }
+});
+
+// ── the test card (Engines/Companion.py sends the next test; she holds it up now and then) ──
+import { cardText } from './logic.mjs';
+
+test('the card is up in the middle of the gesture and away at both ends', () => {
+  assert.equal(gesture('showCard', 0).card, 0);
+  assert.equal(gesture('showCard', 2).card, 1);
+  assert.ok(gesture('showCard', 4.45).card < 0.05);
+  assert.deepEqual(gesture('showCard', 2).look, [0, 0.05]);
+  assert.ok(gesture('showCard', 2).face.happy > 0.3);
+  assert.equal(gesture('showCard', 4.7), null);
+  assert.ok(FIDGETS.includes('showCard'));
+});
+
+test('the card is offered only when there is a test to show, and never sitting', () => {
+  const others = Object.keys(IDLE).filter(n => n !== 'showCard');
+  const pick = canCard => chooseIdle({ idleFor: 60, canCard, recent: others }, 0.0, 0.3);
+  assert.equal(pick(true).gesture, 'showCard');
+  assert.notEqual(pick(false).gesture, 'showCard');
+  for (const r of [0, 0.3, 0.6, 0.99]) {
+    assert.notEqual(chooseIdle({ idleFor: 60, canCard: true, seated: true }, r, 0.3).gesture, 'showCard');
+    assert.notEqual(chooseIdle({ idleFor: 60, canCard: true, perched: true }, r, 0.3).gesture, 'showCard');
+  }
+});
+
+test('card text fits', () => {
+  assert.deepEqual(cardText({ subject: 'Maths', when: 'Thursday' }), { big: 'Maths', small: 'Thursday' });
+  assert.equal(cardText({ subject: 'Softwareentwicklung und Projektmanagement', when: 'tomorrow' }).big.length, 18);
+  assert.deepEqual(cardText({ subject: 'Deutsch' }), { big: 'Deutsch', small: '' });
+  assert.equal(cardText(null), null);
+  assert.equal(cardText({ subject: '  ' }), null);
+});
+
+// ── the umbrella (rain coming: Engines/Companion.py sends it; she pulls one out now and then) ──
+
+test('the umbrella comes out closed, snaps open past full, rests open and goes away closed', () => {
+  const u = s => gesture('umbrella', s).umbrella;
+  assert.equal(u(0).shown, 0);
+  assert.ok(u(1.2).shown > 0.9 && u(1.2).open < 0.05);
+  assert.ok(Math.max(...[2.0, 2.1, 2.2, 2.3].map(s => u(s).open)) > 1.05);
+  assert.ok(Math.abs(u(8).open - 1) < 0.01 && u(8).shown === 1);
+  assert.ok(u(8).dir[2] < -0.2 && u(8).dir[1] > 0.6);          // tilted back over her shoulder
+  assert.ok(u(15.2).open < 0.05);
+  assert.ok(u(15.95).shown < 0.05);
+  assert.equal(gesture('umbrella', 16.1), null);
+  assert.ok(FIDGETS.includes('umbrella'));
+});
+
+test('she twirls it now and then while it rests', () => {
+  const spin = s => gesture('umbrella', s).umbrella.spin;
+  assert.ok(spin(13) - spin(3.5) > 2 * Math.PI * 1.5);
+  assert.equal(spin(4.5), spin(4.6));                             // still between twirls
+});
+
+test('the umbrella is offered only when rain is coming, and never sitting', () => {
+  const others = Object.keys(IDLE).filter(n => n !== 'umbrella');
+  const pick = canUmbrella => chooseIdle({ idleFor: 60, canUmbrella, recent: others }, 0.0, 0.3);
+  assert.equal(pick(true).gesture, 'umbrella');
+  assert.notEqual(pick(false).gesture, 'umbrella');
+  for (const r of [0, 0.5, 0.99]) {
+    assert.notEqual(chooseIdle({ idleFor: 60, canUmbrella: true, seated: true }, r, 0.3).gesture, 'umbrella');
+    assert.notEqual(chooseIdle({ idleFor: 60, canUmbrella: true, perched: true }, r, 0.3).gesture, 'umbrella');
+  }
+});
+
+test('holding the umbrella she only looks up at it as it opens; otherwise her gaze is her own', () => {
+  assert.ok(gesture('umbrella', 2.6).look[1] > 0.3);
+  for (const s of [1, 5, 8, 13]) assert.equal(gesture('umbrella', s).look, undefined, `at ${s} s`);
+});
+
+// ── bob to music ──
+
+test('she nods down on the beat and is back up between beats', () => {
+  const on = bobMotion(0.05, 1, 120), between = bobMotion(0.5, 1, 120);
+  assert.ok(on.head[0] > 0.05 && Math.abs(between.head[0]) < 0.01);
+  assert.ok(on.lift <= between.lift);                        // down with the nod, up on the off-beat
+  const none = bobMotion(0.05, 0, 120);
+  assert.ok(Object.entries(none).every(([k, v]) => k === 'lift' ? v === 0 : v.every(x => x === 0)));
+});
+
+test('a fast song gets a nod every other beat, never frantic', () => {
+  const nods = bpm => { let n = 0, was = false;
+    for (let b = 0.5; b < 8.5; b += 0.02) { const down = bobMotion(b, 1, bpm).head[0] > 0.05; if (down && !was) n++; was = down; }
+    return n; };
+  assert.equal(nods(120), 8);
+  assert.equal(nods(170), 4);
+});
+
+test('her beat clock follows small corrections gently and jumps to a new song', () => {
+  let c = beatClock(null, 120, 0.2, 10);                      // a beat at 10.2 s
+  assert.ok(Math.abs(beatsAt(c, 10.2) % 1) < 1e-6);
+  c = beatClock(c, 120, 0.25, 10.5);                          // the next report says 10.75 instead of 10.7
+  const off = beatsAt(c, 10.75) % 1;
+  assert.ok(off > 0.01 && off < 0.09);                        // old clock: 0.1 beat past; moved partway
+  c = beatClock(c, 90, 0.1, 11);                              // another song
+  assert.equal(c.bpm, 90);
+  assert.ok(Math.abs(beatsAt(c, 11.1) % 1) < 1e-6);
+});
+
+// ── polish: the quiet fidgets have to read at her size on the screen (about 450 px tall) ──
+
+test('every quiet fidget moves her upper body enough to see', () => {
+  const body = ['hips', 'spine', 'chest', 'neck', 'head'];
+  for (const name of ['lean', 'rock', 'smile', 'sigh', 'curious', 'lookAround']) {
+    let most = 0;
+    for (let t = 0; t < GESTURES[name]; t += 0.05) {
+      const b = gesture(name, t, 1).bones;
+      most = Math.max(most, body.reduce((s, k) => s + Math.abs(b[k]?.[0] || 0) + Math.abs(b[k]?.[1] || 0) + Math.abs(b[k]?.[2] || 0), 0));
+    }
+    assert.ok(most >= 0.45, `${name} moves her only ${most.toFixed(2)} rad`);
+  }
+});
+
+test('she leans onto either leg', () => {
+  const a = gesture('lean', 1.8, 1).bones, b = gesture('lean', 1.8, -1).bones;
+  assert.equal(Math.sign(a.hips[2]), -Math.sign(b.hips[2]));
+  assert.ok(a.rightLowerLeg && b.leftLowerLeg);              // the loose knee is the other one
+});
+
+test('crouching for the hop lowers her body over her feet instead of lifting her feet off the floor', () => {
+  const crouched = gesture('hop', 0.14), landed = gesture('hop', 0.5);
+  const drop = WALK.leg * (1 - Math.cos(0.4 * 0.98));
+  assert.ok(crouched.lift < -0.8 * drop && crouched.lift > -1.2 * drop);
+  assert.ok(landed.lift < 0);                                  // sinks a little on landing
+  assert.ok(gesture('hop', 0.27).lift > 0.1);                  // still well up in the air
 });
