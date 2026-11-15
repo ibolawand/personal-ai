@@ -37,16 +37,22 @@ export async function loadVrm(THREE, url) {
   }
 
   // relaxed hands: a model's fingers come dead straight, which is most of what makes arms look stiff
-  for (const [side, sign] of [['left', -1], ['right', 1]]) {
-    for (const finger of ['Index', 'Middle', 'Ring', 'Little']) {
-      for (const [joint, curl] of [['Proximal', 0.3], ['Intermediate', 0.45], ['Distal', 0.3]]) {
-        vrm.humanoid?.getNormalizedBoneNode(`${side}${finger}${joint}`)?.rotation.set(0, 0, flip * sign * curl);
-      }
+  const FINGERS = ['Index', 'Middle', 'Ring', 'Little'], JOINTS = [['Proximal', 0.3], ['Intermediate', 0.45], ['Distal', 0.3]];
+  const fingerBones = {};                             // looked up once: they are set every frame
+  for (const side of ['left', 'right']) {
+    fingerBones[side] = FINGERS.map(finger => JOINTS.map(([joint]) => vrm.humanoid?.getNormalizedBoneNode(`${side}${finger}${joint}`)));
+  }
+  /** Curl each hand's fingers: { left, right }, each [index, middle, ring, little] as a share of the relaxed curl. */
+  const setFingers = curl => {
+    for (const [side, sign] of [['left', -1], ['right', 1]]) {
+      fingerBones[side].forEach((joints, f) => joints.forEach((bone, j) =>
+        bone?.rotation.set(0, 0, flip * sign * JOINTS[j][1] * (curl?.[side]?.[f] ?? 1))));
     }
+  };
+  setFingers(null);
+  for (const [side, sign] of [['left', -1], ['right', 1]]) {
     vrm.humanoid?.getNormalizedBoneNode(`${side}ThumbProximal`)?.rotation.set(0, sign * -0.3, 0);
   }
-
-  const lock = hairLock(THREE, vrm);
 
   const eyesOn = new THREE.Object3D();
   root.add(eyesOn);
@@ -77,6 +83,7 @@ export async function loadVrm(THREE, url) {
       if (before && follow < 1) bone.quaternion.copy(before.slerp(bone.quaternion, follow));
       last.set(name, (before || new bone.quaternion.constructor()).copy(bone.quaternion));
     },
+    setFingers,
     setBlink(w) { express('blink', w); },
     setMouth(w) { express('aa', w); },
     /** The vowel shapes this model has; with none of them, "aa" alone opens her mouth. */
@@ -102,49 +109,8 @@ export async function loadVrm(THREE, url) {
       springs.reset();
       for (let i = 0; i < 60; i++) springs.update(1 / 60);
     },
-    /** Her hair tucked behind her right ear, `w` of the way (0…1). */
-    tuckHair(w) { lock?.(w); },
     setExpression(name, w) { express(name, w); },
     look(x, y) { eyesOn.position.set(x * 1.5, HEIGHT * 0.85 + y * 1.0, 3); },
     update(dt) { vrm.update(Math.min(dt, 1 / 20)); },   // steady small steps: a long one makes hair and skirt explode
   };
 }
-
-/** The lock of hair hanging in front of her right ear, as a function that tucks it behind her ear `w` of the way
- *  (0…1); null when the model has no such lock. A hand passing by doesn't move spring-bone hair, so the tuck moves
- *  where the lock *rests*: its rest pose turns back and out round her ear, and the hair physics carries it there
- *  (and back), with its own swing and lag. */
-function hairLock(THREE, vrm) {
-  const springs = vrm.springBoneManager, head = vrm.humanoid?.getRawBoneNode('head');
-  if (!springs || !head) return null;
-  vrm.scene.updateMatrixWorld(true);
-  const at = head.getWorldPosition(new THREE.Vector3());
-  // a chain hanging straight from her head, to her right (-x: she faces +z) and not behind it, nearest her ear
-  const near = [...springs.joints].filter(j => j.bone.parent === head)
-    .map(j => [j, j.bone.getWorldPosition(new THREE.Vector3()).sub(at)])
-    .filter(([, p]) => p.x < -0.02 && p.z > -0.02 && p.x > -0.12)
-    .sort((a, b) => Math.hypot(a[1].x + 0.06, a[1].z) - Math.hypot(b[1].x + 0.06, b[1].z));
-  if (!near.length) return null;
-  const joint = near[0][0];
-  const rest = joint._initialLocalRotation?.clone(), local = joint._initialLocalMatrix;
-  if (!rest || !local) return null;
-  const position = new THREE.Vector3(), scale = new THREE.Vector3();
-  local.decompose(position, new THREE.Quaternion(), scale);
-  // tucked: swung back past her ear and a little out from her head (turned about the world's axes, worked out in
-  // her head's own frame)
-  const headTurn = head.getWorldQuaternion(new THREE.Quaternion());
-  const swing = new THREE.Quaternion().setFromEuler(new THREE.Euler(TUCK_BACK, 0, -TUCK_OUT, 'ZYX'));
-  const toHead = headTurn.clone().invert();
-  const none = new THREE.Quaternion(), part = new THREE.Quaternion(), turned = new THREE.Quaternion();
-  let was = 0;
-  return w => {
-    w = Math.max(0, Math.min(1, w));
-    if (Math.abs(w - was) < 1e-4) return;
-    was = w;
-    part.slerpQuaternions(none, swing, w);
-    turned.copy(toHead).multiply(part).multiply(headTurn).multiply(rest);
-    joint._initialLocalRotation.copy(turned);
-    local.compose(position, turned, scale);
-  };
-}
-const TUCK_BACK = 1.25, TUCK_OUT = 0.35;    // radians

@@ -42,6 +42,7 @@ AVATAR_W, AVATAR_H = 300, 400  # her box while she's awake unless her view asks 
 FADE_MS = 250                  # orb and avatar cross-fade
 WALK_OUT_PX = 150              # how far past an app's edge she walks out after peeking (0.35 of her units)
 PANEL = 0                      # "the window she sits on" when it's the top of the bottom panel
+SEAT_LOST_S = 1.0              # her seat must look gone this long before she hops down
 INPUT_IDLE_S = 15               # an empty text box nobody uses closes after this long
 LOOK_REACH = 200               # pixels from her middle at which she looks as far aside as she can
 BUBBLE_MAX_W = 300
@@ -459,6 +460,8 @@ class Overlay(QWidget):
         self._headroom = 0              # and how far above that her head reaches
         self._perch = None              # (window id, its left, its top) while she sits on top of another window
         self._aloft = False             # she jumped up onto a window and hasn't come down yet
+        self._seat_lost = None          # (when, why): her seat looked gone; she hops down only if it stays gone
+        self._dropping = False          # told to hop down, and she hasn't landed yet
         self._behind = None             # the window she is behind (the page says), its part of her isn't drawn
         self._cover = None              # that window's rectangle in this window's coordinates, or None
         self._over = "unknown"          # the window over her middle last time we looked (a new one: she hides)
@@ -555,9 +558,10 @@ class Overlay(QWidget):
         return QRect(self._bx, self._by, self.avatar_w, self.avatar_h)
 
     def _wants_wide(self) -> bool:
-        """Is anything up besides her (the orb, the text box, a bubble, a card, the hover caption)?"""
-        return bool(not self._avatar_on or self.input.isVisible() or self.card or self.hover
-                    or self._visible_bubbles())
+        """Is anything up besides her (the orb, the text box, a bubble, a card)? The mouse over her isn't, by
+        itself: the caption fits inside her box, and resizing the window every time the mouse crossed her made
+        her jump for a frame. (With earlier messages to show, hovering brings those bubbles up, which does.)"""
+        return bool(not self._avatar_on or self.input.isVisible() or self.card or self._visible_bubbles())
 
     def _place(self, box=None):
         """Put her box at `box` (its top-left on the screen; default: where it is) and fit the window round it:
@@ -586,9 +590,15 @@ class Overlay(QWidget):
         self._placing = True
         try:
             if changed:
-                self.setFixedSize(w, h)
+                # New size and new place in ONE request to the window manager. Resizing and then moving left a
+                # frame in between where the window had grown but not moved yet, with her drawn a few hundred
+                # pixels off: the flash when bubbles or the text box came up.
+                self.setMinimumSize(min(w, self.width()), min(h, self.height()))
+                self.setMaximumSize(max(w, self.width()), max(h, self.height()))
                 if self.avatar:
                     self.avatar.setGeometry(self._avatar_rect())
+                self.setGeometry(left, top, w, h)
+                self.setFixedSize(w, h)
                 self.input.setGeometry(self._input_rect())
                 if self.card:
                     self.card.move(self._card_pos())
@@ -622,7 +632,9 @@ class Overlay(QWidget):
         if self._avatar_on:             # a bar across the bottom of her box, under her middle as far as it fits
             r = self._avatar_rect()
             x = max(4, min(r.center().x() - w // 2, self.win_w - w - 4))
-            return QRect(x, r.bottom() + 1 - 14 - h, w, h)
+            # (sitting on the bottom panel, the bottom of her box is below the window: the bar stays inside it,
+            # just above the panel, or there would be nowhere to type)
+            return QRect(x, min(r.bottom() + 1 - 14 - h, self.win_h - 4 - h), w, h)
         c = self._orb_center()
         return QRect(int(c.x() - ORB_R - 18 - w), int(c.y() - h / 2), w, h)
 
@@ -746,6 +758,10 @@ class Overlay(QWidget):
         box = self._avatar_rect().translated(self.pos())
         if not self._aloft and self._travel.done:
             self._floor_y = self._box_screen.y()                     # standing: this is her floor
+        if self._aloft and not self._perch and not self._dropping and self._travel.done:
+            self._perch = self._window_under()                      # landed before the window was read: look again
+            if not self._perch:
+                self._seat_gone(link, "no window under her after landing")
         if self._perch and self._perch[0] == PANEL:
             pass                                                    # the panel stays where it is
         elif self._perch:
@@ -756,9 +772,11 @@ class Overlay(QWidget):
                 self._perch = (wid, mine.left, mine.top)
                 box = self._avatar_rect().translated(self.pos())
             cx = box.center().x()
-            if not any(s.id == wid and s.left <= cx <= s.right for s in free):
-                self._perch = None
-                link.drop_down()
+            if any(s.id == wid and s.left <= cx <= s.right for s in free):
+                self._seat_lost = None
+            else:
+                why = "window gone" if not mine else "edge covered or no room above it"
+                self._seat_gone(link, why)
         # where she could hide: side edges of windows beside her, while she stands on her floor
         from ui.desktop_windows import covering, hideouts
         here = (box.left(), box.top(), box.right(), box.bottom())
@@ -793,6 +811,19 @@ class Overlay(QWidget):
         if not self._perch and not self._aloft and any_maximized(own=int(self.winId())):
             out.append({"x": 0, "half": screen.width(), "y": screen.bottom() + 1 - box.bottom() - 1, "low": 1})
         link.set_seats(out, self._floor_y - self._box_screen.y())
+
+    def _seat_gone(self, link, why):
+        """Her seat looks gone. One reading isn't enough (a window being redrawn, raised or read mid-move looks gone
+        for a moment): she hops down once it has looked gone for SEAT_LOST_S, and the log says why."""
+        now = time.monotonic()
+        if self._seat_lost is None:
+            self._seat_lost = (now, why)
+            return
+        if now - self._seat_lost[0] < SEAT_LOST_S:
+            return
+        print(f"[Avatar] hopped down: {why}")
+        self._seat_lost, self._perch, self._dropping = None, None, True
+        link.drop_down()
 
     def _follow_cover(self, link):
         """While she is behind a window: the part of her it covers is cut out, wherever it and she are now."""
@@ -831,8 +862,7 @@ class Overlay(QWidget):
             on_panel = report[3] > 0 and self._box_screen.y() > self._floor_y and self._on_panel()
             self._aloft = report[3] < 0 or on_panel
             self._perch = (PANEL, 0, 0) if on_panel else self._window_under() if self._aloft else None
-            if self._aloft and not self._perch:                     # landed on something we can't follow
-                self.avatar.link.drop_down()
+            self._seat_lost, self._dropping = None, False      # (landed on something we can't follow: _watch_seats looks again, then drops)
 
     def _on_panel(self):
         """Is she sitting on the top edge of the bottom panel (the bottom of the work area)?"""
@@ -854,6 +884,14 @@ class Overlay(QWidget):
     def showEvent(self, e):
         super().showEvent(e)
         self._sync_avatar()
+        self._on_every_desktop()
+        QTimer.singleShot(300, self._on_every_desktop)       # again once the window manager has taken the window
+
+    def _on_every_desktop(self):
+        """She comes along when you switch desktop: her window is on all of them."""
+        if QGuiApplication.platformName() == "xcb" and self.isVisible():
+            from ui.desktop_windows import on_every_desktop
+            on_every_desktop(int(self.winId()))
 
     def hideEvent(self, e):
         super().hideEvent(e)
@@ -1550,6 +1588,7 @@ class Overlay(QWidget):
             if self._dragged:
                 self._save_position()
                 self._perch, self._aloft, self._floor_y = None, False, self._box_screen.y()   # she stands where put
+                self._seat_lost, self._dropping = None, False
             else:
                 self._add_wave(0.6)
                 self._burst(14)

@@ -106,6 +106,7 @@ def covering(windows, box):
 _SKIP_STATES = ("_NET_WM_STATE_HIDDEN", "_NET_WM_STATE_FULLSCREEN", "_NET_WM_STATE_MAXIMIZED_VERT",
                 "_NET_WM_STATE_SKIP_TASKBAR")       # not an app: an overlay like hers, a dock, a desktop widget
 _display = []
+EVERY_DESKTOP = 0xFFFFFFFF          # _NET_WM_DESKTOP: shown on all of them
 
 
 def _x():
@@ -134,11 +135,14 @@ def _where(win, root, prop):
 
 def window_rect(wid):
     """Where one window is now (a few X calls, not a look at every window), or None when it has closed or been
-    minimized, or X isn't there."""
+    minimized, is on another desktop, or X isn't there."""
     try:
         d, root, prop = _x()
         win = d.create_resource_object("window", wid)
         if d.intern_atom("_NET_WM_STATE_HIDDEN") in prop(win, "_NET_WM_STATE"):
+            return None
+        on = prop(win, "_NET_WM_DESKTOP")               # on another desktop it isn't there for her either
+        if on and on[0] not in ((prop(root, "_NET_CURRENT_DESKTOP") or [0])[0], EVERY_DESKTOP):
             return None
         return _where(win, root, prop)
     except Exception:
@@ -208,3 +212,83 @@ def open_windows(own=None):
         return out
     except Exception:
         return []
+
+
+@dataclass(frozen=True)
+class Shown:
+    rect: Win
+    title: str
+    app: str
+
+
+def _text(values):
+    """A window property's bytes as text ('' when it has none)."""
+    try:
+        return bytes(values).decode("utf-8", "replace").strip("\x00 ").strip()
+    except (TypeError, ValueError):
+        return ""
+
+
+def shown_windows(own_pid=None, limit=6):
+    """The app windows on the current workspace, the one in front first, each with its title and app name (for
+    Aria's look at the screen: all of it stays on the laptop). Maximized ones count; minimized ones, panels and
+    docks, and the windows of the process `own_pid` (Aria herself: her text box is in front when you type to
+    her) don't. [] when X or python-xlib isn't there."""
+    try:
+        d, root, prop = _x()
+        atom = d.intern_atom
+        desktop = (prop(root, "_NET_CURRENT_DESKTOP") or [0])[0]
+        normal = atom("_NET_WM_WINDOW_TYPE_NORMAL")
+        gone = {atom("_NET_WM_STATE_HIDDEN"), atom("_NET_WM_STATE_SKIP_TASKBAR")}
+        out = []
+        for wid in reversed(prop(root, "_NET_CLIENT_LIST_STACKING")):
+            win = d.create_resource_object("window", wid)
+            try:
+                types = prop(win, "_NET_WM_WINDOW_TYPE")
+                if types and normal not in types:
+                    continue
+                if gone & set(prop(win, "_NET_WM_STATE")):
+                    continue
+                on = prop(win, "_NET_WM_DESKTOP")
+                if on and on[0] not in (desktop, 0xFFFFFFFF):
+                    continue
+                if own_pid and (prop(win, "_NET_WM_PID") or [0])[0] == own_pid:
+                    continue
+                title = _text(prop(win, "_NET_WM_NAME")) or (win.get_wm_name() or "")
+                app = (win.get_wm_class() or ("", ""))[1]
+                out.append(Shown(_where(win, root, prop), str(title), str(app)))
+            except Exception:           # it closed while we looked
+                continue
+            if len(out) >= limit:
+                break
+        return out
+    except Exception:
+        return []
+
+
+def monitors():
+    """Every monitor as (left, top, right, bottom) in screen pixels, or [] when X can't say."""
+    try:
+        from Xlib.ext import randr  # noqa: F401  (adds xrandr_get_monitors to windows)
+        _, root, _ = _x()
+        return [(m.x, m.y, m.x + m.width_in_pixels, m.y + m.height_in_pixels)
+                for m in root.xrandr_get_monitors().monitors]
+    except Exception:
+        return []
+
+
+def on_every_desktop(wid):
+    """Show the window `wid` on every desktop (workspace), so Aria comes along when you switch. The property is for
+    a window the window manager hasn't seen yet, the message for one it already manages. False when X can't."""
+    try:
+        from Xlib import X
+        from Xlib.protocol import event as xevent
+        d, root, _ = _x()
+        win, atom = d.create_resource_object("window", wid), d.intern_atom("_NET_WM_DESKTOP")
+        win.change_property(atom, d.intern_atom("CARDINAL"), 32, [EVERY_DESKTOP])
+        event = xevent.ClientMessage(window=wid, client_type=atom, data=(32, [EVERY_DESKTOP, 2, 0, 0, 0]))
+        root.send_event(event, event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask)
+        d.flush()
+        return True
+    except Exception:
+        return False

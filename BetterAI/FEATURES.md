@@ -17,7 +17,7 @@ Keep this file updated whenever a feature is added or changed.
 **Everyday use (no PyCharm needed):** run `./install_desktop.sh` once. It adds:
 - **Aria in the Mint menu**, with the orb as its icon
 - **Start on login** (8 seconds after you log in)
-- **Ctrl+Alt+Space from any app:** opens the text box, or hides it if it's open. If Aria isn't running, it starts her.
+- **Super+Space from any app:** opens the text box, or hides it if it's open. If Aria isn't running, it starts her.
 
 `./aria.sh --quit` stops Aria. `./install_desktop.sh --remove` undoes the setup. Logs go to `~/.cache/aria/aria.log`.
 Voice mode is on: `ARIA_ARGS=--voice` in `Engines/.env` (main.py reads it however she's started; remove the line to go back to typing). For another hotkey, run `ARIA_HOTKEY='<Super>j' ./install_desktop.sh`.
@@ -165,6 +165,9 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
   - **She does things of her own while idle** (every 6 to 16 seconds, only while awake with nothing going on). A
     weighted picker (`chooseIdle` in `ui/avatar/logic.mjs`) chooses among about a dozen things and never repeats one
     of the last three, so she doesn't loop:
+    - **She comes along when you switch desktop:** her window is on every workspace (`on_every_desktop` in
+      `ui/desktop_windows.py`, set when the overlay is shown). A window she sat on or hid behind that stayed on the
+      other desktop counts as gone: she hops down or steps out.
     - **a walk across the screen:** she turns to one side (taking a small step round, not pivoting on planted feet)
       and walks somewhere else on the screen, a few seconds' walk at most (up to about 600 px), at a relaxed human
       pace (about half her height a second, a little under two steps a second); she stays there until her next
@@ -184,9 +187,10 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
       nearest one is likelier), crouch, jump up and land sitting on its top edge, legs hanging over the front of
       the app and swinging now and then, hands in her lap, turned a little (square on, her skirt flips up) with
       her head and eyes on you. Her text box, bubbles and cards go up with her. Up there she only does what fits
-      sitting (looking around, a smile, her hair, thinking…), and after half a minute or more she hops down: a
+      sitting (looking around, a smile, thinking…), and after a minute and a half or more she hops down: a
       push off, a fall that speeds up, a crouch to land, back where she was standing. If the window moves she
-      rides along; if it closes, is minimized, made full-size or another window covers her spot, she hops down.
+      rides along; if it closes, is minimized, made full-size or another window covers her spot for a second, she
+      hops down (one odd reading, like a window being redrawn, doesn't count; the log says why: `[Avatar] hopped down`).
       Drag her off and she stands where you put her. Only windows with a free stretch of top edge (not covered by
       a window above it) and room above it for her head (about 200 px of screen) qualify; maximized and
       fullscreen ones never do. High up, her box sticks out above the top of the screen: only the empty part of it
@@ -194,7 +198,8 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
     - **sitting on the bottom panel:** while an app is maximized (or fullscreen) on the workspace, the top edge of
       the bottom panel is a seat too, just below her feet: she bends her knees and lowers herself over the edge
       where she stands, and sits there facing you like on a window, her legs hanging down behind the panel (the
-      part of her box below the work area is cut off: the window manager keeps windows above the panel). After a
+      part of her box below the work area is cut off: the window manager keeps windows above the panel; the text box moves up to just above the panel, so you can still
+      click her and type). After a
       while she leans forward, pushes herself up and stands where she was (`edgeSit` in `ui/avatar/logic.mjs`,
       `any_maximized` in `ui/desktop_windows.py`). Try it: `tools/avatar_look.py OUT --seat max
       'window.aria.act("perch")|4000|'`. The windows
@@ -216,21 +221,29 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
       `peekOut`). Try it: `tools/avatar_look.py OUT --seat 1050,380,420,620 'window.aria.act("hide")|4000|'`.
     - **a stretch:** both arms swung up in front of her and over her head, leaning back a little, and down the same way.
     - **a shoulder roll:** shoulders up and down, then a slow neck stretch to each side.
-    - **tucking her hair** behind her ear: her fingers go to her temple and slide back past her ear, and the lock
-      of hair in front of her right ear really goes back with them and stays tucked for a few seconds before it
-      slips forward again (at once when she walks off). Spring-bone hair doesn't feel a hand, so the tuck turns
-      where that lock rests and the hair physics carries it there (`hairLock` in `ui/avatar/vrmrig.mjs`; only with
-      a character that has such a lock). The hand positions were fitted on her model.
     - **straightening her jacket:** she looks down and gives it two small tugs.
     - **thinking:** a hand to her chin, eyes up and aside, then "got it": a small smile.
     - **a smile to herself**, head tilted; **a sigh** (a breath in, a long breath out, a relaxed face); **something
       catches her eye** in a corner of the screen and she leans to look.
     - **a look around**, **a lean** onto one leg, **rocking** on her heels with her arms held back.
+    - **a yawn:** the back of a hand over her mouth, eyes shut, mouth open, head back, then she sags a little (also sitting);
+      **a look at her wrist:** forearm up, eyes and head down on it, then back up at you; **shaking out her hands:**
+      shoulders up and dropped, both hands shaken loose at her sides, dying away; **a stretch to the side:** one
+      arm up over her head, leaning away from it with her hip out the other way.
+    - **How all of it moves** (`ui/avatar/logic.mjs`): standing, she rests on one leg at a time with the other knee
+      loose, holds it 6 to 12 seconds and shifts with a little overshoot (`weightShift`), her knees are never locked
+      and each arm drifts on its own rhythm (`idleMotion`). Her pelvis turns a little onto the standing leg and her
+      chest turns back against it; her breath changes pace and depth, in quicker than out; her fingers curl more
+      toward the little finger and each hand opens and closes slightly on its own rhythm (`fingerCurl`); her head
+      sits on a spring, so it arrives a touch past where she looks and settles (`spring`); looking around, her head
+      leads and neck, chest and hips follow one after another. The quiet fidgets wind up a touch the other way first,
+      go slightly too far and settle. A blink shuts fast and opens more slowly, and now and then she blinks twice
+      (`blinkWeight`, `nextBlink`).
     - **Sitting down when she's bored:** after about 45 seconds with nothing going on she may sit on the floor. She
       turns side-on first (so her skirt stays put), then folds down hugging her knees (elbows beside her knees, forearms
       wrapped round the front of her shins, one hand over the other wrist), her head and eyes turned back
       to you. Her body drops and moves back exactly as far as her legs fold, so her feet stay planted. Seated, she
-      only does what fits (looking around, a smile, a sigh, a shoulder roll, her hair); after 20 seconds or more she
+      only does what fits (looking around, a smile, a sigh, a yawn, a shoulder roll); after 20 seconds or more she
       gets up again, leaning forward over her feet, and turns back to you. She gets up at once when you talk to her
       or a reminder goes off. Her box moves along with her as she sits back (the overlay's window and her view
       together, so nothing moves on the screen), keeping all of her in it. (Only with a full-size character; the
@@ -276,8 +289,8 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
   (the last lesson in your WebUntis timetable; a day without lessons counts as free; if the timetable can't be
   read, weekdays count as school until 16:00), she wakes herself the moment you use the laptop: the orb turns into
   her, she waves and puts one line in her bubble ("school's done! Maths test Thursday, btw", "+ take an umbrella
-  later ☔" when rain is likely). **She never speaks, never opens the microphone and never calls the model** in this
-  mode. She then stays on screen while you use the laptop, sitting, wandering and peeking as usual, and falls asleep
+  later ☔" when rain is likely). **After school she never speaks, never opens the microphone and never calls the
+  model** in this mode (free days are different: see "On free days she talks" below). She then stays on screen while you use the laptop, sitting, wandering and peeking as usual, and falls asleep
   after 10 min without keyboard or mouse. Once a day, and again after you were away 2 hours.
   - **She reacts to the app in front** now and then: a gesture and a glance at it (VS Code: she thinks; a video:
     curious; MyNotion: a smile; …), at most every 5 min and not in the first minute after you switch, plus rarely
@@ -309,6 +322,26 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
     memory, nothing written down or sent; only listened to while her avatar shows and another app is playing).
     Talk, podcasts and noise have no clear beat, so she doesn't bob to them. She stops while she speaks, walks,
     hides or makes a gesture, and in lessons; it fades out within about a second when the music stops.
+  - **Starts chats on free days** (`Engines/Openers.py`, `Companion._opener`, `tests/test_openers.py`): on days with
+    no lessons (WebUntis shows none, which covers holidays; Saturday and Sunday when the timetable can't be read) she
+    opens a conversation herself now and then, in a bubble with a gesture. To answer, click her and type: the line is
+    in her history, so she knows what you're replying to. The first comes 10 min after she wakes (or after a
+    conversation), then every 25–45 min. When you ignore two in a row the gap doubles each time, up to 2 h, and an
+    answer resets it. At most 8 a day.
+    - **Topics are picked in code:** at most every other one is a nudge about something real (a test in the next 3
+      days, "15 minutes of review together?"; an event or reminder still ahead today; over an hour on videos, "stretch
+      break?"). The rest is small talk about the app in front, the time of day (lunch, evening…), rain coming, or a
+      light random question.
+    - **Wording:** the local model writes the line (`Aria.write_opener`: no tools, no history, never sent to the big
+      model). It's skipped while a turn is running. A fixed line stands in when the reply is empty, long, several
+      lines or sounds like an assistant.
+    - **On free days** her app gestures come every 2.5 min instead of 5, and the openers replace the app lines.
+      `ARIA_WEEKEND_CHAT=0` in `Engines/.env` turns the openers off.
+    - **On free days she talks:** her greeting when she wakes herself and every opener are said out loud, not only
+      shown in a bubble (`Companion._say` → `Aria.speak`; her avatar's mouth moves, then she goes back to keeping
+      you company). While she speaks the microphone listens for "stop", as in any spoken reply. Muted in the menu
+      she only shows the bubble. After school on a school day she stays silent. `ARIA_FREE_DAY_VOICE=0` in
+      `Engines/.env` keeps free days silent too.
   - **Never:** during a lesson (even if you woke her yourself), in quiet hours, with the screen locked, while
     something is fullscreen (a game, a film) or during a call (a call app in front, or another app recording the
     microphone; only which apps record is checked, never the sound). Nothing about your apps is stored.
@@ -415,6 +448,8 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 - **Pronunciation fixes** (`PRONOUNCE` in `voice_engine.py`, checked with Kokoro's phonemes): "C#" is "C sharp"
   (the hash used to be dropped), "MyNotion" is "My Notion" (was "mi-NO-tion"), "VS Code" is "V S Code" (was "viz code"),
   units are said in full ("42 kilometers", "3 degrees Celsius", "1 hour 20 minutes", "12 euros"), "e.g." is "for example".
+  Chat shorthand is said as words (`CHAT_WORDS`): "btw" is "by the way" (was spelled out "B T W"), also tbh, idk,
+  imo, ngl, rn, brb, omg, pls, thx, tmrw, lol ("haha"), w/ and w/o. The bubble keeps the short form.
 - **Tone per sentence:** comforting sentences ("Aw, that sounds rough") come a bit slower and softer with a longer
   pause; playful ones ("Haha, rude!") a bit quicker and brighter. Your mood still sets her overall pace.
 - **Talks while thinking:** replies are streamed. Aria starts speaking the first sentence after about 0.6 s,
@@ -492,6 +527,12 @@ checks for that: quiet hours, a locked screen, something fullscreen, another app
     model loads quickly, and screenshots are shrunk to 1280 px (1600 px was four times slower and not more accurate)
   - the vision model answers you directly instead of passing its description back to the chat model, which reloads
     in the background while she speaks. Measured: ~9 s per look, against ~15 s (and ~40 s right after boot) with the 7B model.
+  - what she looks at is decided in code, not guessed from the picture (`plan_look`, `look_prompt`): she reads from
+    the window manager which app window is in front and what else is open (titles and app names; her own text box
+    doesn't count, though it is in front while you type to her), and tells the vision model. With several monitors
+    only the one with that window is photographed (two shrunk into one picture were unreadable), and a front window
+    smaller than 60% of its monitor is sent a second time as a close-up. The model is told that the girl or orb on
+    screen is Aria herself, and to say when something is too small to read instead of guessing. All of it stays local.
 - "Explain what I copied": the clipboard is attached automatically when you mention it.
 - Code blocks in Aria's replies are copied to your clipboard instead of being read aloud.
 
@@ -785,7 +826,7 @@ mail from `noted.db` and talks to Gmail herself to send, archive and check when 
   - Yes/no questions ("Clear your shopping list?") get **Yes** and **No** buttons; the answer is still checked in code.
   - If she stops mid-answer, what she wrote so far stays, marked "Aria stopped answering", with **Retry**.
   - If Aria isn't running, the panel says so and **Start** launches her **without the orb** (`aria.sh --hidden`): the
-    full Aria (reminders, mail, voice if set up), just not on screen. Ctrl+Alt+Space or the menu shows the orb of that
+    full Aria (reminders, mail, voice if set up), just not on screen. Super+Space or the menu shows the orb of that
     same Aria, and a reminder or timer card brings it up too. Cards from your panel messages (a list, the agenda, a
     yes/no) stay in the panel and don't pop up a hidden orb, and the hidden orb doesn't animate (no CPU spent).
     Starting her yourself still shows the orb right away.
@@ -921,7 +962,7 @@ mail from `noted.db` and talks to Gmail herself to send, archive and check when 
 
 - **Off unless you switch it on.** The camera is never opened, so Aria doesn't wake because you sat down, doesn't
   greet or recognise faces, and takes no pictures for posture nudges or mood. She wakes when you click the orb, type,
-  press Ctrl+Alt+Space or say "Hey Aria" (voice mode), and for reminders and timers. `ARIA_CAMERA=1` in `Engines/.env`
+  press Super+Space or say "Hey Aria" (voice mode), and for reminders and timers. `ARIA_CAMERA=1` in `Engines/.env`
   turns the camera back on, and with it everything below. With the camera off, "not at the desk" (a reminder also
   goes to the phone) is decided from keyboard and mouse use, and the self-check lists the camera as switched off,
   not as a problem (`camera_on` in `vision/vision.py`, `tests/test_vision.py`).

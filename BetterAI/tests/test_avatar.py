@@ -1,6 +1,7 @@
 """Aria's avatar: when it can show, what the overlay tells the 3D page, and which props orbit her."""
 import datetime as dt
 import os
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -522,8 +523,25 @@ def test_she_is_told_where_to_sit_rides_along_with_the_window_and_hops_down_when
         overlay._tick()
         assert (overlay.x(), overlay.y()) == (x1 + 40, y0 - 270)
         assert calls(view, "setSeats")[-1].endswith(",270)"), "and knows how far down the floor is"
-        # it goes away: she hops down
+        # it looks gone for one reading (a window being redrawn): she stays
+        saved = list(windows)
         windows.clear()
+        overlay._fed["seats"] = 0.0
+        overlay._tick()
+        assert not calls(view, "dropDown") and overlay._perch
+        windows.extend(saved)
+        overlay._fed["seats"] = 0.0
+        overlay._tick()
+        assert overlay._seat_lost is None
+        # it really goes away: a second later she hops down
+        import ui.overlay as O
+        clock = [time.monotonic()]
+        monkeypatch.setattr(O.time, "monotonic", lambda: clock[0])
+        windows.clear()
+        overlay._fed["seats"] = 0.0
+        overlay._tick()
+        assert not calls(view, "dropDown")
+        clock[0] += O.SEAT_LOST_S + 0.1
         overlay._fed["seats"] = 0.0
         overlay._tick()
         assert calls(view, "dropDown") and overlay._perch is None
@@ -729,6 +747,23 @@ def test_with_nothing_else_up_the_window_is_her_box(hiding):
     assert overlay.size() == overlay._avatar_rect().size() and overlay._avatar_rect().topLeft() == QPoint(0, 0)
 
 
+def test_the_mouse_over_her_does_not_resize_the_window(hiding):
+    overlay, view, windows, tick = hiding
+    tick()
+    size, at = overlay.size(), overlay.pos()
+    overlay.enterEvent(None)
+    tick()
+    assert overlay.size() == size and overlay.pos() == at          # (resizing on every hover made her jump)
+    assert overlay.rect().contains(overlay._caption_rect())        # the caption fits inside her box
+    overlay.bubbles.append({"role": "aria", "text": "hi", "expire": 0})
+    tick()
+    assert overlay.width() > overlay.avatar_w                      # earlier messages to show: those need the room
+    assert overlay._avatar_rect().translated(overlay.pos()).topLeft() == overlay._box_screen
+    overlay.leaveEvent(None)
+    tick()
+    assert overlay.size() == size
+
+
 def test_the_text_box_widens_the_window_round_her_without_moving_her(hiding):
     overlay, view, windows, tick = hiding
     tick()
@@ -853,6 +888,10 @@ def test_sitting_down_on_the_panel_her_box_reaches_below_it_and_the_window_does_
     tick()
     assert calls(view, "setSeats")[-1].endswith(",-244)"), "her floor is 244 px above her now"
     assert not calls(view, "dropDown"), "the panel doesn't go away"
+    overlay._toggle_input(True)                                     # typing to her there: the bar is above the panel
+    tick()
+    assert overlay._input_rect().bottom() < overlay.height(), "the text box is inside the window, not behind the panel"
+    assert overlay.y() + overlay.height() <= 1040
 
 
 def test_falling_asleep_on_the_panel_the_orb_and_the_text_box_stay_inside_the_window(high, monkeypatch):
@@ -980,3 +1019,27 @@ def test_bridge_set_beat_reaches_the_page(app, stage):
     bridge.set_beat(100, 0.1, 0.5)
     app.processEvents()
     assert calls(view, "setBeat") == ['window.aria.setBeat(100,0.1,0.5)']
+
+
+def test_her_window_is_put_on_every_desktop_and_a_seat_on_another_desktop_is_gone(monkeypatch):
+    """Switching desktop: she comes along, and the window she sat on there doesn't hold her up here."""
+    from types import SimpleNamespace
+    from ui import desktop_windows as dw
+
+    props = {"_NET_WM_STATE": [], "_NET_WM_DESKTOP": [1], "_NET_CURRENT_DESKTOP": [0]}
+    sent, changed = [], []
+    win = SimpleNamespace(id=7, change_property=lambda *a: changed.append(a),
+                          get_geometry=lambda: SimpleNamespace(width=300, height=200),
+                          translate_coords=lambda root, x, y: SimpleNamespace(x=-50, y=-60))
+    root = SimpleNamespace(send_event=lambda ev, event_mask: sent.append(ev))
+    atoms = {}
+    d = SimpleNamespace(intern_atom=lambda name: atoms.setdefault(name, 100 + len(atoms)), create_resource_object=lambda kind, wid: win, flush=lambda: None)
+    monkeypatch.setattr(dw, "_x", lambda: (d, root, lambda w, name, kind=None: props.get(name, [])))
+
+    assert dw.on_every_desktop(7) is True
+    assert changed[0][0] == atoms["_NET_WM_DESKTOP"] and changed[0][3] == [dw.EVERY_DESKTOP] and len(sent) == 1
+    assert dw.window_rect(7) is None                       # it is on desktop 1, you are on 0
+    props["_NET_WM_DESKTOP"] = [0]
+    assert dw.window_rect(7).left == 50
+    props["_NET_WM_DESKTOP"] = [dw.EVERY_DESKTOP]
+    assert dw.window_rect(7) is not None

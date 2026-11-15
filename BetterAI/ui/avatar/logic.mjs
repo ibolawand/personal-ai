@@ -64,27 +64,62 @@ export function poseFor(state) {
   return { bones, expressions: { ...p.expressions } };
 }
 
+/** Which leg she stands on at time t, -1…1 (positive: her hip is out to one side and her right knee is loose).
+ *  She settles onto a leg, stays there 6 to 12 seconds, then shifts: quickly, a little too far, and settles back.
+ *  Sometimes she stays nearly even. Never the same twice in a row, and it doesn't repeat. */
+export function weightShift(t) {
+  const u = t / 9 + 0.35 * Math.sin(t * 0.19), k = Math.floor(u), f = u - k;
+  const at = n => (hash(n * 1.7) < 0.5 ? -1 : 1) * (hash(n * 1.7) < 0.5 === hash(n * 1.7 - 1.7) < 0.5 ? 0.25 : 1) *
+                  (0.55 + 0.45 * hash(n + 0.4));
+  return at(k - 1) + (at(k) - at(k - 1)) * windUp(f / 0.17);
+}
+
 /** The small movement of her whole body while she just stands there, added on top of the pose. Nothing in it
- *  repeats exactly: her weight drifts from leg to leg on two slow rhythms at once, and each part of her follows
- *  the one below it a moment late (hips, then spine, chest, neck, head), so she never moves as one stiff block.
- *  Her shoulders tip against her hips, her legs lean against them so her feet stay where they are, and her arms
- *  and loose wrists trail behind the sway. */
+ *  repeats exactly. She stands on one leg at a time (weightShift) with the other knee loose, and sways a little on
+ *  top of that on two slow rhythms; each part of her follows the one below it a moment late (hips, then spine,
+ *  chest, neck, head), so she never moves as one stiff block. Her shoulders tip against her hips, her legs lean
+ *  against them so her feet stay where they are, her knees are never locked, and each arm hangs and drifts on a
+ *  rhythm of its own with a loose wrist trailing it. */
 export function idleMotion(t) {
-  const sway = late => 0.03 * Math.sin(2 * Math.PI * t / 7 - late) + 0.012 * Math.sin(2 * Math.PI * t / 3.1 + 1 - late);
-  const breath = late => Math.sin(2 * Math.PI * t / 4 - late);
-  const drift = 0.03 * Math.sin(2 * Math.PI * t / 11) + 0.012 * Math.sin(2 * Math.PI * t / 4.7);
-  const hips = sway(0);
-  return {
-    hips: [0, 0, hips], spine: [0.008 * breath(0.5), 0, -0.55 * sway(0.35)],
-    chest: [0.018 * breath(0), 0, -0.45 * sway(0.7)],
-    neck: [-0.006 * breath(0.9), 0.3 * drift, 0.15 * sway(1.05)],
-    head: [0.008 * breath(1.2), 0.7 * drift, 0.2 * sway(1.4)],
-    leftShoulder: [0, 0, -0.02 * breath(0.2) - 0.3 * sway(0.9)], rightShoulder: [0, 0, 0.02 * breath(0.2) - 0.3 * sway(0.9)],
-    leftUpperLeg: [0, 0, -hips], rightUpperLeg: [0, 0, -hips],
-    leftUpperArm: [sway(1.2), 0, -0.012 * breath(0.4)], rightUpperArm: [-sway(1.2), 0, 0.012 * breath(0.4)],
-    leftLowerArm: [0, -0.9 * Math.abs(sway(1.7)), 0], rightLowerArm: [0, 0.9 * Math.abs(sway(1.7)), 0],
-    leftHand: [1.2 * sway(2.2), 0, 0], rightHand: [-1.2 * sway(2.2), 0, 0],
+  const wave = (period, late = 0) => Math.sin(2 * Math.PI * (t - late) / period);
+  // `late`: seconds behind her hips
+  const sway = late => 0.045 * weightShift(t - late) + 0.014 * wave(7.3, late) + 0.006 * wave(3.1, late - 0.5);
+  // her breath isn't a metronome: its pace wanders (about 4 to 4.7 s), some breaths are deeper than others, and
+  // breathing in is quicker than breathing out
+  const breath = late => {
+    const a = 2 * Math.PI * ((t - late) / 4.3 + 0.12 * Math.sin((t - late) * 0.17));
+    return (0.8 + 0.2 * Math.sin(t * 0.091 + 1)) * Math.sin(a + 0.4 * Math.sin(a));
   };
+  // standing on one leg turns her pelvis a little as well as tipping it; her chest turns back against it a moment
+  // later, and her thighs turn back too so her feet keep pointing where they did
+  const twist = late => 0.4 * sway(late);
+  const drift = 0.03 * wave(11) + 0.012 * wave(4.7);
+  const hips = sway(0), on = weightShift(t - 0.15);
+  const knee = side => 0.05 + 0.11 * Math.max(0, side * on) + 0.008 * wave(5.9, side);     // the leg she isn't standing on
+  const arm = (period, late) => 0.6 * sway(0.45 + late) + 0.012 * wave(period, late);
+  const [armL, armR] = [arm(5.3, 0), arm(6.7, 1.9)];
+  const [handL, handR] = [0.8 * sway(0.9) + 0.02 * wave(3.7, 0.4), 0.8 * sway(1.0) + 0.02 * wave(4.1, 2.2)];
+  return {
+    hips: [0, twist(0), hips], spine: [0.008 * breath(0.3), -0.4 * twist(0.12), -0.55 * sway(0.12)],
+    chest: [0.018 * breath(0), -0.7 * twist(0.26), -0.45 * sway(0.26)],
+    neck: [-0.006 * breath(0.6), 0.3 * drift, 0.15 * sway(0.42)],
+    head: [0.008 * breath(0.8), 0.7 * drift, 0.3 * sway(0.6)],
+    leftShoulder: [0, 0, -0.02 * breath(0.15) - 0.3 * sway(0.34)], rightShoulder: [0, 0, 0.02 * breath(0.15) - 0.3 * sway(0.34)],
+    leftUpperLeg: [-0.5 * knee(-1), -twist(0), -hips], rightUpperLeg: [-0.5 * knee(1), -twist(0), -hips],
+    leftLowerLeg: [knee(-1), 0, 0], rightLowerLeg: [knee(1), 0, 0],
+    leftUpperArm: [armL, 0, -0.012 * breath(0.3)], rightUpperArm: [-armR, 0, 0.012 * breath(0.3)],
+    leftLowerArm: [0, -0.9 * Math.abs(armL) - 0.02 * (1 + wave(8.3)), 0], rightLowerArm: [0, 0.9 * Math.abs(armR) + 0.02 * (1 + wave(9.7, 3)), 0],
+    leftHand: [handL, 0, 0], rightHand: [-handR, 0, 0],
+  };
+}
+
+/** How curled the fingers of each hand are at time t, as a share of their relaxed curl: { left, right }, each
+ *  [index, middle, ring, little]. A hanging hand curls more toward the little finger, and it is never quite still:
+ *  each hand closes and opens a little on a slow rhythm of its own, the fingers one after another. */
+export function fingerCurl(t) {
+  const hand = (p1, p2, late) => [0.8, 1, 1.15, 1.3].map((gain, i) =>
+    gain * (1 + 0.14 * Math.sin(2 * Math.PI * (t - late - 0.12 * i) / p1) + 0.08 * Math.sin(2 * Math.PI * (t - late - 0.2 * i) / p2)));
+  return { left: hand(7.9, 3.3, 0), right: hand(9.1, 2.9, 1.7) };
 }
 
 const smooth = x => x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x);
@@ -555,27 +590,30 @@ export function saccade(t) {
 // ── gestures: one-off movements ──
 
 export const GESTURES = { wave: 2.8, hop: 0.75, stretch: 2.8, lookAround: 3.2, lean: 3.6, rock: 3.2,
-  shoulderRoll: 2.8, hairTuck: 2.8, tugJacket: 2.4, think: 3.8, smile: 2.6, sigh: 2.8, curious: 3.4,
-  showCard: 4.6, umbrella: 16 };   // seconds
+  shoulderRoll: 2.8, tugJacket: 2.4, think: 3.8, smile: 2.6, sigh: 2.8, curious: 3.4,
+  yawn: 3.6, checkWrist: 3.4, shakeOut: 2.6, sideStretch: 3.8, showCard: 4.6, umbrella: 16 };   // seconds
 /** What she does now and then while idle, when nothing else is going on. */
-export const FIDGETS = ['stretch', 'lookAround', 'lean', 'rock', 'shoulderRoll', 'hairTuck', 'tugJacket', 'think',
-  'smile', 'sigh', 'curious', 'showCard', 'umbrella'];
+export const FIDGETS = ['stretch', 'lookAround', 'lean', 'rock', 'shoulderRoll', 'tugJacket', 'think',
+  'smile', 'sigh', 'curious', 'yawn', 'checkWrist', 'shakeOut', 'sideStretch', 'showCard', 'umbrella'];
 /** What she does while sitting on the floor (her legs are busy, her arms around her knees). */
-export const SEATED_FIDGETS = ['lookAround', 'curious', 'smile', 'sigh', 'shoulderRoll', 'hairTuck', 'standUp'];
+export const SEATED_FIDGETS = ['lookAround', 'curious', 'smile', 'sigh', 'shoulderRoll', 'yawn', 'standUp'];
 
 /** Everything she may do of her own while idle, and how likely each is. `after`: only once she has been idle that
  *  many seconds (she sits down when she is bored). Standing up gets likelier the longer she sits. */
 export const IDLE = {
   stroll: { weight: 2 }, stretch: { weight: 0.8 }, lookAround: { weight: 1.5 }, lean: { weight: 1.5 },
-  rock: { weight: 0.8 }, shoulderRoll: { weight: 1 }, hairTuck: { weight: 1.2 }, tugJacket: { weight: 0.8 },
+  rock: { weight: 0.8 }, shoulderRoll: { weight: 1 }, tugJacket: { weight: 0.8 },
   think: { weight: 1 }, smile: { weight: 1.2 }, sigh: { weight: 0.8 }, curious: { weight: 1.5 },
+  yawn: { weight: 0.8, after: 30 }, checkWrist: { weight: 0.8 }, shakeOut: { weight: 0.8 }, sideStretch: { weight: 0.8 },
   sit: { weight: 2.5, after: 45 }, standUp: { weight: 0 },
   perch: { weight: 2, after: 15 }, hopDown: { weight: 0 }, hide: { weight: 1.5, after: 10 },
   showCard: { weight: 3, after: 8 },     // only with a test to show (canCard): the overlay sends it, she keeps the hour
   umbrella: { weight: 4, after: 5 },     // only with rain coming (canUmbrella), every 20 min at most
 };
+/** She sits on a window at least this long (seconds) before she may hop down of her own. */
+export const PERCH_MIN_S = 90;
 /** What she does while sitting on top of a window. */
-export const PERCHED_FIDGETS = ['lookAround', 'curious', 'smile', 'sigh', 'shoulderRoll', 'hairTuck', 'think', 'hopDown'];
+export const PERCHED_FIDGETS = ['lookAround', 'curious', 'smile', 'sigh', 'shoulderRoll', 'think', 'yawn', 'checkWrist', 'hopDown'];
 
 /** What she does next while idle. `recent`: the names of what she did last (never repeated straight away);
  *  `idleFor`: seconds with nothing going on; `seated`, `seatedFor`. Two random numbers 0…1 pick it. Returns
@@ -587,7 +625,7 @@ export function chooseIdle({ recent = [], idleFor = 0, seated = false, seatedFor
   const weightOf = name => {
     if (name === 'showCard' && !canCard) return 0;
     if (name === 'umbrella' && !canUmbrella) return 0;
-    if (name === 'hopDown') return perched ? Math.min(4, Math.max(0, (perchedFor - 25) / 8)) : 0;
+    if (name === 'hopDown') return perched ? Math.min(3, Math.max(0, (perchedFor - PERCH_MIN_S) / 30)) : 0;
     if (perched) return PERCHED_FIDGETS.includes(name) ? IDLE[name].weight : 0;
     if (name === 'perch' && (!canPerch || seated)) return 0;
     if (name === 'hide' && (!canHide || seated)) return 0;
@@ -654,7 +692,8 @@ export function gesture(name, t, side = 1) {
                       rightHand: [0.06, 0, 0.14 * (1 - bent) + 0.35 * swing * Math.sin(beat - 0.9)],
                       chest: [0, 0, 0.05 * raised], spine: [0, 0, 0.03 * raised], head: [0, 0, 0.09 * raised] } };
   }
-  const inOut = smooth(t / 0.5) * smooth((length - t) / 0.5);
+  // into it with a small wind-up the other way, a touch too far, and settled; out of it gently, slowing all the way
+  const inOut = windUp(t / 0.7) * (1 - (1 - smooth((length - t) / 0.6)) ** 2);
   if (name === 'stretch') {                      // both arms swung up in front of her and over her head, leaning back
     // Raised from hanging by swinging them forward, so they go up and come down in front of her. Raised out to
     // the sides (the first version) they came down through a T-pose, which read as a glitch, not a stretch.
@@ -671,17 +710,52 @@ export function gesture(name, t, side = 1) {
              bones: { leftShoulder: [0, 0, -0.06 + 0.22 * up], rightShoulder: [0, 0, 0.06 - 0.22 * up],
                       chest: [-0.04 * up, 0, 0], neck: [0.03, 0, 0.14 * tilt * side], head: [0.05, 0, 0.2 * tilt * side] } };
   }
-  if (name === 'hairTuck') {                     // a hand up to the side of her head, tucking her hair behind her ear
-    const reach = smooth(t / 0.8) * smooth((length - t) / 0.8);
-    const tuck = smooth((t - 0.8) / 0.5) * smooth((length - 0.7 - t) / 0.4);   // the hand slides back past her ear
-    // fitted on her model: fingers at her temple where the lock starts, then slid back past her ear
-    const at = (a, b) => a.map((v, i) => v + (b[i] - v) * tuck);
-    return { weight: reach, lift: 0,
-             bones: { rightShoulder: [0, 0, -0.06], rightUpperArm: at([-0.75, 0.19, 0.65, -0.62], [-1.05, -0.11, 0.32, -0.92]),
-                      rightLowerArm: [0, 2.5, 0, 0], rightHand: at([-0.08, -0.01, 0.07, -0.04], [0.22, -0.01, 0.07, -0.04]),
-                      neck: [0, 0, 0.05], head: [0.05, 0.1, -0.13] }, face: { relaxed: 0.4 * reach },
-             // the lock of hair in front of her ear goes back with her hand, and stays there (avatar.js lets it go later)
-             hair: smooth((t - 0.85) / 0.45) };
+  if (name === 'yawn') {                         // a hand up to her mouth, head back, eyes shut... and she sags a little
+    const up = windUp(t / 0.9) * (1 - smooth((t - (length - 1.0)) / 1.0));
+    const wide = smooth((t - 0.7) / 0.6) * (1 - smooth((t - 2.3) / 0.5));       // the yawn itself
+    const sag = smooth((t - 2.3) / 0.5) * smooth((length - t) / 0.6);
+    return { weight: up, lift: 0.006 * wide,
+             bones: mirrorSide({ rightShoulder: [0, 0, 0.06 - 0.1 * wide], leftShoulder: [0, 0, -0.06 + 0.08 * wide],
+                      rightUpperArm: [-0.9, 0.6, 1.1], rightLowerArm: [0, 2.3, 0], rightHand: [-0.3, 0, 0.3],   // fitted: the back of her hand over her mouth
+                      chest: [-0.1 * wide + 0.06 * sag, 0, 0], spine: [-0.04 * wide + 0.05 * sag, 0, 0],
+                      neck: [-0.05 * wide + 0.05 * sag, 0, 0], head: [-0.1 * wide + 0.12 * sag, 0.12, -0.04] }, side),
+             mouth: 0.85 * wide, eyes: smooth((t - 0.8) / 0.35) * (1 - smooth((t - 2.5) / 0.4)),
+             face: { relaxed: 0.6 * sag } };
+  }
+  if (name === 'checkWrist') {                   // forearm up in front of her, a look down at her wrist, "oh", and down
+    const up = windUp(t / 0.8) * (1 - smooth((t - (length - 0.8)) / 0.8));
+    const read = smooth((t - 0.5) / 0.4) * (1 - smooth((t - 2.0) / 0.35));      // eyes and head down on it
+    const oh = smooth((t - 2.0) / 0.25) * smooth((length - t) / 0.6);            // then up at you again
+    return { weight: up, lift: 0,
+             bones: mirrorSide({ leftShoulder: [0, 0, -0.1], leftUpperArm: [-0.5, 0, -1.12], leftLowerArm: [0, -1.65, 0],
+                      leftHand: [0, 0.3 * read, -0.1],
+                      spine: [0.04 * read, 0, 0], chest: [0.04 * read, 0.06 * read, 0],
+                      neck: [0.1 * read, 0.08 * read, 0], head: [0.24 * read - 0.05 * oh, 0.16 * read, 0.06 * oh] }, side),
+             look: [0.3 * side * read, -0.7 * read + 0.05 * oh], face: { happy: 0.35 * oh } };
+  }
+  if (name === 'shakeOut') {                     // loosens up: shoulders up and dropped, hands shaken out at her sides
+    const on = smooth(t / 0.4) * smooth((length - t) / 0.5);
+    const shrug = Math.sin(Math.PI * smooth(t / 0.9));
+    const loose = smooth((t - 0.6) / 0.3) * Math.exp(-1.4 * Math.max(0, t - 0.9));     // dies away, like a real shake
+    const flap = (speed, late) => loose * Math.sin(2 * Math.PI * speed * t + late);
+    return { weight: on, lift: 0.006 * shrug,
+             bones: { leftShoulder: [0, 0, -0.06 + 0.2 * shrug], rightShoulder: [0, 0, 0.06 - 0.2 * shrug],
+                      leftUpperArm: [0.06 + 0.05 * flap(2.6, 0), 0, -1.22], rightUpperArm: [0.06 + 0.05 * flap(2.3, 1.1), 0, 1.22],
+                      leftLowerArm: [0, -0.55 - 0.18 * flap(5.3, 0.6), 0], rightLowerArm: [0, 0.55 + 0.18 * flap(4.7, 2.0), 0],
+                      leftHand: [0.4 * flap(5.3, -0.5), 0, -0.14], rightHand: [0.4 * flap(4.7, 0.9), 0, 0.14],
+                      chest: [-0.04 * shrug, 0.03 * flap(2.6, 0), 0], neck: [0, 0, 0.05 * flap(1.3, 0)],
+                      head: [0.04 * shrug, 0, 0.1 * flap(1.3, -0.5)] } };
+  }
+  if (name === 'sideStretch') {                  // one arm up over her head, leaning away from it, hip out the other way
+    const reach = windUp(t / 1.2) * (1 - (1 - smooth((length - t) / 1.0)) ** 2);
+    const lean = smooth((t - 0.7) / 0.9) * smooth((length - 0.6 - t) / 0.8);
+    return { weight: reach, lift: 0.006 * Math.max(0, lean),
+             bones: mirrorSide({ rightUpperArm: [-2.75, 0, 1.15], rightLowerArm: [0, 0.45, 0], rightHand: [-0.2, 0, 0],
+                      rightShoulder: [0, 0, -0.1],
+                      hips: [0, 0, 0.1 * lean], spine: [0, 0, -0.22 * lean], chest: [0, 0, -0.22 * lean],
+                      neck: [0, 0, -0.06 * lean], head: [-0.05, 0, -0.12 * lean],
+                      leftUpperLeg: [0, 0, -0.1 * lean], rightUpperLeg: [0, 0, -0.1 * lean] }, side),
+             face: { relaxed: 0.5 * Math.max(0, lean) } };
   }
   if (name === 'showCard') {                     // a test coming up: she holds up a card with it, and looks at you
     const hold = smooth(t / 0.7) * smooth((length - t) / 0.7);
@@ -718,7 +792,7 @@ export function gesture(name, t, side = 1) {
   }
   if (name === 'smile') {                        // a smile to herself: head tipped, shoulders scrunched up in a giggle
     const giggle = smooth((t - 0.5) / 0.3) * smooth((length - 0.6 - t) / 0.3) * (0.6 + 0.4 * Math.sin(2 * Math.PI * 2.4 * t));
-    return { weight: inOut, lift: 0.004 * giggle,
+    return { weight: inOut, lift: 0.004 * Math.max(0, giggle),
              bones: { head: [-0.06, 0.1 * side, 0.26 * side], neck: [0, 0.04 * side, 0.08 * side],
                       chest: [-0.03, 0, 0.06 * side], spine: [0, 0, 0.05 * side],
                       leftShoulder: [0, 0, 0.1 * giggle], rightShoulder: [0, 0, -0.1 * giggle] },
@@ -743,10 +817,12 @@ export function gesture(name, t, side = 1) {
              look: [0.85 * side, 0.55] };
   }
   if (name === 'lookAround') {                   // a slow look to one side, then the other, her body turning along
-    const turn = Math.sin(2 * Math.PI * t / length);
+    // her head leads; neck, chest, spine and hips each come round a moment after the part above (turning as one
+    // block, she looked like a figure on a turntable)
+    const turnAt = late => Math.sin(2 * Math.PI * Math.max(0, t - late) / length), turn = turnAt(0);
     return { weight: inOut, lift: 0,
-             bones: { head: [-0.08, 0.6 * turn, 0.06 * turn], neck: [-0.03, 0.25 * turn, 0], chest: [0, 0.18 * turn, 0],
-                      spine: [0, 0.08 * turn, 0], hips: [0, 0.05 * turn, 0] },
+             bones: { head: [-0.08, 0.6 * turn, 0.06 * turn], neck: [-0.03, 0.25 * turnAt(0.08), 0], chest: [0, 0.18 * turnAt(0.2), 0],
+                      spine: [0, 0.08 * turnAt(0.3), 0], hips: [0, 0.05 * turnAt(0.4), 0] },
              look: [0.9 * turn, 0.15] };
   }
   if (name === 'lean') {                         // settles onto one leg: hip out, the other knee loose, head tipped
@@ -759,7 +835,7 @@ export function gesture(name, t, side = 1) {
   }
   if (name === 'rock') {                         // hands behind her back, rocking heel to toe
     const sway = Math.sin(2 * Math.PI * t / 1.6);
-    return { weight: inOut, lift: 0.014 * inOut * (0.5 + 0.5 * sway),
+    return { weight: inOut, lift: 0.014 * Math.max(0, inOut) * (0.5 + 0.5 * sway),
              // (fitted on her model: each hand just behind her lower back, about 4 cm from the middle)
              bones: { leftUpperArm: [0.8, 0, -1.3, 0.6], rightUpperArm: [0.8, 0, 1.3, 0.6],
                       leftLowerArm: [0, -1.0, 0], rightLowerArm: [0, 1.0, 0],
@@ -805,17 +881,20 @@ export function lookBlink(from, to, sinceBlink) {
   return sinceBlink > 1 && Math.hypot(to[0] - from[0], to[1] - from[1]) > 0.6;
 }
 
+/** When she blinks next: 2 to 6 seconds on, and now and then (`rand` above 0.88) a second blink straight after. */
 export function nextBlink(now, rand) {
-  return now + 2 + rand * 4;
+  return rand > 0.88 ? now + 0.12 : now + 2 + rand / 0.88 * 4;
 }
 
-const BLINK_S = 0.15;
+/** A blink: her eyes shut fast (60 ms) and open again more slowly (140 ms), as real eyelids do. */
+export const BLINK = { close: 0.06, open: 0.14, length: 0.2 };
 
-/** How closed her eyes are at time t for a blink that began at `start`: 0, up to 1 halfway, back to 0. */
+/** How closed her eyes are at time t for a blink that began at `start`: 0, quickly up to 1, more slowly back to 0. */
 export function blinkWeight(t, start) {
-  const x = (t - start) / BLINK_S;
-  if (x <= 0 || x >= 1) return 0;
-  return Math.round((1 - Math.abs(2 * x - 1)) * 1e6) / 1e6;       // rounded: 5.075 - 5 is not exactly 0.075
+  const x = t - start;
+  if (x <= 0 || x >= BLINK.length) return 0;
+  const w = x < BLINK.close ? smooth(x / BLINK.close) : 1 - smooth((x - BLINK.close) / BLINK.open) ** 1.5;
+  return Math.round(w * 1e6) / 1e6;
 }
 
 /** Mouth opening from the voice's volume: opens quickly, closes a little slower, shut in silence. */
@@ -838,7 +917,8 @@ export function ringPosition(index, count, t, radius = 0.55, tilt = 0.35) {
 /** A companion reaction (Engines/Companion.py asks for one now and then) that fits what she's doing: nothing while
  *  she walks, jumps, peeks from behind a window or is in the middle of another gesture; sitting on the floor or on
  *  a window, a move that works sitting down. Returns the gesture to play, or null. */
-const SITTING_INSTEAD = { think: 'curious', lean: 'lookAround', rock: 'smile', stretch: 'shoulderRoll' };
+const SITTING_INSTEAD = { think: 'curious', lean: 'lookAround', rock: 'smile', stretch: 'shoulderRoll',
+  sideStretch: 'shoulderRoll', shakeOut: 'shoulderRoll', checkWrist: 'curious' };
 export function reactionFor(name, { walking = false, jumping = false, hiding = false, gesturing = false,
                                     seated = false, perched = false } = {}) {
   if (!(name in GESTURES) || walking || jumping || hiding || gesturing) return null;

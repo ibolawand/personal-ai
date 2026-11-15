@@ -3,8 +3,8 @@
 // It reports once through window.ariaStatus: "ready" after the first frame, or "failed: <why>".
 import * as THREE from 'three';
 import { BONES, GESTURES, FIDGETS, avatarState, poseFor, idleMotion, gesture, walkCycle, stroll, trip, planTrip, cutLeg, legLength, perchPose, dangle, jump, edgeSit, planPerch, LEDGE_Y, PERCH_YAW, PERCH_HEADROOM, PEEK, planHide, peekOut, talkMotion, visemes, reactionFor, cardText, bobMotion, beatClock, beatsAt,
-         saccade, lookBlink, chooseIdle, sitting, sitPose, spring, gazeWander, withinLimits, ease, nextBlink, blinkWeight,
-         mouthWeight, ringPosition } from './logic.mjs';
+         saccade, lookBlink, BLINK, chooseIdle, sitting, sitPose, spring, gazeWander, withinLimits, ease, nextBlink, blinkWeight,
+         mouthWeight, ringPosition, fingerCurl } from './logic.mjs';
 import { buildFigure } from './figure.mjs';
 
 const FPS = 30, RING_Y = 0.52;
@@ -102,9 +102,8 @@ let recent = [];                                    // what she did last, so she
 let lookMovedAt = 0, lastLook = [0, 0];             // when the mouse last moved: left alone, her gaze wanders
 let lean = [0, 0];                                  // the spring of her forward lean as she walks and stops [angle, speed]
 // she starts standing relaxed, not in the T-pose her model is built in (her arms used to drop from straight out)
-const now = { bones: poseFor('idle').bones, look: [0, 0], eyes: [0, 0], mouth: 0, surprised: 0, relaxed: 0, happy: 0,
-              nod: 0, lift: 0, talk: 0, wander: 0, hair: 0, ledge: 0, bob: 0 };
-let hairUntil = 0;                                  // her hair stays tucked behind her ear until then
+const now = { bones: poseFor('idle').bones, look: [0, 0], lookV: [0, 0], eyes: [0, 0], mouth: 0, surprised: 0, relaxed: 0, happy: 0,
+              nod: 0, lift: 0, talk: 0, wander: 0, ledge: 0, bob: 0 };
 const LEGS = new Set(['leftUpperLeg', 'rightUpperLeg', 'leftLowerLeg', 'rightLowerLeg']);
 const SEAT_YAW = 1.15;      // how far she turns to sit (radians)
 const FOLLOW_S = 0.045;     // every joint follows what it is told this closely: a new action can never make one pop
@@ -539,8 +538,10 @@ function move(dt) {
   const dart = saccade(t);
   now.eyes[0] = ease(now.eyes[0], lookX + dart[0], dt, 0.07);
   now.eyes[1] = ease(now.eyes[1], lookY + dart[1], dt, 0.07);
-  now.look[0] = ease(now.look[0], lookX, dt, now.wander > 0.5 ? 0.7 : 0.45);
-  now.look[1] = ease(now.look[1], lookY, dt, now.wander > 0.5 ? 0.7 : 0.45);
+  // (her head is on a spring, a little under-damped: it arrives a touch past where she looks and settles back.
+  // Easing straight to the spot, it stopped like a camera on a motor)
+  const headHz = now.wander > 0.5 ? 0.75 : 1.15;
+  for (const i of [0, 1]) [now.look[i], now.lookV[i]] = spring(now.look[i], now.lookV[i], i ? lookY : lookX, dt, headHz, 0.62);
   now.nod = ease(now.nod, state === 'listening' ? Math.min(0.1, told.mic * 1.6) : 0, dt, 0.12);
 
   const follow = 1 - Math.exp(-dt / FOLLOW_S);
@@ -552,7 +553,7 @@ function move(dt) {
     const exact = (seat || onEdge) && LEGS.has(name);
     for (let i = 0; i < 4; i++) {
       cur[i] = exact ? want[i] : ease(cur[i], want[i], dt);
-      out[i] = cur[i] + (exact && onEdge ? 0 : idle[name]?.[i] || 0) + (talking?.[name]?.[i] || 0) +
+      out[i] = cur[i] + (exact && (onEdge || i === 0) ? 0 : idle[name]?.[i] || 0) + (talking?.[name]?.[i] || 0) +
                (exact ? 0 : bobbing?.[name]?.[i] || 0);
       if (perched && !air && LEGS.has(name)) out[i] += (dangled[name]?.[i] || 0) * now.ledge;
       if (steps?.bones[name]) out[i] += steps.bones[name][i] * going.amount;
@@ -582,7 +583,8 @@ function move(dt) {
     if (tuning?.[name]) { rig.setBone(name, withinLimits(name, tuning[name]), null, 0, 1); continue; }
     // peeking, a wave is her arm only: the rest of her keeps leaning out past the edge
     const target = peeking && !/Shoulder|Arm|Hand/.test(name) ? null : act?.bones[name];
-    if (target) rig.setBone(name, withinLimits(name, out), withinLimits(name, target), Math.min(1, act.weight), follow);
+    // (a little under 0 and over 1 is meant: a gesture winds up the other way first, and goes a touch too far)
+    if (target) rig.setBone(name, withinLimits(name, out), withinLimits(name, target), Math.max(-0.08, Math.min(1.1, act.weight)), follow);
     else rig.setBone(name, withinLimits(name, out), null, 0, follow);
   }
 
@@ -592,22 +594,19 @@ function move(dt) {
   now.lift = lift;
   rig.root.position.y = stageY + lift;
 
-  if (t >= blinkAt + 0.15) [lastBlink, blinkAt] = [blinkAt, nextBlink(t, Math.random())];
-  rig.setBlink(blinkWeight(t, blinkAt));
+  if (t >= blinkAt + BLINK.length) [lastBlink, blinkAt] = [blinkAt, nextBlink(t, Math.random())];
+  const shut = act?.eyes ? Math.max(0, Math.min(1, act.eyes * act.weight)) : 0;       // a yawn shuts her eyes
+  rig.setBlink(Math.max(blinkWeight(t, blinkAt), shut));
   now.mouth = mouthWeight(now.mouth, state === 'speaking' ? told.out : 0, dt);
-  rig.setVisemes(visemes(t, now.mouth));
+  const shapes = visemes(t, now.mouth);
+  if (act?.mouth) shapes.aa = Math.max(shapes.aa, Math.max(0, Math.min(1, act.mouth * act.weight)));   // a yawn
+  rig.setVisemes(shapes);
   now.surprised = ease(now.surprised, doing?.name === 'hop' ? 1 : 0, dt, 0.12);
   now.relaxed = ease(now.relaxed, Math.max(pose.expressions.relaxed || 0, act?.face?.relaxed || 0), dt);
   // a flicker of a smile on the louder moments, a small one for the wave, and whatever a fidget brings
   const smile = doing?.name === 'wave' ? 0.5 : Math.max(act?.face?.happy || 0, peeking?.face.happy || 0,
                                                        0.35 * now.talk * Math.max(0, Math.sin(t * 1.7)));
   now.happy = ease(now.happy, smile, dt, 0.2);
-  // her hair, tucked behind her ear, stays there a while and then slips forward again (sooner once she walks off)
-  if (act?.hair != null) {
-    now.hair = Math.max(act.hair, now.hair);
-    if (act.hair > 0.9) hairUntil = t + 6;
-  } else if (t > hairUntil || (going && going.amount > 0.5)) now.hair = ease(now.hair, 0, dt, 1.2);
-  rig.tuckHair?.(now.hair);
   rig.setExpression('surprised', now.surprised);
   rig.setExpression('relaxed', now.relaxed * (1 - now.happy));
   rig.setExpression('happy', now.happy);
@@ -616,6 +615,7 @@ function move(dt) {
   eyeX -= 2 * Math.tan(0.1 * seatYaw);              // what her head doesn't turn back, her eyes do
   if (going && going.glance > 0) eyeX += (-Math.max(-4, Math.min(4, 2 * Math.tan(going.yaw))) - eyeX) * going.glance;
   rig.look(eyeX, eyeY);
+  rig.setFingers?.(fingerCurl(t));
   rig.update(dt, liftSpeed);
   placeCard(doing?.name === 'showCard' && act ? Math.min(act.card ?? 0, act.weight) : 0);   // cut short: it goes down with her hands
   // cut short: it folds as it fades, going down with her arm
