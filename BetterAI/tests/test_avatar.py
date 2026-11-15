@@ -855,6 +855,28 @@ def test_sitting_down_on_the_panel_her_box_reaches_below_it_and_the_window_does_
     assert not calls(view, "dropDown"), "the panel doesn't go away"
 
 
+def test_falling_asleep_on_the_panel_the_orb_and_the_text_box_stay_inside_the_window(high, monkeypatch):
+    """She fell asleep sitting on the bottom panel: her box reached below the window, the orb and the text box
+    were placed at its corner, so nothing showed and Super+Space seemed to do nothing."""
+    import ui.desktop_windows as D
+    overlay, view, windows, tick = high
+    monkeypatch.setattr(D, "any_maximized", lambda own=None: True)
+    overlay._place(QPoint(400, 1040 - overlay.avatar_h - 14))
+    tick()
+    tick()
+    view.report = [7, 0, True, 0.0]
+    tick()
+    view.report = [7, 0, False, 244.0]
+    tick()
+    overlay._on_state("sleeping")
+    tick()
+    tick()
+    assert overlay.rect().contains(overlay._orb_rect()), "the orb is inside the window"
+    overlay._on_remote("toggle")
+    tick()
+    assert overlay.input.isVisible() and overlay.rect().contains(overlay._input_rect())
+
+
 # ── companion mode (Engines/Companion.py): she's on screen while Aria sleeps, and acts and glances on request ──
 
 def test_link_act_is_a_moment_never_replayed(link):

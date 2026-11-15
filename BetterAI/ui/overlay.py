@@ -536,12 +536,19 @@ class Overlay(QWidget):
 
     # ── Geometry ──
 
+    def _orb_corner(self) -> QPoint:
+        """The orb and her box share their bottom-right corner. Her box may reach below the window (she fell asleep
+        sitting on the bottom panel): the orb stays inside it, or the orb and the text box are drawn where nothing
+        shows and she can't be opened."""
+        corner = self._avatar_rect().bottomRight() + QPoint(1, 1)
+        return QPoint(max(ORB_BOX, min(corner.x(), self.win_w)), max(ORB_BOX, min(corner.y(), self.win_h)))
+
     def _orb_center(self) -> QPointF:
-        corner = self._avatar_rect().bottomRight() + QPoint(1, 1)      # the orb and her box share that corner
+        corner = self._orb_corner()
         return QPointF(corner.x() - ORB_BOX / 2, corner.y() - ORB_BOX / 2)
 
     def _orb_rect(self) -> QRect:
-        corner = self._avatar_rect().bottomRight() + QPoint(1, 1)
+        corner = self._orb_corner()
         return QRect(corner.x() - ORB_BOX, corner.y() - ORB_BOX, ORB_BOX, ORB_BOX)
 
     def _avatar_rect(self) -> QRect:
