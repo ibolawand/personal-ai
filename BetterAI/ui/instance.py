@@ -2,7 +2,7 @@
 Single-instance control.
 
 The first Aria listens on a Unix socket. Launching Aria again (menu, autostart,
-or the Ctrl+Alt+Space hotkey running `aria.sh --toggle`) doesn't start a second copy,
+or the Super+Space hotkey running `aria.sh --toggle`) doesn't start a second copy,
 which would fight over the camera and mic. It sends a command to the running one instead:
 
     toggle  show/hide the text box (the hotkey)

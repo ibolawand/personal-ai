@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Start Aria, or send a command to the one that's already running.
 #   aria.sh            start (or open the text box if she's running)
-#   aria.sh --toggle   show/hide the text box (the Ctrl+Alt+Space hotkey), starts Aria if needed
+#   aria.sh --toggle   show/hide the text box (the Super+Space hotkey), starts Aria if needed
 #   aria.sh --capture  quick capture box (the Ctrl+Alt+N hotkey): type it, Aria files it, no conversation
 #   aria.sh --quit     shut Aria down
 #   aria.sh --hidden   start without showing the orb (MyNotion's Start button); the hotkey shows it later

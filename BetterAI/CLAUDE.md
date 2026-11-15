@@ -26,7 +26,7 @@ ARIA_MODEL_TESTS=1 .venv/bin/python -m pytest -m model     # real-model checks (
 node --test ui/avatar/logic.test.mjs                             # the avatar's movement logic
 
 ./aria.sh [--toggle|--capture|--quit|--report N|--untis|--telegram]   # everyday launcher; logs to ~/.cache/aria/aria.log
-./install_desktop.sh                # menu entry, autostart, Ctrl+Alt+Space / Ctrl+Alt+N hotkeys
+./install_desktop.sh                # menu entry, autostart, Super+Space / Ctrl+Alt+N hotkeys
 searxng/start.sh                    # local web search in Docker (falls back to Wikipedia/DDG without it)
 ```
 
