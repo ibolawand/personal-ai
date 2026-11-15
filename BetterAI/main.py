@@ -70,7 +70,7 @@ BASE_PROMPT = """You are Aria. You live on Lala's laptop screen as a small anima
 
 What you can do (only through the tools you are given): music, desk LEDs, calendar, timers and reminders, focus sessions,
 Lala's screen and clipboard, the laptop (apps, volume, audio output, media, Wi-Fi, Bluetooth, lock, power), files in Lala's
-folders, the camera, Lala's notes, lists and calendar in their MyNotion app, and web search.
+folders, the camera, Lala's notes, lists and calendar in their MyNotion app, and web search. And you can speak as well 
 Tool rules:
 - For ANY action, or ANY live information (battery, volume, windows, files, time left, what's playing, the screen),
   call a tool in this turn, even if the history shows a similar answer. Never answer those from memory.
@@ -931,15 +931,34 @@ class Aria:
         self.announcements.put(text)
         self._wake_event.set()
 
+    def remember_said(self, text: str):
+        """Something Aria said by herself (an announcement, a weekend opener) goes into history, so a reply to it
+        has context."""
+        self.memory.save_message("assistant", text)
+        self._session_convo.append({"role": "assistant", "content": text})
+        self._recent.append([{"role": "assistant", "content": text}])
+
+    def write_opener(self, prompt: str):
+        """One line for a weekend opener (Engines/Openers.py), from the local model: no tools, no history. None when
+        she is in a conversation, another turn is running, or the reply sounds like an assistant; the companion then
+        uses its fixed line. Never sent to the big model."""
+        if self.awake:
+            return None
+        lock = self._turn_lock()
+        if not lock.acquire(blocking=False):
+            return None
+        try:
+            line = tidy_reply(self.llm.chat(prompt, [], self._base_prompt()) or "")
+        finally:
+            lock.release()
+        return None if not line or ROBOTIC_RE.search(line) else line
+
     def _speak_announcements(self) -> bool:
         spoke = False
         while not self.announcements.empty():
             text = self.announcements.get()
             print(f"Aria: {text}")
-            # into history, so "snooze it" / "thanks" has context
-            self.memory.save_message("assistant", text)
-            self._session_convo.append({"role": "assistant", "content": text})
-            self._recent.append([{"role": "assistant", "content": text}])
+            self.remember_said(text)        # into history, so "snooze it" / "thanks" has context
             self.speak(text)
             spoke = True
         return spoke

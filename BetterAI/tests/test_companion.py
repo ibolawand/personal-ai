@@ -458,3 +458,132 @@ def test_only_while_she_shows_isnt_speaking_and_no_lesson(aria):
     assert not aria._may_bob()                                  # asleep: the orb, nobody to bob
     aria.companion.on = True
     assert aria._may_bob()
+
+
+# ── weekend openers ──
+
+from Engines.Openers import FIRST_S, MAX_BASE_GAP_S  # noqa: E402
+
+SAT = dt.datetime(2026, 11, 14, 15, 0)
+
+
+@pytest.fixture
+def weekend(world):
+    """Saturday, no lessons; the opener's model call runs inline and is scripted."""
+    world.now, world.span = SAT, None
+    world.c._run = lambda fn: fn()
+    world.aria.written, world.aria.said = [], []
+    world.aria.reply = "so, what are we building today?"
+    world.aria.write_opener = lambda prompt: (world.aria.written.append(prompt), world.aria.reply)[1]
+    world.aria.remember_said = world.aria.said.append
+    world.aria.spoken = []                          # on a free day she says her lines (Aria.speak shows the bubble too)
+    world.aria.speak = lambda text: (world.aria.spoken.append(text), world.ui.message("aria", text))[0]
+    world.step()                                    # she wakes herself and greets
+    world.step()                                    # and notices the app in front
+    world.ui.log.clear()
+    return world
+
+
+def _messages(w):
+    return [e[2] for e in w.ui.of("message")]
+
+
+def test_opener_comes_ten_minutes_after_waking_and_is_remembered(weekend):
+    weekend.step(FIRST_S - 30)
+    assert _messages(weekend) == []
+    acts = len(weekend.ui.of("act"))
+    weekend.step(60)
+    assert _messages(weekend) == ["so, what are we building today?"]
+    assert weekend.aria.said == ["so, what are we building today?"]
+    assert len(weekend.ui.of("act")) == acts + 1    # with a gesture
+    weekend.step(5 * 60)
+    assert len(_messages(weekend)) == 1             # not again soon, and no app lines on free days
+    weekend.step(MAX_BASE_GAP_S)
+    assert len(_messages(weekend)) == 2
+
+
+def test_on_a_free_day_she_says_her_lines_out_loud_and_goes_back_to_keeping_company(weekend, monkeypatch):
+    assert len(weekend.aria.spoken) == 1            # the greeting, when she woke herself
+    weekend.step(FIRST_S + 30)
+    assert weekend.aria.spoken[-1] == "so, what are we building today?"
+    assert _messages(weekend) == ["so, what are we building today?"]        # one bubble, not two
+    assert weekend.ui.of("state")[-1] == ("state", "companion")            # after "speaking", she is the companion again
+    monkeypatch.setenv("ARIA_FREE_DAY_VOICE", "0")                          # switched off: a bubble only
+    weekend.step(MAX_BASE_GAP_S)
+    assert len(_messages(weekend)) == 2 and len(weekend.aria.spoken) == 2
+
+
+def test_falls_back_to_a_fixed_line_when_the_model_fails(weekend):
+    weekend.aria.reply = "How can I help you today?"
+    weekend.step(FIRST_S + 30)
+    [line] = _messages(weekend)
+    assert line and "help" not in line.lower()
+
+
+def test_no_openers_on_school_days_or_when_switched_off(world, monkeypatch):
+    world.c._run = lambda fn: fn()
+    world.aria.write_opener = lambda p: "hey there, what's up?"
+    world.step()                                    # Monday after school: she wakes and greets
+    for _ in range(40):
+        world.step(60)
+    assert all("what's up" not in m for m in _messages(world))
+    weekend_c = world.c
+    monkeypatch.setenv("ARIA_WEEKEND_CHAT", "0")
+    world.span = None
+    for _ in range(40):
+        world.step(60)
+    assert all("what's up" not in m for m in _messages(world))
+    assert weekend_c is world.c
+
+
+def test_no_opener_in_a_game_or_while_aria_is_awake(weekend):
+    weekend.window = ("steam_app_123", "Some Game")
+    weekend.step(FIRST_S + 30)
+    assert _messages(weekend) == []
+    weekend.window = ("code", "main.py - Visual Studio Code")
+    weekend.aria.awake = True
+    weekend.step(60)
+    weekend.step(60)
+    assert _messages(weekend) == [] and weekend.aria.written == []
+
+
+def test_not_shown_when_a_conversation_started_while_wording(weekend):
+    def write(prompt):
+        weekend.aria.awake = True                   # she woke for a conversation meanwhile
+        return "hi!"
+    weekend.aria.write_opener = write
+    weekend.step(FIRST_S + 30)
+    assert _messages(weekend) == []
+
+
+def test_answering_resets_the_back_off(weekend):
+    c = weekend.c
+    weekend.step(FIRST_S + 30)
+    c.openers.ignored = 3
+    weekend.aria.awake = True                       # they clicked her and typed
+    weekend.step()
+    weekend.aria.awake = False
+    c.after_conversation(talked=True)
+    assert c.openers.ignored == 0
+
+
+def test_gestures_come_twice_as_often_on_free_days(weekend):
+    weekend.aria.write_opener = None
+    weekend.c.openers.next_at = 10**12              # no openers in the way
+    weekend.step(120)
+    acts = len(weekend.ui.of("act"))
+    weekend.step(150)
+    assert len(weekend.ui.of("act")) == acts + 1
+
+
+def test_aria_writes_openers_with_the_local_model_and_remembers_them(aria):
+    from tests.conftest import FakeLLM
+    aria.llm = FakeLLM(chats=["  what are you up to this afternoon?  ", "Is there anything I can help you with?"])
+    aria.awake = False
+    assert aria.write_opener("(topic)") == "what are you up to this afternoon?"
+    assert aria.write_opener("(topic)") is None             # sounds like an assistant: the fixed line instead
+    aria.awake = True
+    assert aria.write_opener("(topic)") is None             # in a conversation: never
+    aria._recent.clear()
+    aria.remember_said("had lunch yet?")
+    assert aria._history()[-1] == {"role": "assistant", "content": "had lunch yet?"}

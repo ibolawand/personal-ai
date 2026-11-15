@@ -1,6 +1,7 @@
 """
 Aria's companion mode: after school she wakes herself, quietly (no voice, no model), stays on screen while the
 laptop is used, and now and then reacts to the app in front with a gesture, a glance and, rarely, one bubble line.
+On a free day (no lessons) she isn't quiet: she says her greeting and her conversation starters out loud.
 
 The rules are plain functions, decided in code and tested without X, audio or network. Never during a lesson (the
 WebUntis timetable), in quiet hours, while something is fullscreen, during a call or with the screen locked.
@@ -46,6 +47,7 @@ import random                                                   # noqa: E402
 import re                                                       # noqa: E402
 
 from Engines.Activity import WATCH_RE                           # noqa: E402
+from Engines.Openers import Openers, free_day, prompt_for, clean_line   # noqa: E402
 
 SETTLE_S = 60               # just switched app: maybe only passing through
 BODY_EVERY_S = 5 * 60
@@ -132,15 +134,16 @@ class Reactions:
         self._left[kind] = left
         return line
 
-    def pick(self, kind, now: float, in_app_s: float):
-        """(gesture or None, line or None) for `kind` in front since `in_app_s` seconds, at time `now` (s)."""
+    def pick(self, kind, now: float, in_app_s: float, body_every: float = BODY_EVERY_S, lines: bool = True):
+        """(gesture or None, line or None) for `kind` in front since `in_app_s` seconds, at time `now` (s).
+        `body_every`: seconds between gestures; `lines`: False on free days, where openers take the lines' place."""
         if kind not in BODY or in_app_s < SETTLE_S:
             return None, None
-        if self.body_at is not None and now - self.body_at < BODY_EVERY_S:
+        if self.body_at is not None and now - self.body_at < body_every:
             return None, None
         self.body_at = now
         line = None
-        if kind in LINES and kind != self.line_kind and (self.line_at is None or now - self.line_at >= LINE_EVERY_S):
+        if lines and kind in LINES and kind != self.line_kind and (self.line_at is None or now - self.line_at >= LINE_EVERY_S):
             line, self.line_at, self.line_kind = self._line(kind), now, kind
         return BODY[kind], line
 
@@ -195,6 +198,7 @@ class Probes:
     school_span: Callable           # -> (start, end) HHMM, None (no lessons), or UNKNOWN
     tests: Callable                 # -> TestPrep card dicts, nearest first
     rain_soon: Callable             # -> True / False / None
+    today_items: Callable = lambda: []  # -> [(text, "HH:MM")]: events and reminders still ahead today
 
     @classmethod
     def real(cls, aria):
@@ -219,11 +223,32 @@ class Probes:
             w = active_window_rect()
             return (w.left, w.top, w.right, w.bottom) if w else None
 
+        def today_items():
+            rem = getattr(aria, "reminders", None)
+            if not rem:
+                return []
+            now, out = dt.datetime.now(), []
+            for r in sorted(rem.pending(("event", "reminder", "due")), key=lambda r: r["due"]):
+                at = dt.datetime.fromtimestamp(r["due"])
+                if at.date() == now.date() and at > now:
+                    out.append((r["text"], at.strftime("%H:%M")))
+            return out
+
         weather = getattr(aria, "weather", None)
-        return cls(idle_s=Desk.idle_seconds, active_window=active_window, active_rect=rect,
+        return cls(today_items=_cached(today_items, 60),idle_s=Desk.idle_seconds, active_window=active_window, active_rect=rect,
                    fullscreen=Desk.fullscreen_app, on_call=Desk.mic_in_use_by_others, locked=Desk.screen_locked,
                    quiet=Desk.in_quiet_hours, school_span=_cached(span, SLOW_S), tests=_cached(tests, SLOW_S),
                    rain_soon=weather.rain_soon if weather else (lambda: None))
+
+
+def opener_enabled() -> bool:
+    """Weekend openers on (ARIA_WEEKEND_CHAT=0 in Engines/.env turns them off)."""
+    return os.environ.get("ARIA_WEEKEND_CHAT", "1") != "0"
+
+
+def free_day_voice() -> bool:
+    """On free days she speaks her lines (ARIA_FREE_DAY_VOICE=0 in Engines/.env keeps them as bubbles only)."""
+    return os.environ.get("ARIA_FREE_DAY_VOICE", "1") != "0"
 
 
 def _ask(probe, default=None):
@@ -234,8 +259,9 @@ def _ask(probe, default=None):
 
 
 class Companion:
-    """Shows Aria's avatar while she sleeps, after school and while the laptop is used. Never speaks, never opens
-    the microphone, never calls the model; never touches the UI while Aria is awake (her conversation owns it)."""
+    """Shows Aria's avatar while she sleeps, after school and while the laptop is used. After school she never
+    speaks, never opens the microphone and never calls the model; on a free day she says her lines out loud (_say).
+    Never touches the UI while Aria is awake (her conversation owns it)."""
 
     def __init__(self, aria, ui, probes: Probes, clock=time.time, now=dt.datetime.now):
         self.aria, self.ui, self.probes, self.clock, self.now = aria, ui, probes, clock, now
@@ -250,6 +276,11 @@ class Companion:
         self._test_sent = False         # the test last sent to her page (False: none sent yet)
         self._rain_sent = None          # whether rain is coming, as last sent (None: not sent yet)
         self._lock = threading.RLock()  # the loop's thread and Aria's (dismissed, after_conversation)
+        self.openers = Openers()
+        self._opener_busy = False       # an opener is being worded (in its own thread)
+        self._answering = False         # Aria woke while an opener was up: talking now answers it
+        self._watch_since = None        # when video in front started (for the break nudge)
+        self._run = lambda fn: threading.Thread(target=fn, daemon=True).start()
 
     @staticmethod
     def enabled() -> bool:
@@ -284,6 +315,9 @@ class Companion:
         with self._lock:
             was = self.on or self.was_on
             self.on = self.was_on = False
+            answering, self._answering = self._answering, False
+            if answering and talked:
+                self.openers.answered()
             if self.dismissed_day is not None:
                 return False
             now = self.now()
@@ -298,6 +332,7 @@ class Companion:
                 self.last_wake = now                # talking after school counts as the greeting
             self.on = True
             self._app, self._app_since = None, self.clock()
+            self.openers.woke(self.clock())         # no opener right on top of the conversation
             return True
 
     def _track_idle(self, idle):
@@ -324,6 +359,7 @@ class Companion:
         if getattr(self.aria, "awake", False):
             if self.on:
                 self.on, self.was_on = False, True      # her conversation owns the screen now
+                self._answering = self.openers.open_since(self.clock())
             return
         now = self.now()
         idle = _ask(p.idle_s)
@@ -358,8 +394,29 @@ class Companion:
         if may_self_wake(now, over=over, idle_s=idle, away_s=self.away_s, last_wake=self.last_wake, busy=busy):
             self.last_wake, self.away_s = now, 0.0
             self._show()
-            self.ui.message("aria", wake_line(now, self._next_test(now), _ask(p.rain_soon)))
+            self.openers.woke(self.clock())
+            self._say(wake_line(now, self._next_test(now), _ask(p.rain_soon)), now)
             print("[Companion] woke")
+
+    def _say(self, line, now):
+        """One line of hers: a bubble after school; on a free day she says it out loud as well (Aria.speak: the
+        bubble and her voice, or only the bubble when the voice is muted or missing). Speaking takes a while, so it
+        runs off the loop; afterwards her avatar goes back to keeping you company."""
+        speak = getattr(self.aria, "speak", None)
+        if not (speak and free_day_voice() and free_day(now, _ask(self.probes.school_span, UNKNOWN))):
+            self.ui.message("aria", line)
+            return
+
+        def work():
+            try:
+                speak(line)
+            except Exception as e:
+                print(f"[Companion] couldn't say it: {type(e).__name__}: {e}")
+                self.ui.message("aria", line)
+            with self._lock:
+                if self.on and not getattr(self.aria, "awake", False):
+                    self.ui.set_state("companion")      # (her voice switched the avatar to "speaking")
+        self._run(work)
 
     def _next_test(self, now):
         return next_test(_ask(self.probes.tests, []), now, _ask(self.probes.school_span, UNKNOWN))
@@ -392,9 +449,20 @@ class Companion:
         t = self.clock()
         if kind != self._app:
             self._app, self._app_since = kind, t
-        if kind in (None, "call", "game") or _ask(p.fullscreen, True) or _ask(p.on_call, True):
+        if kind == "video":
+            self._watch_since = self._watch_since or t
+        elif kind is not None:
+            self._watch_since = None                # (a moment on Aria herself doesn't end a video stretch)
+        if kind in ("call", "game") or _ask(p.fullscreen, True) or _ask(p.on_call, True):
             return
-        gesture, line = self.reactions.pick(kind, t, t - self._app_since)
+        now = self.now()
+        free = free_day(now, _ask(p.school_span, UNKNOWN)) and opener_enabled()
+        if free and kind is not None and t - self._app_since >= SETTLE_S and self._opener(kind, t, now):
+            return
+        if kind is None:
+            return
+        gesture, line = self.reactions.pick(kind, t, t - self._app_since,
+                                            body_every=BODY_EVERY_S / 2 if free else BODY_EVERY_S, lines=not free)
         if not gesture:
             return
         self.ui.avatar_act(gesture)
@@ -403,3 +471,38 @@ class Companion:
             self.ui.glance((rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2, GLANCE_S)
         if line:
             self.ui.message("aria", line)
+
+    def _opener_facts(self, kind, t, now):
+        """What an opener may be about, right now (Engines/Openers.py pick)."""
+        p = self.probes
+        return {"kind": kind, "hour": now.hour, "test": self._next_test(now), "today": _ask(p.today_items, []) or [],
+                "watch_min": (t - self._watch_since) / 60 if self._watch_since else 0, "rain": bool(_ask(p.rain_soon))}
+
+    def _opener(self, kind, t, now) -> bool:
+        """Starts an opener if one is due: picked here, worded off the lock (the model may take a while), shown only if
+        she is still up as the companion. True when one was started."""
+        if self._opener_busy or not self.openers.due(t, now.date()):
+            return False
+        topic = self.openers.pick(self._opener_facts(kind, t, now))
+        self._opener_busy = True
+
+        def work():
+            try:
+                write = getattr(self.aria, "write_opener", None)
+                line = clean_line(_ask(lambda: write(prompt_for(topic))) if write else None, topic.fallback)
+                with self._lock:
+                    if not self.on or getattr(self.aria, "awake", False):
+                        return                          # she went to sleep, or a conversation started meanwhile
+                    self.openers.shown(self.clock(), topic, self.now().date())
+                    self.reactions.body_at = self.clock()   # the opener's gesture counts as this round's
+                    self.ui.avatar_act(topic.gesture)
+                    self._say(line, self.now())
+                    remember = getattr(self.aria, "remember_said", None)
+                    if remember:
+                        _ask(lambda: remember(line))
+                    print(f"[Companion] opener ({topic.name}): {line}")
+            finally:
+                self._opener_busy = False
+        self._run(work)
+        return True
+
