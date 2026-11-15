@@ -230,7 +230,18 @@ PRONOUNCE = [
 ]
 
 
+# Chat shorthand she writes in her bubbles (and the model sometimes does): Kokoro spells it out letter by letter
+# ("btw" was "B T W"). Said as the words it stands for; the bubble keeps the short form.
+CHAT_WORDS = {
+    "btw": "by the way", "tbh": "to be honest", "idk": "I don't know", "imo": "in my opinion", "ngl": "not gonna lie",
+    "rn": "right now", "brb": "be right back", "omg": "oh my god", "pls": "please", "plz": "please", "thx": "thanks",
+    "tmrw": "tomorrow", "lol": "haha", "w/o": "without", "w/": "with",
+}
+CHAT_RE = re.compile(r"(?<![\w/])(" + "|".join(re.escape(w) for w in CHAT_WORDS) + r")(?![\w/])", re.I)
+
+
 def normalize_for_tts(text: str) -> str:
+    text = CHAT_RE.sub(lambda m: CHAT_WORDS[m.group(1).lower()], text)
     for pattern, spoken in PRONOUNCE:
         text = re.sub(pattern, spoken, text)
     text = TIME_AMPM_RE.sub(_say_time_ampm, text)

@@ -262,6 +262,9 @@ def test_capture_ideas_and_links_go_to_the_inbox_directly(aria):
     ("I study C# and SQL.", "I study C sharp and SQL."), ("It's in MyNotion.", "It's in My Notion."),
     ("Open VS Code.", "Open V S Code."), ("It's 3°C, 42 km away.", "It's 3 degrees Celsius, 42 kilometers away."),
     ("e.g. eggs", "for example eggs"), ("That's 12,50 €.", "That's 12,50 euros."), ("1 h 20 min", "1 hour 20 minutes"), ("2 h", "2 hours"),
+    ("school's done! Maths test Thursday, btw", "school's done! Maths test Thursday, by the way"),
+    ("BTW idk, tbh.", "by the way I don't know, to be honest."), ("coffee w/ milk, w/o sugar", "coffee with milk, without sugar"),
+    ("the subtweet and burn stay", "the subtweet and burn stay"),
 ])
 def test_pronunciation(text, spoken):
     from Engines.voice_engine import normalize_for_tts
