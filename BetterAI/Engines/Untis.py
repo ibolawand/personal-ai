@@ -122,13 +122,21 @@ class Untis:
         self._sid = res["sessionId"]
         self._me = {"id": res["personId"], "type": res["personType"]}
 
-    def _rest(self, path, params):
+    def _rest(self, path, params, retry=True):
         if self._sid is None:
             self._login()
         r = self.http.get(f"https://{self.server}/WebUntis/api/{path}", params=params, cookies=self._cookies(),
                           timeout=15)
-        r.raise_for_status()
-        return (r.json() or {}).get("data") or {}
+        try:
+            if getattr(r, "status_code", 200) in (401, 403):
+                raise ValueError("not logged in")
+            r.raise_for_status()
+            return (r.json() or {}).get("data") or {}
+        except ValueError:                                  # a login page instead of JSON: the session ran out
+            if not retry:
+                raise
+            self._sid = None
+            return self._rest(path, params, retry=False)
 
     def _cached(self, key, fetch):
         hit = self._cache.get(key)

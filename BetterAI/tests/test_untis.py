@@ -244,3 +244,36 @@ def test_school_span_is_first_to_last_real_lesson(make):
     fake = FakeUntis([lesson(755, 845, "AM"), lesson(1235, 1325, "E"), lesson(1330, 1415, "D", code="cancelled")])
     assert make(fake).school_span(MON) == (755, 1325)
     assert make(FakeUntis()).school_span(MON) is None
+
+
+def test_a_login_page_instead_of_json_means_log_in_again_once(monkeypatch):
+    """Hours into a run the session runs out and the exams page answers with HTML: that was 20 errors a night."""
+    class Reply:
+        def __init__(self, data=None):
+            self.data, self.status_code = data, 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            if self.data is None:
+                raise json.JSONDecodeError("Expecting value", "<html>", 0)
+            return self.data
+
+    class Http:
+        def __init__(self, replies):
+            self.replies, self.sids = list(replies), []
+
+        def get(self, url, params=None, cookies=None, timeout=None):
+            self.sids.append(cookies["JSESSIONID"])
+            return self.replies.pop(0)
+
+    logins = []
+    u = U.Untis(session=Http([Reply(), Reply({"data": {"exams": [1]}})]), server="x", school="s")
+    monkeypatch.setattr(u, "_login", lambda: (logins.append(1), setattr(u, "_sid", f"sid{len(logins)}")))
+    u._sid = "old"
+    assert u._rest("exams", {}) == {"exams": [1]}
+    assert u.http.sids == ["old", "sid1"] and logins == [1]
+    u.http.replies = [Reply(), Reply()]                    # still no JSON after logging in: give up, don't loop
+    with pytest.raises(ValueError):
+        u._rest("exams", {})
