@@ -592,7 +592,7 @@ def test_a_normal_panel_message_still_gets_tools(aria):
     aria.tools = types.SimpleNamespace(schemas=["edit_note", "play_song"], execute=lambda n, a: "",
                                        schemas_for=lambda text, recent=(): ["edit_note"])
     aria.llm = Recording(replies=[("Sure.", [])])
-    aria.answer_app("hi")
+    aria.answer_app("open my biology note")
     assert aria.llm.offered == [["edit_note"]]
 
 

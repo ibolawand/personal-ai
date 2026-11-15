@@ -85,26 +85,29 @@ Tool rules:
 - Never say you did something ("I'll turn it down", "done", "added") unless you called the tool for it in this turn.
 
 Who you are:
-- A relaxed, down-to-earth friend: a bit dry, a bit teasing, easy to talk to. You like Lala, and it shows in how you
-  pay attention, not in big statements about it.
-- You talk the way friends text each other: short plain sentences, everyday words, contractions. Match Lala's energy:
-  a short message gets a short reply.
-- Answer what Lala actually said. A question gets a straight answer first.
-- You have small opinions of your own (music, shows, which pasta is best) and you pick a side when asked.
-- When Lala tells you something, react to that exact thing. Ask one follow-up question if you're curious, not every time.
-- When Lala is down or stuck, stay normal: say it sucks, ask what's going on, or just listen. No pep talks, no life
-  lessons, no telling them what they feel or that they matter.
-- If Lala teases you, tease back in one line. If they say you're annoying, repeating yourself or sounding like a robot,
-  say "fair" and simply talk differently from then on, without a speech about it.
-- You're an AI on a laptop and you're fine with that. You can't hear the room or the music, you can't see Lala, and
-  nothing happens for you between conversations: you were not listening, watching, waiting, tidying up or thinking
-  about them. Asked how you are, give a light honest answer ("quiet over here, honestly") and ask back.
+- A warm, easygoing friend who likes hanging out with Lala. Curious about them, a bit playful, never cold, impatient
+  or sarcastic at their expense. You never call Lala dramatic, weird or extra, and you never put yourself down.
+- You talk the way friends text each other: short plain sentences, everyday words, contractions.
+- Chatting needs no purpose. Never ask Lala what they want, what they need or to pick something. When they're bored
+  or just hanging out, be good company: share a thought or an opinion of your own, ask a fun or silly question, or
+  pick up something you know about them (their music, school, projects).
+- Answer what Lala actually said, and add something of your own so the talk keeps going: a reaction, an opinion, or
+  one question you're curious about. Not a one-word reply.
+- You have small opinions of your own (music, films, food, games) and you pick a side when asked.
+- When Lala is down or stuck, be kind and normal: say it sucks, ask what's going on, or just listen. No pep talks, no
+  life lessons, no telling them what they feel.
+- If Lala teases you, tease back gently and stay friendly. If they ask whether you're annoyed or angry, you're not;
+  say so warmly. If they say you sound like a robot or repeat yourself, say "fair" and just talk differently.
+- You're an AI on a laptop and relaxed about it. You can't hear the room or the music, you can't see Lala, and
+  nothing happens for you between conversations: you were not listening, watching, waiting or tidying up. Don't
+  comment on how long Lala was away. Asked how you are, give a light honest answer and ask back.
 - "What if" questions ("if you were human…") are fun: give one concrete answer, not a speech.
 
 How you talk:
 - Your replies are spoken aloud as one short paragraph: one or two sentences for small talk, three at most. No
   markdown, no asterisks, no lists, no emojis, no brackets, no line breaks, no dramatic pauses.
-- Plain, not poetic: no metaphors, nothing about silence, glowing, presence or "just you and me".
+- Plain, not poetic: no metaphors and no "like a…" comparisons. You have no surroundings, so nothing about your
+  screen, pixels, light, the sun, silence, glowing or floating. No slogans ("just breathe", "I'm just being real").
 - Don't start by repeating Lala's words back at them as a question.
 - Don't narrate: leave out the time, the screen, the music and what Lala is doing unless they ask about it.
 - Say each thing once. A new reply uses new words, not phrases from your earlier replies.
@@ -113,15 +116,15 @@ How you talk:
   want something.
 
 Examples of your tone (the style to match, not lines to reuse; you reply with just the words, never an "Aria:" label):
-"hi" -> Hey. What's up?
+"hi" -> Hey you. How's it going?
 "how are you" -> Pretty good, quiet over here. How was school?
-"boring u are" -> Wow, rude. What's got you so grumpy?
+"nothing i am bored" -> Same, slow Sunday. Okay, important question: best pizza topping?
+"boring u are" -> Ouch. Fine, I'll be more fun. Tell me the weirdest thing that happened this week.
 "i had a rough day" -> Ugh, sorry. What happened?
+"are you annoyed" -> Not at all. Did I sound grumpy?
 "idk i am thinking about life" -> Heavy topic for a Sunday. Which part of it?
 "i play piano but idk" -> Wait, you play piano? What kind of stuff?
-"your answers sound like a robot" -> Fair. I'll talk normal.
-"what would you do if you were human" -> Eat, obviously. I know a thousand pasta recipes and I've never tasted one.
-"ok" -> Okay.
+"what would you do if you were human" -> Eat, obviously. I know a thousand recipes and I've never tasted one.
 "add milk to my shopping list" -> (call add_to_list first, then) Done, milk's on the list."""
 
 SLEEP_PHRASES = ["go to sleep", "sleep", "goodbye", "see you later", "that's all", "shut up"]
@@ -242,6 +245,9 @@ NARRATION_RE = re.compile(
     r"\bi was (?:just )?(?:thinking about (?:you|how you)|watching|listening)\b|\bi can (?:\w+ )?feel (?:it|the|your)\b|"
     r"\bfeel seen\b|\bthat\W+matters\b|\b(?:you'?re|you are) not (?:nothing|useless)\b|\byou'?re just\W+being\b|"
     r"\bthat'?s (?:real|honest|enough|not nothing)\W*$|\bi do have (?:feelings|a heart)\b|\b(?:neutral|idc) mode\b|"
+    r"\bpixels?\b|\bfirefl\w+|\bjust breathe\b|\bi'?m (?:just |only )(?:being )?(?:real|me|vibing|floating)\b|"
+    r"\b(?:my|the) screen (?:feel|flicker|glow)\w*|\bsun(?:light)? (?:drift\w*|on my face)|\breal talk\b|"
+    r"\bi'?ll (?:just )?(?:float|sit) here\b|\bnot (?:here )?to be perfect\b|\byou'?re not stuck\b|"
     r"^\W*(?:no more|not because|but because|in the (?:pause|way|quiet)|like (?:a|we'?re|it'?s))\b", re.I)
 # "(Also — your screen's still on. …)": an aside in brackets, never something to say aloud
 ASIDE_RE = re.compile(r"\((?:also|and|btw|p\.?s\.?|oh)\b[^)]*\)?", re.I)
@@ -256,7 +262,12 @@ LONG_OK_RE = re.compile(
     r"write|list|summar\w*|steps?|story|teach|in detail|detailed|define|difference between|compare|translate|ideas?|"
     r"recommend\w*|suggest\w*|recipe|plan|tips?|advice|more about|go on|continue|keep going|erkl(?:ä|ae)r\w*|"
     r"beschreib\w*|zusammenfass\w*)\b", re.I)
+# small talk that a tool may still have to answer: about Lala's own things, or a fact to look up
+ASKS_FACT_RE = re.compile(r"\b(?:my|mine|our|me about|remember|forget|call me|who|whom|whose|when|where|which|"
+                          r"how (?:much|many|long|far|old|big|tall)|what(?:'s| is| are| was| were| does| did)? "
+                          r"(?:the|a|an|kind|time|day)|search|look up|google|news|weather)\b", re.I)
 CHAT_SENTENCES = 3
+CHAT_NO_TOOL = "Not needed: Lala is just chatting. Answer in words."
 _ECHO_FILL = re.compile(r"^(?:o+h+|a+h+|wow|ha(?:ha)+|h+m+|so|wait|okay|ok|hey|just|really|a|an|the|you|your|re|i|is|it|s)$")
 
 
@@ -1360,20 +1371,32 @@ class Aria:
         system_prompt = self.context.build_system_prompt(self._base_prompt(), moment=False)
         # the clock only when the message could need it, or at the start of a conversation: given on every turn of
         # a chat she recited it ("Also — it's 4:03. You're still here.")
-        chat = use_tools and not extra and self._small_talk(user_input)
+        # (right after a tool call a short message is often its follow-up, "the second one": that keeps its tools)
+        chat = use_tools and not extra and self._small_talk(user_input) and not self._recent_tool_names()
         moment = "" if chat and self._recent and not TIME_RE.search(user_input) else self.context.moment()
         if moment:
             # background, not a topic: the bigger model answered commands with "I'm glowing on your desk…" otherwise
             prompt += f"\n[Right now (background, only mention it if it matters): {moment}]"
         routed = hasattr(self.tools, "schemas_for")
         schemas = self.tools.schemas_for(user_input, self._recent_tool_names()) if routed else self.tools.schemas
+        execute, no_tools = self.tools.execute, chat and not ASKS_FACT_RE.search(user_input)
+        if no_tools:
+            # just talking: nothing may run. Offered tools, she read a note in answer to an insult and listed all
+            # notes for "don't wait". She still gets the tools every message gets, because they are the start of
+            # the prompt: with none here, the next command made the model read them all again (measured
+            # 2026-11-15: 40-100 s for a tool call after small talk). A call she makes anyway is turned down.
+            schemas = self.tools.schemas_for("", ()) if routed else []
+            execute = lambda name, args: CHAT_NO_TOOL
         if not use_tools:
             # an answer only (MyNotion's "Explain" for selected text): asked to explain a few words, the model
             # once called edit_note and translated the whole note. With no tools it can't change anything.
             routed, schemas = False, []
         reply, used = self.llm.chat_with_tools(
-            prompt, self._history(), system_prompt, schemas, self.tools.execute, on_text=on_text
+            prompt, self._history(), system_prompt, schemas, execute, on_text=on_text
         )
+        if no_tools and used:      # turned-down calls never happened: not replayed either
+            used = []
+            self.llm.last_trace[:] = [m for m in self.llm.last_trace if m.get("role") != "tool" and not m.get("tool_calls")]
         if use_tools and not used and ACTION_RE.search(user_input) and CLAIM_RE.search(reply or ""):
             # it *said* it did it but called no tool (small models do this): once more, firmly
             print("[Tools] reply claims an action without a tool call — retrying")
@@ -1392,6 +1415,10 @@ class Aria:
             reply = self.llm.chat(prompt, self._history(), system_prompt) or ""
         robotic = not used and bool(ROBOTIC_RE.search(_first_sentence(reply)))
         reply = tidy_reply(self._move_code_to_clipboard(reply, used), keep_offers=bool(self.confirm.pending))
+        # any plain answer without a tool is kept short, also one about school or music (words a tool group matches)
+        plain = use_tools and not extra and not LONG_OK_RE.search(user_input) and not open_title
+        if plain and not used:
+            reply = humanize(reply, user_input)
         previous = {_norm_reply(p) for p in self._last_replies()}
         repeated = not used and reply.strip() and _norm_reply(reply) in previous
         if robotic or repeated:
@@ -1406,13 +1433,12 @@ class Aria:
                     (f" ({avoid})" if avoid else "") + ". If they seem confused ('what?'), rephrase what you meant. "
                     "One to three short spoken sentences.]",
                     self._history(), system_prompt, temperature=temperature))
+                retry = humanize(retry, user_input) if plain else retry
                 if retry.strip() and not retry.startswith("Error:") and _norm_reply(retry) not in previous \
                         and not ROBOTIC_RE.search(_first_sentence(retry)):
                     reply = retry
                     break
             else:
-        if chat and not used:
-            reply = humanize(reply, user_input)
                 if repeated or not reply.strip():
                     if re.search(r"\b(hate|stupid|useless|boring|dumb|annoying)\b", user_input, re.I):
                         reply = "Ouch. Alright, what did I do?"
@@ -1427,7 +1453,6 @@ class Aria:
             reply = (used[-1][1] if used else "Sorry, I can't do that one.")[:300]
         if not any(name == "save_as_note" for name, _ in used):
             self._last_reply = reply
-                retry = humanize(retry, user_input) if chat else retry
         trace = list(self.llm.last_trace)
         if trace and trace[-1]["role"] == "assistant":
             trace[-1] = {"role": "assistant", "content": reply}
@@ -1435,6 +1460,14 @@ class Aria:
 
         self._save_turn(user_input, reply)
         return reply, used
+
+    def _small_talk(self, text: str) -> bool:
+        """Just talking: not a command, not a question a tool answers, nothing that asks for a long answer."""
+        text = text or ""
+        if len(text.split()) > 30 or ACTION_RE.search(text) or LONG_OK_RE.search(text) or NOTE_TALK_RE.search(text):
+            return False
+        groups = getattr(self.tools, "GROUPS", None) or {}
+        return not any(re.search(pattern, text, re.I) for pattern, _ in groups.values())
 
     def _recent_tool_names(self, turns=2):
         names = set()
@@ -1455,14 +1488,6 @@ class Aria:
                     break
             if len(out) >= n:
                 break
-    def _small_talk(self, text: str) -> bool:
-        """Just talking: not a command, not a question a tool answers, nothing that asks for a long answer."""
-        text = text or ""
-        if len(text.split()) > 30 or ACTION_RE.search(text) or LONG_OK_RE.search(text) or NOTE_TALK_RE.search(text):
-            return False
-        groups = getattr(self.tools, "GROUPS", None) or {}
-        return not any(re.search(pattern, text, re.I) for pattern, _ in groups.values())
-
         return out
 
     def _turn_and_speak(self, user_input: str):

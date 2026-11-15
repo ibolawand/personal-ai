@@ -32,9 +32,15 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 
 ## Brain
 
-- **Personality: a down-to-earth friend** (`BASE_PROMPT` in `main.py`). Aria talks the way friends text: short,
-  plain, a bit dry and teasing. She answers what you actually said, reacts to that exact thing, picks a side when
-  asked, and stays normal when you're down (no pep talks or life lessons). Commands get a quick confirmation.
+- **Personality: a warm, easygoing friend** (`BASE_PROMPT` in `main.py`). Aria talks the way friends text: short
+  and plain, warm and a bit playful, never cold or pushy. Chatting needs no purpose: when you're bored or just
+  hanging out she brings something of her own (an opinion, a silly question, something she knows about you) and
+  never asks what you want. She stays normal when you're down (no pep talks). Commands get a quick confirmation.
+  - **Plain chat runs no tools** (`ASKS_FACT_RE`, `Aria._small_talk`, `CHAT_NO_TOOL`): offered them, she read a note in answer to
+    an insult and listed every note for "don't wait". In plain chat a call she makes is turned down in code and
+    forgotten. She is still *sent* the tools every message gets, because they are the start of the prompt: with
+    none, the next command made the model read all tools again (a tool call after small talk took 40-100 s,
+    measured 2026-11-15). A short message right after a tool call ("the second one") is a follow-up and keeps its tools.
   Short example conversations in her instructions set the tone, because a small model follows those better than rules.
   - "How are you?" gets a light, true answer ("quiet over here"): nothing happens for her between conversations, so
     she no longer says she tidied notes, listened to your music or waited for you (`ContextBuilder._your_day`).

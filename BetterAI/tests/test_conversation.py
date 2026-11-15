@@ -126,7 +126,7 @@ def test_repeat_after_a_tool_call_is_fine(aria):
     aria._recent.append([{"role": "user", "content": "volume up"},
                          {"role": "assistant", "content": "Volume is at 60%."}])
     aria.llm.replies = [("Volume is at 60%.", [("change_laptop_volume", "Volume is at 60%.")])]
-    reply, _ = aria.handle_turn("a bit louder", check_state=False)
+    reply, _ = aria.handle_turn("turn it up a bit", check_state=False)
     assert reply == "Volume is at 60%." and aria.llm.chats == []
 
 
@@ -456,3 +456,27 @@ def test_the_clock_is_not_repeated_on_every_chat_turn(aria):
 def test_old_long_replies_come_back_short_after_a_restart(aria):
     aria.memory.load_history = lambda limit=6: [{"role": "user", "content": "hi"}, {"role": "assistant", "content": POEM}]
     assert aria._history()[1]["content"].count(".") <= 2 and aria._history()[0]["content"] == "hi"
+
+
+def test_plain_chat_runs_no_tools_but_keeps_the_start_of_the_prompt(aria):
+    """From real use: "don't wait" made her list every note, an insult made her read one. And with no tools at all in
+    chat, the next command made the model read every tool again (40-100 s): chat keeps the tools every message
+    gets, and a call she makes anyway is turned down and forgotten."""
+    import main
+    seen, ran = [], []
+
+    def chat(prompt, history, system, schemas, execute, **_):
+        seen.append([s["n"] for s in schemas])
+        result = execute("search_notes", {"query": "x"})
+        aria.llm.last_trace = [{"role": "assistant", "content": "", "tool_calls": [1]},
+                               {"role": "tool", "content": result}, {"role": "assistant", "content": "Same here."}]
+        return "Same here.", [("search_notes", result)]
+    aria.llm.chat_with_tools = chat
+    aria.tools.schemas_for = lambda text, recent=(): [{"n": "core"}] + ([{"n": "group"}] if text else [])
+    aria.tools.schemas = [{"n": "core"}, {"n": "group"}]
+    aria.tools.execute = lambda name, args: ran.append(name) or "3 notes."
+    reply, used = aria.handle_turn("nothing i am bored", check_state=False)
+    assert seen == [["core"]] and not ran and not used
+    assert aria.llm.last_trace == [{"role": "assistant", "content": "Same here."}]
+    aria.handle_turn("add milk to my list", check_state=False)
+    assert seen[-1] == ["core", "group"] and ran == ["search_notes"], "a command gets its tools and they run"

@@ -67,7 +67,7 @@ def test_missing_tool_reply_retries_with_everything(aria):
     aria.tools = type("T", (), {"schemas": full, "execute": lambda self, n, a: "",
                                 "schemas_for": lambda self, text, recent: full[:5]})()
     aria.llm.chat_with_tools = fake
-    reply, used = aria.handle_turn("do the thing", check_state=False)
+    reply, used = aria.handle_turn("open the thing", check_state=False)
     assert calls == [5, 20] and reply == "Opened it."
 
 
