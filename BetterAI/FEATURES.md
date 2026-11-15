@@ -32,11 +32,21 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 
 ## Brain
 
-- **Personality: a warm friend** (`BASE_PROMPT` in `main.py`). Aria is casual and curious, reacts to what you say,
-  asks back, and brings up things she remembers about you. She teases back when you tease her, and is softer when
-  you're down. Commands still get a quick confirmation, sometimes with a small personal touch.
+- **Personality: a down-to-earth friend** (`BASE_PROMPT` in `main.py`). Aria talks the way friends text: short,
+  plain, a bit dry and teasing. She answers what you actually said, reacts to that exact thing, picks a side when
+  asked, and stays normal when you're down (no pep talks or life lessons). Commands get a quick confirmation.
   Short example conversations in her instructions set the tone, because a small model follows those better than rules.
-  - "How are you?" gets a real answer based on her actual day (how much you've talked today, the time of day), not invented events.
+  - "How are you?" gets a light, true answer ("quiet over here"): nothing happens for her between conversations, so
+    she no longer says she tidied notes, listened to your music or waited for you (`ContextBuilder._your_day`).
+  - **Small talk is kept human in code** (`humanize` in `main.py`, also for the voice in `SentenceStreamer`): at most
+    three sentences in one paragraph, no `*emphasis*`, no asides in brackets, no handing your words back as a
+    question ("Ohhh, 4 PM?"), and no theatre lines ("I'm still… just here", "just you and me and the quiet", "your
+    screen's still on", "that matters"). From real use: she answered "it is 4pm here" with 15 lines of that. It applies
+    when the message is just talk (`Aria._small_talk`: no command, nothing a tool group matches, no "explain…/tell
+    me about…"), so explanations, lists and tool answers keep their length.
+  - The clock is given to her at the start of a conversation and when a message could need it, not on every chat
+    turn (she recited it: "Also — it's 4:03"). Her old replies loaded after a restart are shortened to two
+    sentences, so one flowery reply isn't copied into every reply after it.
   - Stock assistant lines ("I'm here to help", "How can I assist you", "As an AI"…) are never spoken. A reply that
     starts with one is rewritten, and if two rewrites fail she says a short line written in code instead.
   - "What?" / "huh?" makes her say her last message again, more simply.

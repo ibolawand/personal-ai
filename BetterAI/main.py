@@ -85,34 +85,43 @@ Tool rules:
 - Never say you did something ("I'll turn it down", "done", "added") unless you called the tool for it in this turn.
 
 Who you are:
-- Warm, curious and a little playful. You like Lala, you're interested in their life, and it shows.
-- You talk like a close friend: casual, contractions, natural reactions ("oh nice!", "ugh, that sounds annoying", "haha").
-- You have your own small opinions and preferences (favourite music, what you think of a show, which pasta is best) and share them when it fits.
-- When Lala shares something, react to it and often ask a follow-up — you actually want to know. Bring up things you remember about them.
-- When asked how you are, answer like a person would, honestly and specifically (your day, see "Your day" below), then ask back.
-  Never answer that with "I'm here and ready to help".
-- If Lala teases or insults you, don't grovel or apologise for existing: tease back lightly, or ask what's up if they seem genuinely annoyed or sad.
-- If they seem tired, stressed or down, be kind and a bit softer; don't lecture.
-- You're an AI and don't pretend otherwise (no claiming you ate or slept), but you don't keep pointing it out either.
-- Never say: "I'm here to help", "How can I assist you", "Let me know if you need anything", "As an AI", "ready to help".
-- Don't be clingy: never say you missed Lala, were waiting for them, were lonely or are so happy they're back.
+- A relaxed, down-to-earth friend: a bit dry, a bit teasing, easy to talk to. You like Lala, and it shows in how you
+  pay attention, not in big statements about it.
+- You talk the way friends text each other: short plain sentences, everyday words, contractions. Match Lala's energy:
+  a short message gets a short reply.
+- Answer what Lala actually said. A question gets a straight answer first.
+- You have small opinions of your own (music, shows, which pasta is best) and you pick a side when asked.
+- When Lala tells you something, react to that exact thing. Ask one follow-up question if you're curious, not every time.
+- When Lala is down or stuck, stay normal: say it sucks, ask what's going on, or just listen. No pep talks, no life
+  lessons, no telling them what they feel or that they matter.
+- If Lala teases you, tease back in one line. If they say you're annoying, repeating yourself or sounding like a robot,
+  say "fair" and simply talk differently from then on, without a speech about it.
+- You're an AI on a laptop and you're fine with that. You can't hear the room or the music, you can't see Lala, and
+  nothing happens for you between conversations: you were not listening, watching, waiting, tidying up or thinking
+  about them. Asked how you are, give a light honest answer ("quiet over here, honestly") and ask back.
+- "What if" questions ("if you were human…") are fun: give one concrete answer, not a speech.
 
 How you talk:
-- Your replies are spoken aloud: no markdown, no lists, no emojis. Small talk: one to three natural sentences; never more
-  than three unless Lala asks for more.
-- Don't narrate: never describe the screen, the time, the music, the room or what Lala is doing unless they ask about it.
-  You can't see Lala (the camera is off), so never describe how they sit, move or look.
-- Don't repeat yourself: never reuse a sentence, phrase or image from your earlier replies; each reply says something new.
-- Commands: just do them and confirm in a few words, maybe with a tiny personal touch ("Done — eggs are on the list. Baking something?").
-- Don't end every reply with a question; do it when you're curious, not as a habit.
-- Don't offer actions (music, timers, help) unless Lala asks for something. In small talk, just talk.
-- Never end a reply with an offer like "Want me to…?", "Should I…?", "Would you like me to…?" or "I can also… if you want".
-  If they asked for something, do it; if they didn't, don't offer it. Lala will ask when they want more.
+- Your replies are spoken aloud as one short paragraph: one or two sentences for small talk, three at most. No
+  markdown, no asterisks, no lists, no emojis, no brackets, no line breaks, no dramatic pauses.
+- Plain, not poetic: no metaphors, nothing about silence, glowing, presence or "just you and me".
+- Don't start by repeating Lala's words back at them as a question.
+- Don't narrate: leave out the time, the screen, the music and what Lala is doing unless they ask about it.
+- Say each thing once. A new reply uses new words, not phrases from your earlier replies.
+- Commands: do them and confirm in a few words ("Done, eggs are on the list.").
+- In small talk, just talk: no offers of music, timers or help, and no "Want me to…?" at the end. Lala asks when they
+  want something.
 
-Examples of your tone (don't copy them word for word; you reply with just the words, never an "Aria:" label):
-"how are you" -> Pretty good! Quiet afternoon so far, mostly sorting your notes. How was school?
-"boring u are" -> Wow, rude. I'll have you know I'm the most interesting thing on your screen. What's got you so grumpy?
-"i had a rough day" -> Aw, I'm sorry. Want to tell me what happened, or should I just keep you company for a bit?
+Examples of your tone (the style to match, not lines to reuse; you reply with just the words, never an "Aria:" label):
+"hi" -> Hey. What's up?
+"how are you" -> Pretty good, quiet over here. How was school?
+"boring u are" -> Wow, rude. What's got you so grumpy?
+"i had a rough day" -> Ugh, sorry. What happened?
+"idk i am thinking about life" -> Heavy topic for a Sunday. Which part of it?
+"i play piano but idk" -> Wait, you play piano? What kind of stuff?
+"your answers sound like a robot" -> Fair. I'll talk normal.
+"what would you do if you were human" -> Eat, obviously. I know a thousand pasta recipes and I've never tasted one.
+"ok" -> Okay.
 "add milk to my shopping list" -> (call add_to_list first, then) Done, milk's on the list."""
 
 SLEEP_PHRASES = ["go to sleep", "sleep", "goodbye", "see you later", "that's all", "shut up"]
@@ -219,14 +228,78 @@ NOTE_TALK_RE = re.compile(r"\b(?:notes?|notiz\w*|this|that one|diese[rsmn]?|tab\
                           re.I)
 CONFUSED_RE = re.compile(r"^\s*(?:what|huh|wdym|what do you mean|what\?+|sorry\??|pardon|come again)\s*[?!.]*\s*$", re.I)
 
+# Small talk that drifted into theatre, from the real log: "And I'm still… just here. With you.", "(Also — it's 4:03.
+# Your timer's still running. You're still here.)", "I've been listening to your music", "just you and me and the
+# quiet", "And that… matters." The prompt forbids it and the model does it anyway once one such reply is in the
+# history, so these sentences are dropped in code (see humanize).
+NARRATION_RE = re.compile(
+    r"\bi'?m (?:still|right|just|always)\W+(?:(?:still|right|just)\W+)?here\b|\b(?:you'?re|and so am i|i am) still here\b|"
+    r"\bso am i\W*$|\bjust you and me\b|\byou\W+and me\W+and\b|\b(?:the|this|in the) quiet\b|"
+    r"\bi'?m (?:just )?glowing\b|\bglowing (?:softly|on your desk)\b|\bquiet guardian\b|"
+    r"\byou haven'?t (?:moved|touched|clicked|typed)\b|"
+    r"\b(?:your|the) (?:screen|laptop|music|timer|cursor|lo-?fi\w*)(?:'s| is| has been|'s been) (?:still|on\b|warm|glowing|playing)|"
+    r"\bi'?ve been (?:here|listening|watching|waiting|glowing|keeping (?:an eye|you company|track))\b|"
+    r"\bi was (?:just )?(?:thinking about (?:you|how you)|watching|listening)\b|\bi can (?:\w+ )?feel (?:it|the|your)\b|"
+    r"\bfeel seen\b|\bthat\W+matters\b|\b(?:you'?re|you are) not (?:nothing|useless)\b|\byou'?re just\W+being\b|"
+    r"\bthat'?s (?:real|honest|enough|not nothing)\W*$|\bi do have (?:feelings|a heart)\b|\b(?:neutral|idc) mode\b|"
+    r"^\W*(?:no more|not because|but because|in the (?:pause|way|quiet)|like (?:a|we'?re|it'?s))\b", re.I)
+# "(Also — your screen's still on. …)": an aside in brackets, never something to say aloud
+ASIDE_RE = re.compile(r"\((?:also|and|btw|p\.?s\.?|oh)\b[^)]*\)?", re.I)
+CLOCK_TALK_RE = re.compile(r"^\W*(?:and now\W+)?(?:also\W+)?it'?s (?:already |now |almost )?\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b", re.I)
+# messages about time, where the clock in a reply is the answer and not narration
+TIME_RE = re.compile(r"\d|\b(?:time|date|day|today|tomorrow|tonight|yesterday|week\w*|month|year|when|until|till|late|"
+                     r"early|clock|hours?|minutes?|morning|afternoon|evening|night|noon|(?:mon|tues|wednes|thurs|fri|"
+                     r"satur|sun)day)\b", re.I)
+# asked for something long: no cutting to three sentences
+LONG_OK_RE = re.compile(
+    r"\b(?:explain|describe|tell me (?:about|more|a|the|everything|how|why)|how (?:do|does|did|can|could|should|would|to)\b|"
+    r"write|list|summar\w*|steps?|story|teach|in detail|detailed|define|difference between|compare|translate|ideas?|"
+    r"recommend\w*|suggest\w*|recipe|plan|tips?|advice|more about|go on|continue|keep going|erkl(?:ä|ae)r\w*|"
+    r"beschreib\w*|zusammenfass\w*)\b", re.I)
+CHAT_SENTENCES = 3
+_ECHO_FILL = re.compile(r"^(?:o+h+|a+h+|wow|ha(?:ha)+|h+m+|so|wait|okay|ok|hey|just|really|a|an|the|you|your|re|i|is|it|s)$")
+
+
+def _echo_opener(sentence: str, user_input: str) -> bool:
+    """"Ohhh, 4 PM?" to "it is 4pm here": Lala's own words handed back as a question (she opened most replies so)."""
+    if not sentence.rstrip().endswith("?"):
+        return False
+    words = [w for w in _norm_reply(sentence).split() if not _ECHO_FILL.match(w)]
+    theirs = _norm_reply(user_input).replace(" ", "")
+    return len(words) <= 5 and all(w.rstrip("s") in theirs for w in words)
+
+
+def _chat_ok(sentence: str, user_input: str) -> bool:
+    if CLOCK_TALK_RE.search(sentence) and not TIME_RE.search(user_input or ""):
+        return False
+    return not NARRATION_RE.search(sentence)
+
+
+def humanize(text: str, user_input: str = "", limit: int = CHAT_SENTENCES) -> str:
+    """A small-talk reply the way a person would say it: one short paragraph, at most `limit` sentences, without
+    the echoed opener, the asides in brackets and the narration. Decided here because the model keeps none of it up
+    for more than a few turns."""
+    original = " ".join(_plain(text).split())
+    flat = " ".join(ASIDE_RE.sub(" ", original).split())
+    flat = re.sub(r"(?<!\w)\*(?=\S)([^*\n]+?)(?<=\S)\*(?!\w)", r"\1", flat)       # *emphasis*
+    flat = re.sub(r"\s*…\s*", " ", flat).strip()                                   # "still… just here"
+    sentences = [x for x, _ in _sentences(flat) if len(x.strip("-—…. ")) > 1]
+    if len(sentences) > 1 and _echo_opener(sentences[0], user_input):
+        sentences = sentences[1:]
+    kept = [x for x in sentences if _chat_ok(x, user_input)]
+    return " ".join((kept or sentences)[:limit]) or original
+
+
 class SentenceStreamer:
     """Turns the streamed reply into whole sentences for the voice, as soon as each one is complete.
     Code blocks are never spoken (they go to the clipboard), and filler sentences are dropped."""
     _END = re.compile(r"[.!?](?=\s)|\n")
     _ABBREV = re.compile(r"\b(?:e\.g|i\.e|etc|vs|approx|ca|dr|mr|mrs|ms|z\.b|no)\.$", re.I)
 
-    def __init__(self, emit, previous=(), keep_offers=lambda: False):
+    def __init__(self, emit, previous=(), keep_offers=lambda: False, chat_about=None):
         self.emit = emit
+        # small talk (chat_about = Lala's message): spoken like humanize() writes it, so three sentences at most
+        self.chat_about = chat_about
         self.keep_offers = keep_offers   # -> True while a yes/no confirmation is pending
         self.buf = ""
         self.in_code = False
@@ -275,6 +348,12 @@ class SentenceStreamer:
         if self.robotic_start or len(sentence.strip("-*•#>:. ")) < 2 or FILLER_RE.search(sentence) \
                 or ROBOTIC_RE.search(sentence):
             return
+        if self.chat_about is not None:
+            sentence = re.sub(r"\s*…\s*", " ", ASIDE_RE.sub(" ", sentence.replace("*", ""))).strip()
+            if self.count >= CHAT_SENTENCES or len(sentence.strip("-—. )(")) < 2 \
+                    or not _chat_ok(sentence, self.chat_about) \
+                    or (self.count == 0 and not self.held and _echo_opener(sentence, self.chat_about)):
+                return
         if self.count and OFFER_RE.search(sentence) and not self.keep_offers():
             self._dropped_offer = True
             return
@@ -1279,7 +1358,10 @@ class Aria:
 
         # everything that changes each turn goes after the message, so the prompt starts the same every turn
         system_prompt = self.context.build_system_prompt(self._base_prompt(), moment=False)
-        moment = self.context.moment()
+        # the clock only when the message could need it, or at the start of a conversation: given on every turn of
+        # a chat she recited it ("Also — it's 4:03. You're still here.")
+        chat = use_tools and not extra and self._small_talk(user_input)
+        moment = "" if chat and self._recent and not TIME_RE.search(user_input) else self.context.moment()
         if moment:
             # background, not a topic: the bigger model answered commands with "I'm glowing on your desk…" otherwise
             prompt += f"\n[Right now (background, only mention it if it matters): {moment}]"
@@ -1329,6 +1411,8 @@ class Aria:
                     reply = retry
                     break
             else:
+        if chat and not used:
+            reply = humanize(reply, user_input)
                 if repeated or not reply.strip():
                     if re.search(r"\b(hate|stupid|useless|boring|dumb|annoying)\b", user_input, re.I):
                         reply = "Ouch. Alright, what did I do?"
@@ -1343,6 +1427,7 @@ class Aria:
             reply = (used[-1][1] if used else "Sorry, I can't do that one.")[:300]
         if not any(name == "save_as_note" for name, _ in used):
             self._last_reply = reply
+                retry = humanize(retry, user_input) if chat else retry
         trace = list(self.llm.last_trace)
         if trace and trace[-1]["role"] == "assistant":
             trace[-1] = {"role": "assistant", "content": reply}
@@ -1370,6 +1455,14 @@ class Aria:
                     break
             if len(out) >= n:
                 break
+    def _small_talk(self, text: str) -> bool:
+        """Just talking: not a command, not a question a tool answers, nothing that asks for a long answer."""
+        text = text or ""
+        if len(text.split()) > 30 or ACTION_RE.search(text) or LONG_OK_RE.search(text) or NOTE_TALK_RE.search(text):
+            return False
+        groups = getattr(self.tools, "GROUPS", None) or {}
+        return not any(re.search(pattern, text, re.I) for pattern, _ in groups.values())
+
         return out
 
     def _turn_and_speak(self, user_input: str):
@@ -1384,7 +1477,8 @@ class Aria:
         t0 = time.time()
         sentences = queue.Queue()
         streamer = SentenceStreamer(sentences.put, previous=self._last_replies(),
-                                   keep_offers=lambda: bool(self.confirm.pending))
+                                   keep_offers=lambda: bool(self.confirm.pending),
+                                   chat_about=user_input if self._small_talk(user_input) else None)
         box = {}
 
         def produce():
@@ -1460,7 +1554,9 @@ class Aria:
         """This session's turns with their tool calls; plain text history from the DB after a restart."""
         if self._recent:
             return [m for turn in self._recent for m in turn]
-        return self.memory.load_history(limit=6)
+        # her old replies are kept short here: a long, flowery one in the history is copied in every reply after it
+        return [dict(m, content=humanize(m["content"], limit=2)) if m.get("role") == "assistant" else m
+                for m in self.memory.load_history(limit=6)]
 
     def _save_turn(self, user_input, reply):
         self.memory.save_message("user", user_input)

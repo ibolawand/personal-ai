@@ -71,9 +71,10 @@ class ContextBuilder:
             talk = "you and Lala have only talked a little today"
         else:
             talk = "you and Lala have talked quite a bit today"     # no count: it would change every turn
-        return (f"Your day: it's {time_of_day}, {talk}. You spend your time on Lala's screen, keeping their notes, "
-                f"lists and calendar in order. Use this (not invented events) when "
-                f"asked how you are.")
+        # no "you keep their notes in order": told that, she claimed to have tidied notes and queued playlists
+        return (f"Your day: it's {time_of_day}, {talk}. Nothing happens for you between conversations, so when asked "
+                f"how you are or what you did, keep it light and true (it's been quiet), never invented events or "
+                f"things you did for Lala.")
 
     def greeting_prompt(self, known_user: str = None) -> str:
         now = datetime.now()

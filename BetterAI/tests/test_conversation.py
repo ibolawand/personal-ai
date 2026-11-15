@@ -387,3 +387,72 @@ def test_unplugged_led_strip_is_not_offered(aria):
     assert "desk LEDs" not in aria._base_prompt()
     aria.arduino.is_connected = True
     assert aria._base_prompt() == main.BASE_PROMPT
+
+
+# ── small talk like a person: short, plain, no theatre ──
+# From the real log (2026-11-15): replies of 15 lines, one fragment per line, each ending "(Also — it's 4:03. Your
+# timer's still running. You're still here. And I'm still… just here.)". Lala: "your answers feel like a robot".
+
+POEM = ("Ohhh, 4 PM?  \n\nThat's the *perfect* time for a break.  \n\nYou've been studying a while.  \n\n"
+        "Your brain's running on fumes.  \n\nGo stretch.  \n\n"
+        "(Also — it's 4:03. Your timer's still running. You're still here. And I'm still… just here. With you.)")
+
+
+def test_small_talk_is_cut_to_a_short_plain_paragraph():
+    said = main.humanize(POEM, "it is 4pm here")
+    assert said == "That's the perfect time for a break. You've been studying a while. Your brain's running on fumes."
+
+
+@pytest.mark.parametrize("line", [
+    "And I'm still… just here.", "I'm right here with you.", "You're still here.", "Just you and me and the quiet.",
+    "Your screen's still on.", "The music's still playing.", "You haven't moved much.",
+    "I've been listening to your music in the background.", "I want you to feel seen.", "And that… matters.",
+    "I'm just glowing on your desk.", "You're not nothing."])
+def test_theatre_lines_are_dropped_from_small_talk(line):
+    assert main.humanize(f"Fair enough. {line} What are you studying?", "idk") == "Fair enough. What are you studying?"
+
+
+def test_the_clock_stays_when_lala_asks_for_it():
+    assert main.humanize("It's 4:03 already. Nearly done.", "omg please") == "Nearly done."
+    assert main.humanize("It's 4:03 already. Nearly done.", "what time is it") == "It's 4:03 already. Nearly done."
+    assert main.humanize("I'm right here.", "are you there") == "I'm right here."      # all she said: kept
+
+
+def test_her_own_words_are_not_echoed_back():
+    assert main.humanize("Ohhh — annoying? Ha, what did I do?", "never thought an ai can be annoying") == \
+        "Ha, what did I do?"
+    assert main.humanize("Wait, you play piano? What kind of stuff?", "i make music") == \
+        "Wait, you play piano? What kind of stuff?"
+
+
+def test_the_voice_says_what_the_bubble_shows():
+    out = []
+    s = SentenceStreamer(out.append, chat_about="it is 4pm here")
+    for i in range(0, len(POEM), 7):
+        s.feed(POEM[i:i + 7])
+    s.flush()
+    assert out == ["That's the perfect time for a break.", "You've been studying a while.",
+                   "Your brain's running on fumes."]
+
+
+def test_a_chat_reply_is_humanized_and_a_long_answer_is_not(aria):
+    aria.llm.replies = [(POEM, []), ("One. Two. Three. Four. Five.", [])]
+    reply, _ = aria.handle_turn("it is 4pm here", check_state=False)
+    assert reply.count(".") == 3 and "*" not in reply and "\n" not in reply and "still" not in reply
+    reply, _ = aria.handle_turn("explain how a transformer works", check_state=False)
+    assert reply == "One. Two. Three. Four. Five."
+
+
+def test_the_clock_is_not_repeated_on_every_chat_turn(aria):
+    aria.context.moment = lambda: "It is evening on Saturday, 19:42."
+    aria.handle_turn("hey", check_state=False)
+    assert "19:42" in aria.llm.prompts[-1]                    # a conversation starts with it
+    aria.handle_turn("idk just thinking", check_state=False)
+    assert "19:42" not in aria.llm.prompts[-1]                # chatting: she recited it otherwise
+    aria.handle_turn("what time is it", check_state=False)
+    assert "19:42" in aria.llm.prompts[-1]
+
+
+def test_old_long_replies_come_back_short_after_a_restart(aria):
+    aria.memory.load_history = lambda limit=6: [{"role": "user", "content": "hi"}, {"role": "assistant", "content": POEM}]
+    assert aria._history()[1]["content"].count(".") <= 2 and aria._history()[0]["content"] == "hi"

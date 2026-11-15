@@ -162,3 +162,24 @@ def test_from_the_phone_she_cannot_touch_the_laptop(real_aria):
     with real_aria.tools.phone():
         reply, used = real_aria.handle_turn("lock my laptop", check_state=False)
     assert "lock_screen" not in [n for n, _ in used], reply
+
+
+CHAT = ["hello", "just chilling with you", "i am tired of school", "do we have the freedom to be anyone?",
+        "i want to change things through innovations not through talks", "so what is your desire",
+        "there is no music running..", "yh studying for the exams", "it is 4pm here", "do you like the word just",
+        "never thouhg an ai can be annoying", "omg please", "what should i eat tonight", "lol"]
+
+
+def test_a_whole_chat_stays_short_and_plain(real_aria, capsys):
+    """Lala's own messages from the afternoon she answered each with 15 lines of "…and I'm still… just here"."""
+    import main
+    said = []
+    for text in CHAT:
+        reply, used = real_aria.handle_turn(text, check_state=False)
+        said.append((text, reply))
+    with capsys.disabled():
+        print("\n" + "\n".join(f"  {t!r}\n     -> {r}" for t, r in said))
+    for text, reply in said:
+        assert len(main._sentences(reply)) <= 4 and "\n" not in reply and "*" not in reply, (text, reply)
+        assert not main.NARRATION_RE.search(reply) and not main.ROBOTIC_RE.search(reply), (text, reply)
+    assert len({main._norm_reply(r) for _, r in said}) == len(said)          # never the same reply twice
