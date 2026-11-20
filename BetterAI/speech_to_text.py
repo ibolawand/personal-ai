@@ -77,21 +77,29 @@ class STTEngine:
         self.vad = _load_vad()
 
     def _on_any_device(self, work):
-        """work(model) on the GPU model; when the graphics card is full ("CUDA failed with error out of memory",
-        which used to shut Aria down), the same on a CPU copy: slower, but she still hears you."""
+        """work(model) on the GPU model; when the graphics card can't do it, the same on a CPU copy: slower, but she
+        still hears you. Two cases from real use, both used to shut Aria down: the card is full ("CUDA failed with
+        error out of memory", 2026-11-13), and the card went away under her, e.g. after the laptop slept
+        ("cudaErrorInvalidDevice", 2026-11-11). A lost card doesn't come back for this process, so from then on
+        she stays on the CPU copy."""
         try:
             return work(self.model)
         except RuntimeError as e:
-            if "out of memory" not in str(e).lower():
+            text = str(e).lower()
+            full, lost = "out of memory" in text, "cuda" in text and "out of memory" not in text
+            if not (full or lost) or getattr(self, "device", "") == "cpu":
                 raise
-            print("[STT] graphics card full, transcribing on the CPU this time")
+            print("[STT] graphics card full, transcribing on the CPU this time" if full
+                  else f"[STT] graphics card lost ({str(e)[:80]}), transcribing on the CPU from now on")
             try:
                 from Engines import Diagnostics
-                Diagnostics.problem("stt_gpu_full")
+                Diagnostics.problem("stt_gpu_full" if full else "stt_gpu_lost", "" if full else str(e)[:120])
             except Exception:
                 pass
             if getattr(self, "_cpu_model", None) is None:
                 self._cpu_model = WhisperModel(getattr(self, "model_size", "medium"), device="cpu", compute_type="int8")
+            if lost:
+                self.model, self.device = self._cpu_model, "cpu"
             return work(self._cpu_model)
 
     @staticmethod

@@ -7,10 +7,8 @@ available, so the model can't pick a tool that doesn't exist.
 """
 
 import contextlib
-import os
 from pathlib import Path
 
-import requests
 from dotenv import load_dotenv
 
 
@@ -51,7 +49,7 @@ class ToolEngine:
                  reminders=None, focus=None, screen=None, laptop=None, files=None, notion=None,
                  owner_check=None, memory_note=None, activity=None, weather=None, undo=None,
                  recall=None, health=None, posture=None, quiz=None, face_learner=None, mail=None, untis=None,
-                 writer=None):
+                 writer=None, on_action=None):
         self.spotify = spotify
         self.arduino = arduino
         self.vision = vision
@@ -75,6 +73,7 @@ class ToolEngine:
         self.mail = mail
         self.untis = untis
         self.writer = writer
+        self.on_action = on_action
         self._registry = {t["schema"]["function"]["name"]: t for t in self._build()}
 
     # Tools that touch the laptop, files, clipboard/screen or phone — gated by owner_check
@@ -230,7 +229,15 @@ class ToolEngine:
                 result = self.undo.around(lambda r: str(r), lambda: tool["handler"](**(args or {})))
             else:
                 result = tool["handler"](**(args or {}))
-            return str(result) if result is not None else "Done."
+            text = str(result) if result is not None else "Done."
+            from Engines.AvatarEvents import action_for
+            action = action_for(name, text)
+            if action and not self._phone and self.on_action:
+                try:
+                    self.on_action(action)
+                except Exception as e:
+                    print(f"[Avatar] acknowledgement failed: {e}")
+            return text
         except Exception as e:
             print(f"[Tools] {name} failed: {e}")
             from Engines import Diagnostics

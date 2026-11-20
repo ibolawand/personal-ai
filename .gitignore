@@ -9,3 +9,4 @@ __pycache__/
 BetterAI/aria_faces/
 BetterAI/tidy_downloads_log.json
 *.vrm
+BetterAI/ui/avatar/motions/*.fbx

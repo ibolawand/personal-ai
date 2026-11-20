@@ -169,3 +169,42 @@ def test_quiz_questions_come_from_claude_when_it_answers():
     quiz.big, _ = big('Here you go:\n```json\n{"questions": [{"q": "What is the derivative of x squared", "a": "two x"}]}\n```')
     assert quiz.make_questions("Maths", "The derivative of x squared is two x.", 1) == \
         [{"q": "What is the derivative of x squared?", "a": "two x"}]
+
+
+def test_cancelled_call_terminates_child_without_disabling_claude(monkeypatch):
+    class Process:
+        returncode = None
+        terminated = False
+        calls = 0
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def poll(self): return self.returncode
+        def terminate(self):
+            self.terminated = True
+            self.returncode = -15
+        def communicate(self, input=None, timeout=None):
+            self.calls += 1
+            if self.terminated:
+                return "", ""
+            raise subprocess.TimeoutExpired("claude", timeout)
+    process = Process()
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: process)
+    model = BigModel(command="/opt/claude", enabled=True)
+    assert model.ask("hello", cancel=lambda: process.calls > 0) is None
+    assert process.terminated and process.calls == 2
+    assert model.available and model.calls == 0
+
+
+def test_cancellable_call_drains_json_reply(monkeypatch):
+    class Process:
+        returncode = 0
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def poll(self): return 0
+        def communicate(self, input=None, timeout=None):
+            assert input == "hello"
+            return json.dumps({"result": "Hi."}), ""
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: Process())
+    model = BigModel(command="/opt/claude", enabled=True)
+    assert model.ask("hello", cancel=lambda: False) == "Hi."
+    assert model.calls == 1

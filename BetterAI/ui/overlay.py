@@ -43,6 +43,7 @@ FADE_MS = 250                  # orb and avatar cross-fade
 WALK_OUT_PX = 150              # how far past an app's edge she walks out after peeking (0.35 of her units)
 PANEL = 0                      # "the window she sits on" when it's the top of the bottom panel
 SEAT_LOST_S = 1.0              # her seat must look gone this long before she hops down
+SEAT_BAN_S = 300                # a window she failed to land on is no seat for this long (no jump-and-drop loop)
 INPUT_IDLE_S = 15               # an empty text box nobody uses closes after this long
 LOOK_REACH = 200               # pixels from her middle at which she looks as far aside as she can
 BUBBLE_MAX_W = 300
@@ -69,6 +70,7 @@ STATE_LABELS = {
 BUBBLE_BG = QColor(18, 14, 28, 225)
 BUBBLE_TEXT = QColor(240, 236, 250)
 USER_TEXT = QColor(200, 185, 235)
+CLAUDE_BORDER = QColor(230, 150, 105, 150)     # Claude's lines when he talks with her (Engines/Duet.py)
 
 INPUT_STYLE = """
 QLineEdit {
@@ -136,6 +138,8 @@ class OverlayBridge(QObject):
     testChanged = Signal(object)    # the next test for her card ({"subject", "when"}) or None
     rainChanged = Signal(bool)      # rain is coming: she brings out her umbrella now and then
     beatChanged = Signal(float, float, float)   # the music's beat (bpm, seconds to the next beat, confidence)
+    pianoChanged = Signal(bool)     # piano music plays: she plays along on a keyboard (Engines/Piano.py)
+    claudeRequested = Signal(str, str)  # Claude's figure while he talks with her (ui/claude_view.py): action, feeling
 
     def __init__(self):
         super().__init__()
@@ -143,6 +147,8 @@ class OverlayBridge(QObject):
         self.state = "booting"
         self.mic = 0.0      # latest mic volume (mean abs, ~0..0.1)
         self.out = 0.0      # latest playback RMS (~0..0.3)
+        self.claude_out = 0.0   # the same while Claude speaks (his figure's mouth, not hers)
+        self.speaking = (0.0, None)     # (time.monotonic() it started, her mouth's timeline) of what plays now
         self.timers = []    # pending reminders: [{"text", "kind", "due", "created"}]
         self.avatar_status = ""     # why the avatar can or can't show, for the self-check
         self.mic_open = False   # the microphone is really open (awake but only typing is "listening" too)
@@ -245,6 +251,13 @@ class OverlayBridge(QObject):
     def glance(self, x, y, seconds):
         self.glanceRequested.emit(int(x), int(y), float(seconds))
 
+    def set_piano(self, on):
+        self.pianoChanged.emit(bool(on))
+
+    def claude(self, action, feeling=""):
+        """Claude's figure: "enter", "talk" (with the feeling of his line), "listen", "leave"."""
+        self.claudeRequested.emit(str(action), str(feeling))
+
     def mic_level(self, volume):
         self.mic = volume
 
@@ -254,8 +267,17 @@ class OverlayBridge(QObject):
         if self.state != "speaking":
             self.set_state("speaking")
 
+    def speech(self, segments):
+        """A piece of her speech starts playing now: her mouth's timeline for it (Engines/LipSync.py)."""
+        self.speaking = (time.monotonic(), segments)
+
     def stop_talking(self):
         self.out = 0.0
+        self.claude_out = 0.0
+        self.speaking = (time.monotonic(), None)
+
+    def feed_claude_audio(self, chunk):
+        self.claude_out = float(np.sqrt(np.mean(np.square(chunk)))) if len(chunk) else 0.0
 
 
 # ── Cards ─────────────────────────────────────────────────────────────────────
@@ -349,6 +371,13 @@ class Card(QFrame):
         if any(it.get("checked") is not None for it in items):
             self.left_label = self._muted(f"{left} left" if left else "All done ✓")
             rows.addWidget(self.left_label)
+
+    def _build_diagnostics(self, rows, card):
+        label = QLabel(card.get("text", ""))
+        label.setTextFormat(Qt.PlainText)
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        rows.addWidget(label)
 
     def _strike(self, cb):
         f = cb.font()
@@ -465,6 +494,8 @@ class Overlay(QWidget):
         self._behind = None             # the window she is behind (the page says), its part of her isn't drawn
         self._cover = None              # that window's rectangle in this window's coordinates, or None
         self._over = "unknown"          # the window over her middle last time we looked (a new one: she hides)
+        self._beside, self._beside_at = None, None
+        self._seat_bans = {}            # window id -> until when it is no seat for her (she missed it: _seat_gone)   # the windows right beside her, and where her box was then
         self._hide_avatar = QTimer(self)
         self._hide_avatar.setSingleShot(True)
         self._hide_avatar.timeout.connect(lambda: self.avatar and not self._avatar_on and self.avatar.hide())
@@ -476,6 +507,7 @@ class Overlay(QWidget):
         self._box_screen = QPoint(0, 0)
         self._wide = True
         self._placing = False
+        self._work_area = None
         self._input_used = 0.0          # when the text box was last opened or typed in
         self.setFixedSize(self.win_w, self.win_h)
         self.setWindowTitle("Aria")
@@ -528,6 +560,10 @@ class Overlay(QWidget):
         bridge.testChanged.connect(lambda card: self.avatar and self.avatar.link.set_test(card))
         bridge.rainChanged.connect(lambda on: self.avatar and self.avatar.link.set_rain(on))
         bridge.beatChanged.connect(lambda *b: self.avatar and self.avatar.link.set_beat(*b))
+        bridge.claudeRequested.connect(self._on_claude)
+        bridge.pianoChanged.connect(lambda on: self.avatar and self.avatar.link.set_piano(on))
+        self._claude = None             # Claude's window (ui/claude_view.py), made the first time he's needed
+        self._claude_fed = 0.0
         self._glance = None             # (global QPoint, until monotonic time): where she looks instead of the mouse
 
         self._restore_position()
@@ -611,6 +647,26 @@ class Overlay(QWidget):
             self._update_mask()
             self.update()
 
+    def _check_work_area(self):
+        """A changed screen or panel invalidates her old floor, seat and cropped window."""
+        screen = self._screen_area()
+        previous, self._work_area = self._work_area, QRect(screen)
+        if previous is None or previous == screen:
+            return
+        self._travel.drop()
+        if self.avatar:
+            self.avatar.link.stop_trip()
+            self._behind = None
+            self._set_cover(self.avatar.link, None)
+        self._perch, self._aloft, self._dropping, self._seat_lost = None, False, False, None
+        before = QPoint(self._bx, self._by)
+        self._place(QPoint(max(screen.left(), min(self._box_screen.x(), screen.right() + 1 - self.avatar_w)),
+                           max(screen.top(), min(self._box_screen.y(), screen.bottom() + 1 - self.avatar_h))))
+        if self._drag_from is not None:
+            self._drag_from += QPoint(self._bx, self._by) - before
+        self._floor_y = self._box_screen.y()
+        self._fed["room"] = self._fed["seats"] = 0.0
+
     def moveEvent(self, e):
         super().moveEvent(e)
         if not self._placing:               # dragged, or moved by the window manager: her box went with it
@@ -653,7 +709,7 @@ class Overlay(QWidget):
     def _shows_avatar(self) -> bool:
         a = self.avatar
         return bool(a and a.link.ready and not a.link.failed and self.isVisible()
-                    and self.state not in ("sleeping", "booting", "error"))
+                    and self.state not in ("booting", "error"))
 
     def _sync_avatar(self):
         """Bring her in or send her away to match the state. Called on every state change, when the overlay is
@@ -683,7 +739,9 @@ class Overlay(QWidget):
             a.show()
             a.link.resume()
             a.link.fade(True)
-            a.link.wave()
+            from Engines.AvatarEvents import focus_scene
+            if self.state not in ("sleeping", "companion") and focus_scene(self.bridge.timers, time.time()) == "off":
+                a.link.wave()
             self._fed = {"level": 0.0, "look": 0.0, "props": 0.0, "room": 0.0}
         else:
             a.link.fade(False)
@@ -697,12 +755,25 @@ class Overlay(QWidget):
     def _feed_avatar(self, now):
         """What she needs to know while she shows, no more often than it can matter."""
         link = self.avatar.link
-        link.set_state("idle" if self.state == "companion" else self.state)
+        from Engines.AvatarEvents import focus_scene
+        link.set_focus(focus_scene(self.bridge.timers, time.time()))
+        link.set_state(self.state)
         # the text box open or a card up: you're dealing with her, so she stays where she is
-        link.set_engaged(bool(self.input.isVisible() or self.card))
+        link.set_engaged(bool(self.input.isVisible() or self.card or (self._claude and self._claude.showing)))
+        # typing to her: she watches the box while you type (told only that a key was typed, never what)
+        link.set_typing(self.input.isVisible())
+        if self.bridge.typed_at != self._fed.get("typed", 0.0):
+            self._fed["typed"] = self.bridge.typed_at
+            if self.input.isVisible():
+                link.typed()
         if now - self._fed["level"] >= 1 / 20:
             self._fed["level"] = now
             link.set_level(self.bridge.mic, self.bridge.out)
+        # her mouth's timeline, once per piece of speech, with how long ago it started (it plays on the page's clock)
+        speaking = self.bridge.speaking
+        if speaking is not self._fed.get("speech"):
+            self._fed["speech"] = speaking
+            link.set_speech(speaking[1], time.monotonic() - speaking[0])
         if now - self._fed["look"] >= 1 / 15:
             self._fed["look"] = now
             glance = self._glance if self._glance and time.monotonic() < self._glance[1] else None
@@ -710,6 +781,13 @@ class Overlay(QWidget):
             # near her the mouse is where she looks (and what it hovers); far across the screen she only glances
             link.look_at(max(-1.0, min(1.0, (p.x() - r.center().x()) / LOOK_REACH)),
                          max(-1.0, min(1.0, (r.center().y() - p.y()) / LOOK_REACH)))
+            # where the pointer itself is, beside her (she may reach for it), and whether it moved: the pointer, not
+            # her box moving under it
+            cursor = QCursor.pos()
+            moved = cursor != self._fed.get("cursor")
+            self._fed["cursor"] = cursor
+            here = self.mapFromGlobal(cursor)
+            link.set_pointer(here.x() - r.center().x(), r.bottom() - here.y(), moved)
         if now - self._fed.get("room", 0.0) >= 0.5:
             self._fed["room"] = now
             link.set_room(*self._room())
@@ -778,7 +856,7 @@ class Overlay(QWidget):
                 why = "window gone" if not mine else "edge covered or no room above it"
                 self._seat_gone(link, why)
         # where she could hide: side edges of windows beside her, while she stands on her floor
-        from ui.desktop_windows import covering, hideouts
+        from ui.desktop_windows import covering, hideouts, usable_seats
         here = (box.left(), box.top(), box.right(), box.bottom())
         standing = not self._aloft and not self._perch and self._travel.done and self._behind is None
         # (only edges she can walk out past with her whole box still on this screen)
@@ -796,19 +874,36 @@ class Overlay(QWidget):
             if (left, right) != (-far, far):
                 link.hidden_by(over.id, left, right)
         self._over = over_id
+        # a window come up right beside her while she stands still (opened, or moved there): she flinches away from
+        # it and looks at it. Only between two readings with her box in the same place: her own walking past
+        # windows changes what is beside her too, and isn't a surprise
+        from ui.desktop_windows import arrived_beside, beside
+        near = beside(windows, here) if standing and not over else None
+        if near is not None and here == self._beside_at:
+            side = arrived_beside(self._beside, near)
+            if side:
+                link.startle(side)
+        self._beside, self._beside_at = near, here
         # where she could go: the free stretches, kept to where her whole box stays on the screen
         half_box = self.avatar_w // 2
         out = []
-        if not self._perch:
-            for s in free:
+        # (only while she stands on her floor, not mid-jump or coming down: a seat's height is measured from where
+        # her box is now, and measured in the air it sent her jumping short of the window, again and again)
+        if standing and not self._dropping:
+            for s in usable_seats(free, self._seat_bans, time.monotonic()):
                 left, right = max(s.left, screen.left() + half_box), min(s.right, screen.right() - half_box)
                 if right - left >= 2 * 60 + 20:
+                    # which ends of the stretch are the window's own top corners (not where another window
+                    # covers it or the screen cuts it): she may sit right on a corner and swing her legs
+                    win = next((w for w in windows if w.id == s.id), None)
+                    corners = [end for end, at, edge in ((-1, left, win and win.left), (1, right, win and win.right))
+                               if win and abs(at - edge) <= 2]
                     out.append({"x": (left + right) // 2 - box.center().x(), "half": (right - left) // 2,
-                                "y": s.top - box.bottom()})
+                                "y": s.top - box.bottom(), "corners": corners})
         # an app maximized: the top edge of the bottom panel (the bottom of the work area) is a seat, just below
         # her feet: she sits down onto it where she stands
         from ui.desktop_windows import any_maximized
-        if not self._perch and not self._aloft and any_maximized(own=int(self.winId())):
+        if standing and not self._dropping and any_maximized(own=int(self.winId())):
             out.append({"x": 0, "half": screen.width(), "y": screen.bottom() + 1 - box.bottom() - 1, "low": 1})
         link.set_seats(out, self._floor_y - self._box_screen.y())
 
@@ -821,7 +916,11 @@ class Overlay(QWidget):
             return
         if now - self._seat_lost[0] < SEAT_LOST_S:
             return
-        print(f"[Avatar] hopped down: {why}")
+        print(f"[Avatar] hopped down: {why}" + (f" ({self._under_miss})" if "no window under" in why and
+                                                 getattr(self, "_under_miss", None) else ""))
+        if "no window under" in why and getattr(self, "_missed_seat", None):
+            # the window she couldn't land on is not a seat for a while: she never jumps at it again and again
+            self._seat_bans[self._missed_seat] = now + SEAT_BAN_S
         self._seat_lost, self._perch, self._dropping = None, None, True
         link.drop_down()
 
@@ -860,7 +959,9 @@ class Overlay(QWidget):
             self._place(QPoint(*at))
         if self._travel.done and len(report) == 4:                  # a jump just ended: up onto a window, or down
             on_panel = report[3] > 0 and self._box_screen.y() > self._floor_y and self._on_panel()
-            self._aloft = report[3] < 0 or on_panel
+            # From the panel she jumps UP to stand on her floor, not onto another window.
+            from_panel = self._perch is not None and self._perch[0] == PANEL
+            self._aloft = (report[3] < 0 and not from_panel) or on_panel
             self._perch = (PANEL, 0, 0) if on_panel else self._window_under() if self._aloft else None
             self._seat_lost, self._dropping = None, False      # (landed on something we can't follow: _watch_seats looks again, then drops)
 
@@ -879,6 +980,13 @@ class Overlay(QWidget):
         for w in reversed(windows):
             if abs(w.top - edge) <= 12 and w.left <= cx <= w.right:
                 return w.id, w.left, w.top
+        # (for the log: where she is and the nearest window top under her middle)
+        near = min((w for w in windows if w.left <= cx <= w.right), key=lambda w: abs(w.top - edge), default=None)
+        self._missed_seat = near.id if near else None
+        self._under_miss = (f"box {box.top()}..{box.bottom()} (box_screen y={self._box_screen.y()}, window y={self.pos().y()}, "
+                            f"by={self._by}, seat_h={self._seat_h:.0f}, floor={self._floor_y}, screen top={self._screen_area().top()}); ") + \
+            f"her seat line y={edge} x={cx}, nearest window top " + (
+            f"y={near.top} ({near.left}..{near.right})" if near else "none under her")
         return None
 
     def showEvent(self, e):
@@ -895,6 +1003,8 @@ class Overlay(QWidget):
 
     def hideEvent(self, e):
         super().hideEvent(e)
+        if self._drag_from is not None:
+            self._end_drag()                # hidden mid-drag: she's put down, not left dangling
         self._sync_avatar()
 
     def _restore_position(self):
@@ -927,15 +1037,56 @@ class Overlay(QWidget):
         if state in FLASH_COLORS:
             self.flash = 1.0 if state == "unknown" else 2.5  # alerts pulse longer
             self.flash_color = FLASH_COLORS[state]
-            if self._avatar_on:
+            if self._avatar_on and self.state != "sleeping":
                 self.avatar.link.hop()
             return
         self.state = state
         self._sync_avatar()
 
     def _on_act(self, name):
-        if self._shows_avatar():
+        if self._shows_avatar() and self.state != "sleeping":
             self.avatar.link.act(name)
+
+    # ── Claude beside her while they talk (Engines/Duet.py, ui/claude_view.py) ──
+
+    def _claude_box(self):
+        r = self._anchor_rect().translated(self.pos())
+        return r.left(), r.top(), r.width(), r.height()
+
+    def _claude_screen(self):
+        s = self._screen_area()
+        return s.left(), s.top(), s.right() + 1, s.bottom() + 1
+
+    def _on_claude(self, action, feeling):
+        if action == "enter":
+            if self._claude is None:
+                try:
+                    from ui import avatar_view, claude_view
+                    ok, why = avatar_view.available("")
+                    self._claude = claude_view.make_window() if ok else False
+                    if not ok:
+                        print(f"[Claude] no figure: {why}")
+                except Exception as e:
+                    print(f"[Claude] no figure: {type(e).__name__}: {e}")
+                    self._claude = False
+            if self._claude:
+                self._claude.appear(self._claude_box(), self._claude_screen())
+            return
+        if not self._claude:
+            return
+        if action == "talk":
+            self._claude.say(feeling or "neutral")
+            # she looks at him while he talks
+            self._glance = (self._claude.geometry().center() - QPoint(0, 60), time.monotonic() + 60)
+        elif action == "listen":
+            self._claude.listen()
+            self._glance = None
+        elif action == "leave":
+            self._claude.leave()
+            self._glance = None
+        if self.avatar:
+            side = -1 if self._claude.x() < self._claude_box()[0] else 1
+            self.avatar.link.set_conversation("claude" if action == "talk" else "aria" if action == "listen" else "off", side)
 
     def _on_glance(self, x, y, seconds):
         self._glance = (QPoint(x, y), time.monotonic() + seconds)
@@ -961,11 +1112,13 @@ class Overlay(QWidget):
 
     def _on_message(self, role, text):
         text = " ".join(text.split())
+        if role == "claude":
+            text = "Claude: " + text
         if len(text) > MAX_CHARS:
             text = text[:MAX_CHARS].rsplit(" ", 1)[0] + "…"
         stay = 5.0 if role == "user" else max(7.0, len(text) / 14)
         now = time.monotonic()
-        if role == "aria":
+        if role in ("aria", "claude"):
             # keep the user line visible as long as the reply it belongs to
             for b in self.bubbles[-1:]:
                 if b["role"] == "user":
@@ -1031,6 +1184,7 @@ class Overlay(QWidget):
         self._last_tick = now
         self.t += dt
         if self.avatar:
+            self._check_work_area()
             self._sync_avatar()
             # an unused, empty text box closes after a while (it used to stay up and ride along on her walks)
             if (self.input.isVisible() and not self.input.text() and now - self._input_used > INPUT_IDLE_S):
@@ -1039,6 +1193,10 @@ class Overlay(QWidget):
                 self._place()
             if self._avatar_on:
                 self._feed_avatar(now)
+        if self._claude and self._claude.showing and now - self._claude_fed >= 1 / 20:
+            self._claude_fed = now
+            self._claude.link.set_level(self.bridge.claude_out)
+            self._claude.place(self._claude_box(), self._claude_screen())
 
         target = STATE_COLORS.get(self.state, STATE_COLORS["thinking"])
         k = 1 - math.exp(-dt * 6)
@@ -1246,11 +1404,13 @@ class Overlay(QWidget):
             bg = QColor(BUBBLE_BG)
             border = QColor(accent)
             border.setAlpha(110 if b["role"] == "aria" else 50)
+            if b["role"] == "claude":
+                border = QColor(CLAUDE_BORDER)
             p.setPen(QPen(border, 1))
             p.setBrush(bg)
             p.drawRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), 14, 14)
-            p.setPen(BUBBLE_TEXT if b["role"] == "aria" else USER_TEXT)
-            p.setFont(self.font_ if b["role"] == "aria" else self.font_small)
+            p.setPen(USER_TEXT if b["role"] == "user" else BUBBLE_TEXT)
+            p.setFont(self.font_small if b["role"] == "user" else self.font_)
             p.drawText(rect.adjusted(BUBBLE_PAD_X, BUBBLE_PAD_Y, -BUBBLE_PAD_X, -BUBBLE_PAD_Y),
                        Qt.TextWordWrap, b["text"])
         p.setOpacity(1.0)
@@ -1570,6 +1730,8 @@ class Overlay(QWidget):
             self._dragged = False
 
     def mouseMoveEvent(self, e):
+        if self._drag_from is not None and not e.buttons() & Qt.LeftButton:
+            self._end_drag()                # the release went missing (the grab was lost): she's put down here
         if self._drag_from is not None:
             gp = e.globalPosition().toPoint()
             if (gp - self._press_at).manhattanLength() > 4 and not self._dragged:
@@ -1580,20 +1742,39 @@ class Overlay(QWidget):
                     self._behind = None
                     self._set_cover(self.avatar.link, None)
             if self._dragged:
-                self.move(gp - self._drag_from)
+                # Her box may have been cropped at the panel or above a high seat. Refit it at the new
+                # position too, so carrying her away from that edge restores the missing part immediately.
+                offset = QPoint(self._bx, self._by)
+                self._place(gp - self._drag_from + offset)
+                self._drag_from += QPoint(self._bx, self._by) - offset
+                if self.avatar:
+                    self.avatar.link.carried(self.x(), self.y())     # she swings as she's carried
         self.setCursor(Qt.PointingHandCursor if self._in_orb(e.position()) else Qt.ArrowCursor)
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.LeftButton and self._drag_from is not None:
             if self._dragged:
-                self._save_position()
-                self._perch, self._aloft, self._floor_y = None, False, self._box_screen.y()   # she stands where put
-                self._seat_lost, self._dropping = None, False
+                self._end_drag()
             else:
                 self._add_wave(0.6)
                 self._burst(14)
+                if self._shows_avatar():
+                    self.avatar.link.tapped()                       # she feels the tap
                 self._toggle_input()
             self._drag_from = None
+
+    def _end_drag(self):
+        """A drag is over (released, or the release went missing): she is put down where she is."""
+        if self._dragged:
+            if self.avatar:
+                self.avatar.link.carried(None, None)                # put down: her knees give
+            screen = self._screen_area()
+            self._place(QPoint(max(screen.left(), min(self._box_screen.x(), screen.right() + 1 - self.avatar_w)),
+                               max(screen.top(), min(self._box_screen.y(), screen.bottom() + 1 - self.avatar_h))))
+            self._save_position()
+            self._perch, self._aloft, self._floor_y = None, False, self._box_screen.y()   # she stands where put
+            self._seat_lost, self._dropping = None, False
+        self._drag_from, self._dragged = None, False
 
     def contextMenuEvent(self, e):
         aria = self.bridge.aria
@@ -1618,11 +1799,28 @@ class Overlay(QWidget):
         clear_act.triggered.connect(lambda: (self.bubbles.clear(), self._close_card()))
         menu.addAction(clear_act)
 
+        settings_act = menu.addAction("Settings…")
+        settings_act.setEnabled(bool(aria) and hasattr(aria, "save_settings"))
+        settings_act.triggered.connect(self._open_settings)
+        diagnostics_act = menu.addAction("How is Aria running?")
+        diagnostics_act.setEnabled(bool(aria) and hasattr(aria, "show_diagnostics"))
+        diagnostics_act.triggered.connect(lambda: threading.Thread(target=aria.show_diagnostics, daemon=True).start())
+
         menu.addSeparator()
         quit_act = QAction("Quit Aria", menu)
         quit_act.triggered.connect(quit_app)
         menu.addAction(quit_act)
         menu.exec(e.globalPos())
+
+    def _open_settings(self):
+        from ui.settings import SettingsDialog
+        dialog = getattr(self, "_settings_dialog", None)
+        if dialog and dialog.isVisible():
+            dialog.raise_()
+            dialog.activateWindow()
+            return
+        self._settings_dialog = SettingsDialog(self.bridge.aria, self)
+        self._settings_dialog.show()
 
     def enterEvent(self, _):
         self.hover = True
@@ -1660,6 +1858,8 @@ def run_with_overlay(make_aria, visible: bool = True):
     """make_aria(bridge) -> Aria. Builds Aria in a worker thread so the orb appears instantly.
     visible=False (MyNotion's Start): the orb stays hidden until the hotkey, the menu or a card shows it."""
     global _bridge
+    from ui.avatar_view import unlock_frame_rate
+    unlock_frame_rate()                     # (before the app exists: her page draws at the screen's own rate)
     app = QApplication.instance() or QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
 

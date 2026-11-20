@@ -8,6 +8,8 @@
 const SKIN = 0xffe6d8, HAIR = 0x9a7bf0, HAIR_DARK = 0x7a5ce0, EYE = 0x45bdf5, EYE_DARK = 0x1d3f8a;
 const HOODIE = 0x2b2740, TRIM = 0xb9a3ff, SKIRT = 0x40396b, SOCK = 0xf6f3ff, SHOE = 0x7a5ce0, LINE = 0x1a1426;
 
+import { followJoint } from './logic.mjs';
+
 export function buildFigure(THREE) {
   const steps = new THREE.DataTexture(new Uint8Array([120, 120, 120, 255, 200, 200, 200, 255, 255, 255, 255, 255]), 3, 1);
   steps.minFilter = steps.magFilter = THREE.NearestFilter;
@@ -125,27 +127,41 @@ export function buildFigure(THREE) {
     const lash = mesh(socket, new THREE.TorusGeometry(0.05, 0.0065, 6, 18, Math.PI), flat(LINE), { at: [0, 0.012, 0.012], scale: [0.98, 1.0, 1], outline: 0 });
     const brow = mesh(skull, new THREE.CapsuleGeometry(0.0045, 0.045, 4, 8), flat(HAIR_DARK),
                       { at: [sign * 0.08, 0.052, 0.176], rot: [0, 0, Math.PI / 2 + sign * 0.12], outline: 0 });
-    return { open, iris, lash, brow, browY: 0.052 };
+    return { sign, open, iris, lash, brow, browY: 0.052 };
   });
   for (const sign of [1, -1]) {
     mesh(skull, new THREE.CircleGeometry(0.026, 20), flat(0xff9bb0, 0.42), { at: [sign * 0.118, -0.085, 0.148], rot: [0.2, sign * 0.72, 0], scale: [1.25, 0.7, 1], outline: 0 });
   }
   const mouth = mesh(skull, sphere(0.02), flat(0x9c3348), { at: [0, -0.112, 0.176], scale: [1, 0.2, 0.3], outline: 0 });
 
-  const state = { blink: 0, mouth: 0, round: 0, surprised: 0, relaxed: 0, happy: 0 };
+  const smileLine = mesh(skull, new THREE.TorusGeometry(0.022, 0.0025, 6, 20, Math.PI), flat(0x9c3348, 0),
+    { at: [0, -0.105, 0.181], rot: [0, 0, Math.PI], scale: [1, 0.4, 1], outline: 0 });
+  smileLine.name = 'expression-smile';
+  mouth.name = 'expression-mouth';
+  eyes.forEach(eye => { eye.brow.name = `expression-brow-${eye.sign}`; });
+  const state = { blink: 0, mouth: 0, round: 0, surprised: 0, relaxed: 0, happy: 0, curious: 0, uncertain: 0, focused: 0, amused: 0 };
   const euler = new THREE.Euler(), turn = new THREE.Quaternion(), aim = new THREE.Quaternion(), X = new THREE.Vector3(1, 0, 0);
-  const last = new Map();                           // where each joint was last frame (for the follow filter)
+  const last = new Map();                           // where each joint was last frame, and how fast it turned
   const face = () => {
-    const wide = 1 + 0.16 * state.surprised - 0.1 * state.relaxed;
+    const wide = 1 + 0.16 * state.surprised - 0.1 * state.relaxed + 0.06 * state.curious - 0.1 * state.focused;
     for (const eye of eyes) {
-      eye.open.scale.set(wide, Math.max(0.06, wide * (1 - 0.94 * state.blink)), 1);
+      eye.open.scale.set(wide, Math.max(0.06, wide * (1 - 0.94 * state.blink) * (1 - 0.13 * state.amused)), 1);
       eye.lash.position.y = 0.012 - 0.045 * state.blink;
       eye.lash.scale.y = 1 - 1.7 * state.blink;          // an arc above the open eye, a downward curve when shut
-      eye.brow.position.y = eye.browY + 0.022 * state.surprised + 0.004 * state.relaxed;
+      eye.brow.position.y = eye.browY + 0.022 * state.surprised + 0.004 * state.relaxed
+        + (eye.sign === 1 ? 0.018 : 0.004) * state.curious
+        + (eye.sign === -1 ? 0.018 : 0.006) * state.uncertain - 0.008 * state.focused + 0.008 * state.amused;
+      eye.brow.rotation.z = Math.PI / 2 + eye.sign * (0.12 + 0.18 * state.uncertain - 0.12 * state.focused)
+        + 0.12 * state.curious;
     }
     const open = Math.max(state.mouth, 0.55 * state.surprised);
     const across = 1 - 0.35 * open - 0.4 * state.round + 0.25 * Math.max(state.relaxed, state.happy) * (1 - open);
-    mouth.scale.set(Math.max(0.35, across), 0.2 + 1.1 * open, 0.3);
+    mouth.scale.set(Math.max(0.35, across + 0.18 * state.amused * (1 - open)), 0.2 + 1.1 * open, 0.3);
+    const smileWeight = Math.max(state.amused, 0.6 * state.happy) * (1 - Math.min(1, open * 5));
+    smileLine.material.opacity = smileWeight;
+    mouth.scale.y *= 1 - 0.9 * smileWeight;
+    mouth.rotation.z = 0.12 * state.uncertain * (1 - open);
+    mouth.position.x = 0.005 * state.uncertain * (1 - open);
   };
   face();
 
@@ -154,7 +170,7 @@ export function buildFigure(THREE) {
   return {
     root, bones,
     /** Put a bone at `angles`; with `toward` and `weight`, that far along the short way round to `toward`. */
-    setBone(name, angles, toward, weight = 0, follow = 1) {
+    setBone(name, angles, toward, weight = 0, follow = 1, dt = 0) {
       const bone = bones[name];
       if (!bone) return;
       const set = (q, [x, y, z, twist = 0]) => {
@@ -164,11 +180,9 @@ export function buildFigure(THREE) {
       };
       set(bone.quaternion, angles);
       if (toward && weight) bone.quaternion.slerp(set(aim, toward), weight);
-      // and it gets there by `follow` of the way from where it was (1: at once): a filter on every joint, so a new
-      // action starting or one being cut short never makes a joint pop
-      const before = last.get(name);
-      if (before && follow < 1) bone.quaternion.copy(before.slerp(bone.quaternion, follow));
-      last.set(name, (before || new bone.quaternion.constructor()).copy(bone.quaternion));
+      // and it gets there from where it was (logic.mjs followJoint): a short filter on every joint, so a new action
+      // starting or one being cut short never makes a joint pop, and a spring on her arms (they lag and settle)
+      bone.quaternion.fromArray(followJoint(last, name, bone.quaternion.toArray(), dt, follow));
     },
     setBlink(w) { state.blink = w; },
     setMouth(w) { state.mouth = w; state.round = 0; },
@@ -178,6 +192,10 @@ export function buildFigure(THREE) {
       state.round = Math.max(v.ou || 0, v.oh || 0);
     },
     reset() { last.clear(); },
+    /** For IK (piano.mjs): a joint's node, and where a hand is (her hands are spheres at the end of the forearm). */
+    node(name) { return bones[name] || null; },
+    wrist(side, out = new THREE.Vector3()) { return bones[`${side}LowerArm`].localToWorld(out.set(side === 'left' ? 0.125 : -0.125, 0, 0)); },
+    fingerTip: null,
     where(name) { return bones[name] ? bones[name].getWorldPosition(new THREE.Vector3()).toArray().map(n => +n.toFixed(3)) : null; },
     setExpression(name, w) { if (name in state) state[name] = w; },
     /** Where her eyes look: x and y from -1 to 1. */

@@ -18,7 +18,7 @@ import math
 import os
 
 AVATAR_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "avatar")
-PAGE_FILES = ("avatar.html", "avatar.js", "logic.mjs", "figure.mjs", "vrmrig.mjs")
+PAGE_FILES = ("avatar.html", "avatar.js", "logic.mjs", "figure.mjs", "vrmrig.mjs", "piano.mjs", "presence.mjs", "focusdesk.mjs")
 VENDOR_FILES = ("three.module.js", "three.core.js", "three-vrm.module.js", "addons/loaders/GLTFLoader.js",
                 "addons/utils/BufferGeometryUtils.js", "addons/utils/SkeletonUtils.js")     # see vendor/VERSIONS.md
 BOX_FIGURE = (300, 400)     # the built-in figure is short and wide
@@ -26,6 +26,28 @@ BOX_MODEL = (250, 520)      # a loaded character is tall and slim: a box round h
 CAPTION_MAX = 40
 LOAD_TIMEOUT_S = 20
 TIMER_KINDS = ("timer", "focus", "focusbreak")
+
+
+UNLOCK_FLAG = "--disable-frame-rate-limit"
+
+
+def unlock_frame_rate(env=os.environ):
+    """Chromium inside QtWebEngine paces her page at 60 frames a second whatever the screen does (measured: 60 on a
+    144 Hz screen). Without that pacing it draws as fast as it can (measured: ~880 fps), so her page caps itself at
+    the screen's own rate instead (screen_hz). Must run before the QApplication is made."""
+    flags = env.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
+    if UNLOCK_FLAG not in flags.split():
+        env["QTWEBENGINE_CHROMIUM_FLAGS"] = (flags + " " + UNLOCK_FLAG).strip()
+
+
+def screen_hz(rate):
+    """How many frames a second her page draws: the screen's refresh rate (Qt's QScreen.refreshRate), 60 when it
+    doesn't say, never below 60 (Lala: always at least 60) nor above 360."""
+    try:
+        rate = float(rate)
+    except (TypeError, ValueError):
+        return 60
+    return max(60, min(360, round(rate))) if rate > 0 else 60
 
 
 def avatar_path(env=os.environ):
@@ -97,7 +119,8 @@ class AvatarLink:
 
     Until the page reports ready, calls are kept (the latest of each kind) and then replayed; once it has failed,
     they are dropped. A value that hasn't changed isn't sent again."""
-    REPLAY = ("state", "props", "level", "look", "room", "seats", "hideouts", "cover", "engaged", "test", "rain", "fade", "run")
+    REPLAY = ("state", "props", "level", "look", "room", "seats", "hideouts", "cover", "engaged", "test", "rain", "piano", "focus", "conversation",
+              "fade", "run")
 
     def __init__(self, run_js):
         self._run_js = run_js
@@ -124,6 +147,12 @@ class AvatarLink:
     def set_level(self, mic, out):
         self._send("level", f"window.aria.setLevel({json.dumps(_num(mic))},{json.dumps(_num(out))})")
 
+    def set_speech(self, segments, elapsed=0.0):
+        """Her mouth's timeline for the speech playing now ([start, end, shape, open], seconds; Engines/LipSync.py),
+        which started `elapsed` seconds ago; None: nothing is being said."""
+        text = json.dumps(segments if segments else None)
+        self._send(None, f"window.aria.setSpeech({text},{json.dumps(_num(elapsed))})")
+
     def look_at(self, x, y):
         self._send("look", f"window.aria.lookAt({json.dumps(_num(x))},{json.dumps(_num(y))})")
 
@@ -147,6 +176,19 @@ class AvatarLink:
         """Rain is coming (her umbrella): kept and replayed, repeats skipped."""
         self._send("rain", f"window.aria.setRain({json.dumps(bool(on))})", bool(on), repeat=False)
 
+    def set_piano(self, on):
+        """Piano music is playing (Engines/Piano.py): she plays along on a keyboard. Kept and replayed."""
+        self._send("piano", f"window.aria.setPiano({json.dumps(bool(on))})", bool(on), repeat=False)
+
+    def set_focus(self, phase):
+        phase = phase if phase in ("work", "break") else "off"
+        self._send("focus", f"window.aria.setFocus({json.dumps(phase)})", phase, repeat=False)
+
+    def set_conversation(self, speaker, side=1):
+        value = (str(speaker), 1 if side >= 0 else -1)
+        self._send("conversation", f"window.aria.setConversation({json.dumps(value[0])},{value[1]})",
+                   value, repeat=False)
+
     def fade(self, visible):
         self._send("fade", f"window.aria.fade({json.dumps(bool(visible))})", bool(visible), repeat=False)
 
@@ -156,9 +198,9 @@ class AvatarLink:
         self._send("room", f"window.aria.setRoom({room[0]},{room[1]})", room, repeat=False)
 
     def set_seats(self, seats, floor):
-        """Where she could sit on other windows ([{x, half, y}] pixels from the middle of the bottom of her box)
-        and how far below her box the floor is."""
-        text = json.dumps([{k: int(v) for k, v in s.items()} for s in seats])
+        """Where she could sit on other windows ([{x, half, y, corners}] pixels from the middle of the bottom of her
+        box; corners: which ends, -1 and/or 1, are the window's own top corners) and how far below her box the floor is."""
+        text = json.dumps([{k: [int(c) for c in v] if isinstance(v, list) else int(v) for k, v in s.items()} for s in seats])
         self._send("seats", f"window.aria.setSeats({text},{int(floor)})", (text, int(floor)), repeat=False)
 
     def set_hideouts(self, edges):
@@ -169,6 +211,28 @@ class AvatarLink:
     def hidden_by(self, wid, left, right):
         """A window was opened or raised over her: its edges in pixels from the middle of her box."""
         self._send(None, "window.aria.hiddenBy(" + json.dumps({"id": int(wid), "left": int(left), "right": int(right)}) + ")")
+
+    def tapped(self):
+        """You clicked her (a click, not a drag). Not kept for later: one that comes before her page is ready is gone."""
+        self._send(None, "window.aria.tapped()")
+
+    def set_pointer(self, x, y, moved):
+        """Where the mouse pointer is: pixels from the middle of the bottom of her box (y up); `moved`: it moved since
+        the last time (the pointer itself, not her box under it)."""
+        value = (int(x), int(y), bool(moved))
+        self._send("pointer", f"window.aria.setPointer({value[0]},{value[1]},{json.dumps(value[2])})", value, repeat=False)
+
+    def set_typing(self, open_):
+        """The text box is open (True) or closed."""
+        self._send("typing", f"window.aria.setTyping({json.dumps(bool(open_))})", bool(open_), repeat=False)
+
+    def typed(self):
+        """A key was typed in the text box (only that: never what)."""
+        self._send(None, "window.aria.typed()")
+
+    def startle(self, side):
+        """A window just came up right beside her: -1 on her left, 1 on her right (screen sides)."""
+        self._send(None, f"window.aria.startle({-1 if side < 0 else 1})")
 
     def set_cover(self, rect):
         """The part of her box an app covers (dict of left/top/right/bottom in her box's pixels), or None."""
@@ -184,6 +248,12 @@ class AvatarLink:
 
     def drop_down(self):
         self._send(None, "window.aria.dropDown()")   # the window she sits on went away
+
+    def carried(self, x, y):
+        """Her window is being dragged and is now at screen pixels x, y (None, None: put down). She swings as she's
+        carried and her knees give when she's set down (logic.mjs carrySwing/setDown)."""
+        call = "window.aria.carried(null)" if x is None else f"window.aria.carried({int(x)},{int(y)})"
+        self._send(None, call)
 
     def stop_trip(self):
         self._send(None, "window.aria.stopTrip()")   # her window is being dragged: she stops where she is
@@ -257,6 +327,7 @@ def make_view(parent, path):
     """The web view that shows the avatar, loading at once (hidden and paused until the overlay says otherwise).
     The only function here that needs QtWebEngine; everything it could decide is decided elsewhere."""
     from PySide6.QtCore import Qt, QTimer, QUrl, QUrlQuery
+    from PySide6.QtGui import QGuiApplication
     from PySide6.QtGui import QColor
     from PySide6.QtWebEngineCore import QWebEngineSettings
     from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -279,10 +350,13 @@ def make_view(parent, path):
             self._poll = QTimer(self)
             self._poll.timeout.connect(self._ask)
             url = QUrl.fromLocalFile(os.path.join(AVATAR_DIR, "avatar.html"))
+            query = QUrlQuery()
             if path:
-                query = QUrlQuery()
                 query.addQueryItem("model", QUrl.fromLocalFile(path).toString())
-                url.setQuery(query)
+            # she draws at the screen's own rate (unlock_frame_rate takes Chromium's 60 fps pacing off)
+            screen = (parent.screen() if parent is not None else None) or QGuiApplication.primaryScreen()
+            query.addQueryItem("hz", str(screen_hz(screen.refreshRate() if screen else None)))
+            url.setQuery(query)
             self.hide()
             self.load(url)
             self._poll.start(250)

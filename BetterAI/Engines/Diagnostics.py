@@ -32,6 +32,8 @@ PROBLEM_NAMES = {
     "corrected": "you corrected her",
     "claimed_no_tool": "said she did something without doing it (retried)",
     "missing_tool": "said she can't, retried with all tools",
+    "steered": "picked the wrong tool, put right in code",
+    "stt_gpu_lost": "graphics card went away, speech recognition moved to the CPU",
     "rewritten": "stock or repeated reply, rewritten",
     "empty_reply": "the model said nothing",
     "tool_error": "a tool failed",
@@ -121,6 +123,24 @@ def report(days=7) -> str:
             when = time.strftime("%a %H:%M", time.localtime(p["at"]))
             lines.append(f"  {when}  {p['kind']}: {p.get('detail', '')}")
     return "\n".join(lines)
+
+
+def card(aria, days=7):
+    """Local timings plus service checks; callers run this outside the Qt thread."""
+    from Engines.Health import Health
+    checks = Health(aria).checks()
+    lines = [report(days), "", "Services:"]
+    lines.extend(f"{'✓' if ok else '⚠'} {name}: {detail}" for name, ok, detail in checks)
+    big = getattr(aria, "big", None)
+    if not big or not getattr(big, "command", None):
+        lines.append("Claude: not installed or not found — install/sign in to Claude, then restart Aria.")
+    elif not big.enabled:
+        lines.append("Claude: switched off in Settings.")
+    elif not big.available:
+        lines.append("Claude: temporarily unavailable; local fallback is active. Retry shortly.")
+    else:
+        lines.append("Claude: configured (connection not checked).")
+    return {"type": "diagnostics", "title": "How Aria is running", "text": "\n".join(lines)}
 
 
 if __name__ == "__main__":

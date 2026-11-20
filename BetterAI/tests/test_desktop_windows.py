@@ -1,5 +1,5 @@
 """Where on the other windows Aria's avatar can sit (ui/desktop_windows.py): pure geometry, no X needed."""
-from ui.desktop_windows import Edge, Seat, Win, covering, hideouts, open_windows, seats
+from ui.desktop_windows import Edge, Seat, Win, arrived_beside, beside, covering, hideouts, open_windows, seats, usable_seats
 
 SCREEN = (0, 0, 1920, 1040)
 
@@ -67,3 +67,28 @@ def test_covering_is_the_topmost_window_over_her_middle():
     assert covering([b, a], BOX) == a
     assert covering([Win(3, 0, 200, 500, 1000)], BOX) is None
     assert covering([Win(4, 900, 600, 1400, 1000)], BOX) is None        # too short to hide her
+
+
+def test_windows_right_beside_her_and_on_which_side():
+    # her middle is at x 1150, her body from about y 494 to 858
+    near_left, near_right = Win(1, 500, 300, 1050, 900), Win(2, 1250, 300, 1900, 900)
+    assert beside([near_left, near_right], BOX) == {1: -1, 2: 1}
+    assert beside([Win(3, 0, 300, 900, 900)], BOX) == {}              # too far away
+    assert beside([Win(4, 1250, 0, 1900, 450)], BOX) == {}            # above her head
+    assert beside([Win(5, 1000, 300, 1900, 900)], BOX) == {}          # over her: that's hiding, not beside
+
+
+def test_only_a_window_new_beside_her_makes_her_flinch():
+    assert arrived_beside(None, {1: -1}) == 0                         # first look, or she moved: nothing new
+    assert arrived_beside({1: -1}, {1: -1}) == 0                      # still there
+    assert arrived_beside({1: -1}, {1: -1, 2: 1}) == 1                # one came up on her right
+    assert arrived_beside({1: -1}, {}) == 0                           # one went away
+    assert arrived_beside({1: -1}, {1: 1}) == 1                       # moved across her to her right
+    assert arrived_beside({1: 1}, {1: -1}) == -1
+
+
+def test_a_window_she_failed_to_land_on_is_no_seat_for_a_while():
+    a, b = Seat(1, 300, 1100, 500), Seat(2, 1200, 1800, 400)
+    assert usable_seats([a, b], {}, 100.0) == [a, b]
+    assert usable_seats([a, b], {1: 400.0}, 100.0) == [b]              # banned until 400
+    assert usable_seats([a, b], {1: 400.0}, 401.0) == [a, b]           # and fine again after

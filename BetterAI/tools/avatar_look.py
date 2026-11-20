@@ -17,8 +17,11 @@ A step's JavaScript can also measure: push onto window.ariaLog and it is printed
     '(window.ariaLog ||= []).push(window.aria.where("rightHand", "rightLowerArm"))|4500|'
 
 Calls: window.aria.setState("listening|thinking|speaking|idle"), setLevel(mic, out), lookAt(x, y), setProps([...]),
+emote("curious|uncertain|focused|amused") (a brief expression and mannerism),
 wave(), hop(), act("trip" (across the screen; the window goes along) | "perch" | "hopDown" | "stroll" | "strollPeek" | "sit:1" | "stand" | a fidget like "curious:-1"),
-tune({bone: [x, y, z, twist]}) to pin bones while fitting a pose (tune() lets go). Her pose waits for the
+tune({bone: [x, y, z, twist]}) to pin bones while fitting a pose (tune() lets go; hands: {left: {curl: [4], spread,
+thumb}} pins a hand's shape), closeUp(x, y, height, yaw) so the shots her page draws (ARIA_LOOK_SNAPSHOT=1) show only
+that part of her, from that side: closeUp(0, 0.72, 0.5) is her head and shoulders, closeUp() all of her again. Her pose waits for the
 model: act on it after about 3000 ms.
 Step times are from the start, not from the previous step. A fidget plays only while she is idle: set
 window.aria.setState("idle") first. With the screen locked (a grab would show the lock screen, and the page's
@@ -63,6 +66,8 @@ def main(argv):
         locked = [False]
     drawn = locked[0] or os.environ.get("ARIA_LOOK_SNAPSHOT") == "1"   # her page draws the shots (her frames run
                                                                         # live unless locked: no advance() then)
+    from ui.avatar_view import unlock_frame_rate
+    unlock_frame_rate()                     # (as in Aria: her page draws at the screen's own rate)
     app = QApplication(sys.argv[:1])
     win = QWidget(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
     win.setStyleSheet("background: #4a5568")
@@ -151,7 +156,10 @@ def main(argv):
             floor[0] = box_at[1]
         free = seats(open_windows(own=int(win.winId())), (area.left(), area.top(), area.right(), area.bottom()),
                      above=int(seat_h[0][1]) + 4)
-        out_ = [{"x": (s.left + s.right) // 2 - box.center().x(), "half": (s.right - s.left) // 2, "y": s.top - box.bottom()}
+        wins = {w.id: w for w in open_windows(own=int(win.winId()))}
+        out_ = [{"x": (s.left + s.right) // 2 - box.center().x(), "half": (s.right - s.left) // 2, "y": s.top - box.bottom(),
+                 "corners": [e for e, at, edge in ((-1, s.left, wins[s.id].left), (1, s.right, wins[s.id].right))
+                             if abs(at - edge) <= 2] if s.id in wins else []}
                 for s in free]
         from ui.desktop_windows import any_maximized
         if travel.done and box_at[1] == floor[0] and any_maximized(own=int(win.winId())):   # the panel, as the overlay

@@ -74,6 +74,32 @@ def test_list_card_checkbox(overlay, app):
     assert ("toggle", 7, "eggs", True) in overlay.sent
 
 
+def test_settings_dialog_validates_and_saves(app, tmp_path):
+    from Engines.Preferences import Preferences
+    from ui.settings import SettingsDialog
+    prefs = Preferences(path=tmp_path / "settings.json")
+    aria = type("A", (), {"settings_snapshot": lambda self: prefs.values,
+                           "save_settings": lambda self, values: prefs.save(values)})()
+    dialog = SettingsDialog(aria)
+    dialog.quiet.setText("bad time")
+    dialog.save()
+    assert dialog.error.text() and not prefs.path.exists()
+    dialog.quiet.setText("23:00-07:00")
+    dialog.checks["claude"].setChecked(False)
+    dialog.save()
+    assert not Preferences(path=prefs.path).values["claude"]
+    assert dialog.result() == dialog.DialogCode.Accepted
+
+
+def test_diagnostics_card_renders_as_plain_text(overlay, app):
+    from PySide6.QtWidgets import QLabel
+    overlay.bridge.show_card({"type": "diagnostics", "title": "How Aria is running",
+                              "text": "2.0 s typical\nMyNotion: set DB_PATH\n<literal>"})
+    app.processEvents()
+    labels = overlay.card.findChildren(QLabel)
+    assert any("<literal>" in label.text() and label.textFormat() == Qt.PlainText for label in labels)
+
+
 # ── starting hidden (MyNotion's Start button): only the hotkey, the menu or a card shows the orb ──
 
 def test_ping_is_an_instance_command():
@@ -169,3 +195,57 @@ def test_typing_in_the_box_tells_aria_you_are_still_there(overlay):
     assert overlay.bridge.typed_at == 0.0
     QTest.keyClicks(overlay.input, "wait")
     assert time.monotonic() - overlay.bridge.typed_at < 1
+
+
+def test_a_click_on_her_is_felt_once_and_a_drag_is_not(overlay, monkeypatch):
+    from types import SimpleNamespace
+    from PySide6.QtCore import QPoint
+    taps = []
+    overlay.avatar = SimpleNamespace(link=SimpleNamespace(tapped=lambda: taps.append(1), carried=lambda *a: None))
+    monkeypatch.setattr(overlay, "_shows_avatar", lambda: True)
+    monkeypatch.setattr(overlay, "_save_position", lambda: None)
+    release = SimpleNamespace(button=lambda: Qt.LeftButton)
+    overlay._drag_from, overlay._dragged = QPoint(0, 0), False            # pressed on her, not moved: a click
+    overlay.mouseReleaseEvent(release)
+    assert taps == [1]
+    overlay._drag_from, overlay._dragged = QPoint(0, 0), True             # pressed on her and moved: a drag
+    overlay.mouseReleaseEvent(release)
+    assert taps == [1]
+    overlay.mouseReleaseEvent(release)                                    # a release with no press on her
+    assert taps == [1]
+
+
+def test_seats_are_only_measured_standing_and_a_missed_window_is_not_jumped_at_again(overlay, monkeypatch):
+    """The jump-sit-jump loop: seats measured while she was in the air sent her jumping short of the window; she
+    was dropped and jumped at it again and again."""
+    import time
+    from types import SimpleNamespace
+    from PySide6.QtCore import QRect
+    from ui.desktop_windows import Seat, Win
+    import ui.overlay as ov
+    win = Win(7, 138, 241, 1578, 900)
+    screen = QRect(0, 0, 1920, 1040)
+    monkeypatch.setattr(overlay, "_seats_here", lambda: ([win], [Seat(7, 138, 1578, 241)], screen))
+    monkeypatch.setattr(ov, "any_maximized", lambda own=None: False, raising=False)
+    import ui.desktop_windows as dw
+    monkeypatch.setattr(dw, "any_maximized", lambda own=None: False)
+    sent = []
+    link = SimpleNamespace(set_hideouts=lambda e: None, hidden_by=lambda *a: None, startle=lambda s: None,
+                           set_seats=lambda seats, floor: sent.append(seats), drop_down=lambda: sent.append("drop"))
+    overlay._seat_h, overlay._headroom = 177, 200
+    overlay._watch_seats(link)                                  # standing on her floor: the window is a seat
+    assert sent[-1] and sent[-1][0]["y"] < 0
+    overlay._aloft = True                                       # up in the air (landed nowhere): no seats measured
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    overlay._watch_seats(link)
+    assert sent[-1] == []
+    clock[0] += ov.SEAT_LOST_S + 0.1
+    overlay._watch_seats(link)                                  # still no window under her: dropped
+    assert "drop" in sent
+    overlay._aloft, overlay._perch, overlay._dropping = False, None, False   # back on her floor
+    overlay._watch_seats(link)
+    assert sent[-1] == [], "the window she missed is not offered again straight away"
+    clock[0] += ov.SEAT_BAN_S + 1
+    overlay._watch_seats(link)
+    assert sent[-1], "after a while it is a seat again"

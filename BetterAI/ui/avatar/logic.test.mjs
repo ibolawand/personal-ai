@@ -1,10 +1,11 @@
+import { armEntry, armRelease, typingEyeStep, typingKeyCount } from './logic.mjs';
 // The avatar's decisions that need no 3D: poses, blinking, the mouth, where the orbiting props sit.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { STATES, BONES, GESTURES, FIDGETS, WALK, avatarState, poseFor, idleMotion, gesture, walkCycle, stroll, strollLength,
+import { STATES, BONES, GESTURES, thoughtStep, detailFits, TAP, tapMotion, SETTLE, settles, settleBreath, CATCH, inReach, reachPoint, catchStep, PHRASE, phrasePlan, phraseGesture, TYPING, typingAttention, CUT_S, cutShort, mayStartle, STARTLE_EVERY, FIDGETS, WALK, avatarState, poseFor, idleMotion, gesture, walkCycle, stroll, strollLength,
   talkMotion, visemes, saccade, chooseIdle, IDLE, SEATED_FIDGETS, sitting, sitPose, LEG, spring, gazeWander, withinLimits, ease, nextBlink, blinkWeight, BLINK, weightShift, mouthWeight, ringPosition, fingerCurl,
-  TRIP, planTrip, trip, tripLength, cutLeg, LEDGE_Y, perchPose, dangle, jump, jumpLength, planPerch,
-  PERCHED_FIDGETS, PEEK, planHide, peekOut, headPastEdge, lookBlink, edgeSit, edgeSitLength, bobMotion, beatClock, beatsAt } from './logic.mjs';
+  TRIP, planTrip, trip, tripLength, cutLeg, LEDGE_Y, perchPose, dangle, jump, jumpLength, planPerch, CORNER_CHANCE,
+  PERCHED_FIDGETS, HANDS, crossFits, tiredness, TIRED, DOZE_EVERY, CARRY, carryInput, carrySwing, carryPose, setDown, LAND_S, PEEK, planHide, peekOut, headPastEdge, lookBlink, edgeSit, edgeSitLength, bobMotion, grooveStep, afterMusic, GROOVE, beatClock, beatsAt } from './logic.mjs';
 
 test('the microphone decides between listening and idle', () => {
   assert.equal(avatarState('listening', true), 'listening');
@@ -19,7 +20,7 @@ test('every state has a pose for her whole body, within what a body can do', () 
     assert.deepEqual(Object.keys(p.bones), BONES);
     for (const [name, angles] of Object.entries(p.bones)) {
       assert.equal(angles.length, 4);                  // x, y, z and a twist
-      const limit = name.includes('Arm') ? 1.6 : 0.6;
+      const limit = name.includes('LowerArm') ? 2.5 : name.includes('Arm') ? 1.6 : 0.6;    // (an elbow folds: thinking, her finger is on her chin)
       for (const a of angles) assert.ok(Math.abs(a) <= limit, `${s} ${name} ${a}`);
     }
     for (const w of Object.values(p.expressions)) assert.ok(w >= 0 && w <= 1);
@@ -262,7 +263,8 @@ test('talking, her hands stay down by her sides: small beats, no pumping back an
 test('every fidget eases in from her pose and out again, within what a body can do', () => {
   for (const name of FIDGETS) {
     const length = GESTURES[name];
-    assert.ok(length >= 2 && length <= (name === 'umbrella' ? 16 : 5), name);   // the umbrella rests on her shoulder a while
+    // the umbrella rests on her shoulder a while, and crossed ankles are a rest of their own
+    assert.ok(length >= 2 && length <= (name === 'umbrella' ? 16 : name === 'crossAnkles' ? 7.5 : name === 'ankleEase' ? 5.2 : 5), name);
     assert.ok(gesture(name, 0).weight === 0 && gesture(name, length - 0.001).weight < 0.01, name);
     assert.ok(gesture(name, length / 2).weight > 0.9 && gesture(name, length / 2).weight < 1.15, name);
     assert.equal(gesture(name, length), null);
@@ -272,7 +274,7 @@ test('every fidget eases in from her pose and out again, within what a body can 
       for (const [bone, angles] of Object.entries(g.bones)) {
         assert.ok(BONES.includes(bone), `${name} ${bone}`);
         const most = /tretch/.test(name) && bone.includes('UpperArm') ? 3 : bone.includes('LowerArm') ? 2.5
-          : bone.includes('Arm') ? 2 : 0.6;
+          : bone.includes('Arm') ? 2 : bone.includes('Hand') ? 0.8 : 0.6;        // (a wrist bends further than a spine)
         for (const a of angles) assert.ok(Math.abs(a) <= most, `${name} ${bone} ${a}`);
       }
     }
@@ -417,6 +419,199 @@ test('her eyes make small jumps that hold for a moment', () => {
   assert.ok(seen.size >= 8 && held > 150);                                          // many different spots, mostly at rest
 });
 
+test('tucking her hair: her head leads, she glances down, the elbow drops first, and her hand ends relaxed', () => {
+  const L = GESTURES.tuckHair, at = t => gesture('tuckHair', t, 1);
+  // anticipation: her head is already tipping toward the hand while the arm's own weight has barely begun
+  assert.ok(at(0.25).weights.head > 0.9 && at(0.25).weight < 0.2, 'head before arm');
+  for (let t = 0; t < L; t += 0.05) {
+    const g = at(t);
+    for (const w of Object.values(g.weights)) assert.ok(w >= 0 && w <= 1, `lead weight at ${t}`);
+  }
+  assert.ok(at(0.5).look[1] < 0, 'a glance down while her hand comes up');
+  assert.ok(at(1.0).bones.head[2] > 0.08 && at(1.4).bones.head[2] > at(0.6).bones.head[2], 'her head yields further into the sweep');
+  // the sweep takes her fingertips from her temple to behind her ear: more twist and the wrist bent back
+  assert.ok(at(1.5).bones.rightUpperArm[3] < at(0.85).bones.rightUpperArm[3] && at(1.5).bones.rightHand[0] > at(0.85).bones.rightHand[0]);
+  // on the way down the elbow goes down by her side (upper arm lowered) while the gesture still holds the arm
+  assert.ok(at(2.2).bones.rightUpperArm[2] > 0.7 && at(2.2).weight > 0.4, 'elbow first');
+  assert.ok(at(2.2).weights.rightLowerArm > at(2.7).weights.rightLowerArm, 'the forearm unfolds after it');
+  // fingers relax last, and are fully back to relaxed at the end
+  const end = at(L - 0.01).hands.right;
+  assert.deepEqual(end.curl.map(c => +c.toFixed(3)), HANDS.relaxed.curl);
+  assert.ok(at(L - 0.01).weights.head < 0.01);
+  // the other side mirrors it: left arm, head tipped the other way, eyes to the other side
+  const m = gesture('tuckHair', 1.0, -1);
+  assert.ok(m.bones.leftUpperArm && !m.bones.rightUpperArm && m.bones.head[2] < 0 && Math.sign(m.look[0]) === -Math.sign(at(1.0).look[0]));
+  assert.ok(m.hands.left && !m.hands.right);
+  // she does it sitting on a window too (her arm only), but not on the floor hugging her knees
+  assert.ok(PERCHED_FIDGETS.includes('tuckHair') && !SEATED_FIDGETS.includes('tuckHair'));
+});
+
+test('carried: her speed and push are read smoothly from where her window is, and a still drag reads as still', () => {
+  let s = carryInput(null, 0, 0, 0);
+  assert.deepEqual([s.vx, s.ax], [0, 0]);
+  for (let i = 1; i <= 30; i++) s = carryInput(s, i * 0.02, 0, i / 60);       // 1.2 units a second to the right
+  assert.ok(Math.abs(s.vx - 1.2) < 0.05 && Math.abs(s.ax) < 0.5, `steady speed ${s.vx}, no push ${s.ax}`);
+  for (let i = 31; i <= 90; i++) s = carryInput(s, 0.6, 0, i / 60);           // held still
+  assert.ok(Math.abs(s.vx) < 0.01 && Math.abs(s.ax) < 0.05);
+  // a wild reading (a jump across the screen in one frame) is capped, not a jolt to the moon
+  const j = carryInput({ x: 0, y: 0, t: 0, vx: 0, vy: 0, ax: 0, ay: 0 }, 50, 0, 1 / 60);
+  assert.ok(j.vx <= CARRY.fast);
+  assert.deepEqual(carryInput(s, 1, 1, s.t), carryInput(null, 1, 1, s.t), 'no time passed: starts again, never divides by 0');
+});
+
+test('carried: her feet trail a push, she swings through when it turns, and settles once you stop', () => {
+  let w = { a: 0, v: 0 }, most = 0;
+  // where a hanging foot ends up sideways (x: the viewer's right) when its leg is turned by `a` about z, the way
+  // three.js turns a bone: a leg pointing down, (0, -1), turned by a goes to (sin a, -cos a)
+  const footX = a => Math.sin(carryPose(1, a).leftUpperLeg[2]);
+  for (let i = 0; i < 20; i++) w = carrySwing(w, 30, 1 / 60);                 // pushed to the viewer's right
+  assert.ok(footX(w.a) < -0.1, 'her feet swing to the viewer\'s left, trailing the push');
+  for (let i = 0; i < 20; i++) { w = carrySwing(w, -30, 1 / 60); most = Math.max(most, footX(w.a)); }
+  assert.ok(most > 0.1, 'and through to the other side when the push turns');
+  let crossings = 0, last = w.a;
+  // (a swing counts when it goes visibly past the middle: more than about half a degree)
+  for (let i = 0; i < 240; i++) { w = carrySwing(w, 0, 1 / 60); if (Math.abs(w.a) > 0.01 && Math.sign(w.a) !== Math.sign(last)) crossings++; if (Math.abs(w.a) > 0.01) last = w.a; }
+  assert.ok(crossings >= 1 && crossings <= 2, `swings past once or twice and settles (${crossings})`);
+  assert.ok(Math.abs(w.a) < 0.02, 'settled after 4 s');
+  for (let i = 0; i < 600; i++) w = carrySwing(w, 1e6, 1 / 60);
+  assert.ok(Math.abs(w.a) <= 1.5 * CARRY.max, 'a hard throw never flips her over');
+  // the same at 30 fps as at 120 fps: frame-rate independent
+  let a = { a: 0, v: 0 }, b = { a: 0, v: 0 };
+  for (let i = 0; i < 30; i++) a = carrySwing(a, 20, 1 / 30);
+  for (let i = 0; i < 120; i++) b = carrySwing(b, 20, 1 / 120);
+  assert.ok(Math.abs(a.a - b.a) < 0.01);
+});
+
+test('carried: legs hang loose and trail, the upper body leans against them, arms out for balance; put down, knees give', () => {
+  const p = carryPose(1, 0.2);
+  assert.ok(p.leftLowerLeg[0] > 0.1 && p.leftFoot[0] > 0.3, 'knees loose, toes down');
+  assert.ok(p.leftUpperLeg[2] > 0 && p.spine[2] < 0 && Math.abs(p.head[2]) < Math.abs(p.spine[2]), 'legs swing, back leans against them, head nearly level');
+  assert.ok(p.leftUpperArm[2] > 0 && p.rightUpperArm[2] < 0, 'arms lifted out a little');
+  for (const v of Object.values(carryPose(0, 0)).flat()) assert.equal(Math.abs(v), 0, 'not held: nothing');
+  for (const [bone, v] of Object.entries(carryPose(1, 1.5 * CARRY.max))) {
+    const four = [0, 1, 2, 3].map(i => v[i] || 0);
+    assert.deepEqual(withinLimits(bone, four), four, `${bone} within what a joint can do`);
+  }
+  assert.equal(setDown(-0.1), 0);
+  assert.ok(setDown(0.12) > 0.3, 'knees give quickly');
+  let prev = 0;
+  for (let t = 0; t < LAND_S + 0.05; t += 1 / 120) {
+    const c = setDown(t);
+    assert.ok(c >= 0 && c <= 0.36 && Math.abs(c - prev) < 0.04, `smooth at ${t.toFixed(3)}`);
+    prev = c;
+  }
+  assert.equal(setDown(LAND_S), 0);
+});
+
+test('tired late at night: none by day, most from 1 to 5, gone by 8, and smooth round the clock', () => {
+  for (const h of [9, 12, 15, 18, 21.9, 8.0]) assert.ok(tiredness(h) < 0.01, `awake at ${h}`);
+  for (const h of [1, 2.5, 4.9]) assert.ok(tiredness(h) > 0.99, `tired at ${h}`);
+  assert.ok(tiredness(23) > 0.1 && tiredness(23) < 0.9 && tiredness(6.5) > 0.1 && tiredness(6.5) < 0.9, 'on the way');
+  assert.equal(tiredness(24 + 2), tiredness(2));
+  for (let h = 0; h < 24; h += 1 / 60) assert.ok(Math.abs(tiredness(h + 1 / 60) - tiredness(h)) < 0.02, `no jump at ${h}`);
+  // tired blinks are slower: the same blink lasts longer and is still shut where a rested one is already open
+  assert.ok(blinkWeight(0.15, 0, 1 + TIRED.blinkSlow) > blinkWeight(0.15, 0, 1));
+  assert.equal(blinkWeight(BLINK.length * 1.5, 0, 1.8) > 0, true);
+  assert.equal(blinkWeight(0.1, 0), blinkWeight(0.1, 0, 1), 'rested blinks unchanged');
+});
+
+test('tired, she yawns more and now and then nods off: never by day, never twice in ten minutes', () => {
+  const pick = (opts, n = 400) => {
+    const c = {};
+    for (let i = 0; i < n; i++) { const a = chooseIdle(opts, (i + 0.5) / n, 0.3); const k = a.gesture || Object.keys(a)[0]; c[k] = (c[k] || 0) + 1; }
+    return c;
+  };
+  const day = pick({ idleFor: 60 }), night = pick({ idleFor: 60, tired: 1 });
+  assert.ok(!day.doze && night.doze > 0, 'dozes only when tired');
+  assert.ok((night.yawn || 0) > 2 * (day.yawn || 0), `more yawns (${night.yawn} vs ${day.yawn})`);
+  assert.ok(!pick({ idleFor: 60, tired: 1, sinceDoze: DOZE_EVERY - 1 }).doze, 'not again so soon');
+  assert.ok(!pick({ idleFor: 10, tired: 1 }).doze, 'only after a while with nothing going on');
+  assert.ok(pick({ idleFor: 60, tired: 1, perched: true, perchedFor: 30 }).doze > 0, 'on a window too');
+  assert.ok(pick({ idleFor: 60, tired: 1, seated: true, seatedFor: 5 }).doze > 0, 'and sitting on the floor');
+});
+
+test('nodding off: lids close as her head sinks, then she starts awake chest first, head last, a touch past upright', () => {
+  const g = t => ({ ...gesture('doze', t), bones: gesture('doze', t).adds });     // (added on top of her pose)
+  assert.deepEqual(gesture('doze', 1).bones, {}, 'nothing replaced: sitting, perched or standing keep their pose');
+  assert.ok(gesture('doze', 1).ownBlinks, 'her own blinks wait: the wake-up blinks are its own');
+  assert.ok(g(2.6).eyes > 0.95 && g(2.6).bones.head[0] > 0.3, 'asleep: eyes shut, head down');
+  assert.ok(g(1.0).bones.head[0] < g(2.0).bones.head[0], 'sinking');
+  // it catches itself a little halfway
+  assert.ok(g(1.55).bones.head[0] - g(1.3).bones.head[0] < g(2.3).bones.head[0] - g(2.05).bones.head[0]);
+  // waking: the chest is already coming up while the head is still down
+  const w = 2.7 + 0.08;
+  assert.ok(g(w).bones.chest[0] / 0.08 < g(w).bones.head[0] / 0.36, 'chest leads, head follows');
+  let past = 0;
+  for (let t = 2.7; t < 3.4; t += 0.01) past = Math.min(past, g(t).bones.head[0]);
+  assert.ok(past < 0 && past > -0.05, `a touch past upright (${past})`);
+  assert.ok(g(2.9).eyes < 0.1, 'eyes open at once');
+  assert.ok(g(3.05).eyes > 0.5 && g(3.3).eyes > 0.5 && g(3.17).eyes < 0.3, 'two quick blinks');
+  assert.ok(g(4.0).face.happy > 0.2, 'a sheepish smile');
+  assert.ok(g(3.0).alert > 0.9 && g(1.0).alert === 0 && g(GESTURES.doze - 0.01).alert < 0.1, 'wide awake for a moment, then heavy lids again');
+  // no bone jumps between frames, the wake-up included
+  for (let t = 0; t < GESTURES.doze - 0.01; t += 1 / 60)
+    for (const b of ['chest', 'neck', 'head']) assert.ok(Math.abs(g(t + 1 / 60).bones[b][0] - g(t).bones[b][0]) < 0.08, `${b} at ${t}`);
+});
+
+test('an almost-sneeze: two breaths in with a hand to her nose, a frozen beat, nothing, relief; rare', () => {
+  const g = t => gesture('almostSneeze', t, 1);
+  // head and chest lead (their own weight) before the arm has got going
+  assert.ok(g(0.3).weights.head > 0.9 && g(0.3).weight < 0.3);
+  // her chin lifts and her eyes squint as the breath comes, with a second, smaller breath on top
+  const chin = t => -g(t).bones.head[0];
+  assert.ok(chin(0.9) > 0.05 && chin(1.35) > chin(0.95), 'second breath in');
+  assert.ok(g(1.4).eyes > 0.5 && g(1.4).mouth > 0.1);
+  // the frozen beat trembles a little; then it is let go: the chest and head sag forward with relief
+  assert.ok(g(2.2).bones.head[0] > 0 && g(2.2).face.relaxed > 0.3, 'relief');
+  // the elbow drops before the forearm unfolds, and the fingers open last
+  assert.ok(g(2.3).weights.rightUpperArm < g(2.3).weights.rightLowerArm && g(2.3).bones.rightLowerArm[1] > 1.9, 'elbow first');
+  assert.ok(g(3.0).hands.right.curl[0] < HANDS.relaxed.curl[0] && g(3.55).weight < 0.05, 'fingers open last');
+  // rare: at most every 10 minutes, whatever else she has done since
+  const picks = since => { let n = 0; for (let i = 0; i < 400; i++) n += chooseIdle({ idleFor: 60, since }, (i + 0.5) / 400, 0.3).gesture === 'almostSneeze'; return n; };
+  assert.ok(picks({}) > 0 && picks({ almostSneeze: 599 }) === 0 && picks({ almostSneeze: 601 }) > 0);
+  // the other side is the same with the left hand; nothing jumps between frames
+  const m = gesture('almostSneeze', 1.2, -1);
+  assert.ok(m.bones.leftUpperArm && !m.bones.rightUpperArm && m.hands.left && !m.hands.right);
+  for (let t = 0; t < GESTURES.almostSneeze - 1 / 60; t += 1 / 60) {
+    const [a, c] = [g(t), g(t + 1 / 60)];
+    for (const [bone, v] of Object.entries(a.bones)) v.forEach((x, i) => assert.ok(Math.abs(c.bones[bone][i] - x) < 0.08, `${bone} at ${t}`));
+    assert.ok(Math.abs(c.weight - a.weight) < 0.08 && Math.abs(c.eyes - a.eyes) < 0.08);
+  }
+});
+
+test('crossing her ankles on a window: only on an ordinary edge, the swing quiets first, a lift to clear, then back', () => {
+  const g = t => gesture('crossAnkles', t, 1), L = GESTURES.crossAnkles;
+  // only sitting on a window's edge: not standing, not at a corner or on the panel (canCross says which)
+  const picks = o => { let n = 0; for (let i = 0; i < 300; i++) n += chooseIdle(o, (i + 0.5) / 300, 0.3).gesture === 'crossAnkles'; return n; };
+  assert.equal(picks({ idleFor: 60 }), 0);
+  assert.equal(picks({ idleFor: 60, perched: true, perchedFor: 20 }), 0);
+  assert.ok(picks({ idleFor: 60, perched: true, perchedFor: 20, canCross: true }) > 0);
+  // where she may cross (or keep crossed) her ankles: the page fades a crossing out the moment this turns false
+  assert.ok(crossFits({ perched: { since: 0 } }));
+  assert.ok(!crossFits({}), 'standing');
+  assert.ok(!crossFits({ perched: { since: 0 }, jumping: true }), 'hopping down');
+  assert.ok(!crossFits({ perched: { since: 0, corner: 1 } }), 'at a corner her legs swing');
+  assert.ok(!crossFits({ perched: { since: 0, low: 1 } }), 'on the panel her legs hang behind it');
+  assert.ok(!crossFits({ perched: { since: 0 }, carried: true }), 'picked up');
+  // added on top of her sitting pose, never replacing it
+  assert.deepEqual(g(3).bones, {});
+  // her swing has quieted before the legs move, and comes back only once they're apart again
+  assert.ok(g(0.3).calm > 0.5 && g(0.3).adds.leftUpperLeg[1] < 0.01);
+  assert.ok(g(L - 0.45).adds.leftUpperLeg[1] < 0.02 && g(L - 0.45).calm > 0.9 && g(L - 0.05).calm < 0.1);
+  // crossed: the thigh turned in about its length (the foot comes across), the knee a little straighter (in front)
+  assert.ok(g(3).adds.leftUpperLeg[1] > 0.24 && g(3).adds.leftLowerLeg[0] < -0.14);
+  // the knee lifts to clear the other foot on the way over and on the way back, not while resting
+  const lift = t => -g(t).adds.leftUpperLeg[0] - 0.05 * g(t).adds.leftUpperLeg[1] / 0.25;
+  assert.ok(lift(0.65) > 0.06 && lift(L - 0.8) > 0.06 && lift(3) < 0.01);
+  // toes follow the shin a moment later, and wiggle once while she rests
+  assert.ok(g(0.7).adds.leftFoot[0] < 0.1 * g(0.7).adds.leftUpperLeg[1] / 0.25 + 1e-9);
+  assert.ok(g(3.9).adds.leftFoot[0] > g(3.0).adds.leftFoot[0] + 0.1);
+  // the other side crosses the right leg over; nothing jumps between frames
+  assert.ok(gesture('crossAnkles', 3, -1).adds.rightUpperLeg[1] < -0.24);
+  for (let t = 0; t < L - 1 / 60; t += 1 / 60)
+    for (const [b, v] of Object.entries(g(t).adds)) v.forEach((x, i) => assert.ok(Math.abs(g(t + 1 / 60).adds[b][i] - x) < 0.05, `${b} at ${t}`));
+});
+
 test('elbows and knees only bend their own way, whatever adds up', () => {
   assert.deepEqual(withinLimits('leftLowerArm', [0.1, 0.4, 0, 0]), [0.1, 0, 0, 0]);        // would bend backward: straight
   assert.deepEqual(withinLimits('rightLowerArm', [0, -0.4, 0.2]), [0, 0, 0.2, 0]);
@@ -430,6 +625,8 @@ test('elbows and knees only bend their own way, whatever adds up', () => {
     for (const state of STATES) {
       const pose = poseFor(state).bones;
       for (const name of ['leftLowerArm', 'rightLowerArm', 'leftLowerLeg', 'rightLowerLeg']) {
+        // (thinking, her elbow is folded all the way to bring her finger to her chin: the limit holds it there)
+        if (state === 'thinking' && name === 'rightLowerArm') continue;
         const sum = [0, 1, 2, 3].map(i => pose[name][i] + pieces.reduce((n, p) => n + (p[name]?.[i] || 0), 0));
         assert.deepEqual(withinLimits(name, sum), sum, `${state} ${name} at ${t}`);
       }
@@ -567,6 +764,38 @@ test('which seat: the spot on a free stretch nearest to her, clear of its ends; 
   let near = 0;
   for (let i = 0; i < 100; i++) near += planPerch([{ x: 100, half: 200, y: -200 }, { x: 1400, half: 200, y: -200 }], (i + 0.5) / 100).dx < 500;
   assert.ok(near > 60, `the nearer window is the likelier one (${near} of 100)`);
+});
+
+test('on a window\'s top corner she sits just in from it, when the stretch ends at a real corner', () => {
+  const seat = { x: 500, half: 200, y: -300, corners: [-1, 1] };
+  assert.deepEqual(planPerch([seat], 0.5, 60, 0), { dx: 360, y: -300, corner: -1 }, 'the nearer corner');
+  assert.deepEqual(planPerch([{ ...seat, x: -500 }], 0.5, 60, 0), { dx: -360, y: -300, corner: 1 });
+  assert.deepEqual(planPerch([{ ...seat, corners: [1] }], 0.5, 60, 0), { dx: 640, y: -300, corner: 1 }, 'the only real corner');
+  assert.deepEqual(planPerch([seat], 0.5, 60, CORNER_CHANCE + 0.01), { dx: 360, y: -300 }, 'not every time');
+  assert.deepEqual(planPerch([{ ...seat, corners: [] }], 0.5, 60, 0), { dx: 360, y: -300 }, 'covered ends are no corners');
+  assert.deepEqual(planPerch([{ x: 0, half: 5000, y: 240, low: 1, corners: [-1] }], 0.5, 60, 0), { dx: 0, y: 240 }, 'not on the panel');
+});
+
+test('on a corner her legs swing steadily, one forward as the other goes back; never a stiff stop', () => {
+  let peak = 0, still = 0, against = 0, n = 0;
+  for (let t = 0; t < 120; t += 0.05) {
+    const d = dangle(t, 1), l = d.leftLowerLeg[0], r = d.rightLowerLeg[0];
+    peak = Math.max(peak, Math.abs(l));
+    if (Math.abs(l) + Math.abs(r) > 0.1) { n++; against += l * r < 0; }
+    assert.ok(Math.abs(d.spine[0]) < 0.03 && Math.abs(d.head[0]) < 0.03, 'her body only rocks a hair');
+    assert.ok(d.leftUpperLeg[0] <= 0 && d.leftUpperLeg[0] > -0.1, 'thighs lift a little, forward only');
+  }
+  assert.ok(peak > 0.3 && peak <= 0.42, `a real swing, not a kick through the window (${peak})`);
+  assert.ok(peak > 0.28, 'bigger than the idle dangle');
+  assert.ok(against / n > 0.95, 'legs alternate');
+  for (let s = 0; s < 120; s++) {                  // every second of it has a visible swing in it
+    let most = 0;
+    for (let t = s; t < s + 1; t += 0.02) most = Math.max(most, Math.abs(dangle(t, 1).leftLowerLeg[0]));
+    if (most < 0.1) still++;
+  }
+  assert.equal(still, 0, `she keeps swinging (${still} seconds without)`);
+  // smooth: no jump between frames at 60 fps
+  for (let t = 0; t < 30; t += 1 / 60) assert.ok(Math.abs(dangle(t + 1 / 60, 1).leftLowerLeg[0] - dangle(t, 1).leftLowerLeg[0]) < 0.06);
 });
 
 test('on a window she does seated things and in time hops down; she only goes up when there is a window', () => {
@@ -871,4 +1100,785 @@ test('her breath, her stance and her fingers are never mechanical', () => {
   // looking around, her head turns first and her hips last
   const back = part => { for (let t = 0.5; t < 3; t += 0.02) if (gesture('lookAround', t).bones[part][1] < 0) return t; };
   assert.ok(back('head') < back('chest') && back('chest') < back('hips'), `${back('head')} ${back('chest')} ${back('hips')}`);
+});
+
+test('the piano fits her body: bench under her hips, keys below her elbows and past her knees', async () => {
+  const { pianoLayout } = await import('./logic.mjs');
+  for (const m of [{ hip: 0.512, thigh: 0.207, shin: 0.234, shoulder: 0.27, upperArm: 0.16 },      // a VRM
+                   { hip: 0.33, thigh: 0.15, shin: 0.18, shoulder: 0.19, upperArm: 0.125 }]) {      // the figure
+    const l = pianoLayout(m);
+    assert.ok(l.lift < 0 && l.benchY < m.hip + l.lift);
+    assert.ok(l.keyY > m.hip + l.lift && l.keyY < m.hip + l.lift + m.shoulder);
+    assert.ok(l.keyZ > m.thigh * 0.8 && l.keyWidth > 0);
+  }
+});
+
+test('coming to the piano: it appears first, she turns, sits, then her hands go to the keys; going reverses it', async () => {
+  const { pianoStage } = await import('./logic.mjs');
+  const first = (on, key) => [...Array(300).keys()].map(i => i / 100).find(s => pianoStage(s, on)[key] > 0.5);
+  assert.ok(first(true, 'show') < first(true, 'turn') && first(true, 'turn') < first(true, 'sit') && first(true, 'sit') < first(true, 'hands'));
+  const gone = (key) => [...Array(300).keys()].map(i => i / 100).find(s => pianoStage(s, false)[key] < 0.5);
+  assert.ok(gone('hands') < gone('sit') && gone('sit') < gone('turn') && gone('turn') < gone('show'));
+  assert.deepEqual(pianoStage(5, true), { show: 1, turn: 1, sit: 1, hands: 1 });
+  assert.deepEqual(pianoStage(5, false), { show: 0, turn: 0, sit: 0, hands: 0 });
+});
+
+test('she plays a tune: the right hand high and busy, the left low on the beats, and it follows the beat clock', async () => {
+  const { pianoPerformance, keyUnder, PIANO } = await import('./logic.mjs');
+  const s = [...Array(800).keys()].map(i => pianoPerformance(i * 0.02));
+  const hits = k => s.filter((x, i) => i && x[k].press > 0.9 && s[i - 1][k].press <= 0.9).length;
+  assert.ok(hits('R') > hits('L') && hits('L') > 0);
+  assert.ok(s.every(x => x.R.x >= -1 && x.R.x <= 1 && x.L.x >= -1 && x.L.x <= 1 && x.L.x < x.R.x));
+  assert.ok(new Set(s.map(x => keyUnder(x.R.x))).size > 4, 'the melody moves over the keys');
+  assert.deepEqual(pianoPerformance(1, 3.5).R, pianoPerformance(9, 3.5).R);
+  assert.ok(s.some(x => x.dreamy > 0.9) || [...Array(2200).keys()].some(i => pianoPerformance(i * 0.01).dreamy > 0.9));
+  assert.equal(keyUnder(-1), 0); assert.equal(keyUnder(1), PIANO.keys - 1);
+});
+
+test('at the piano she sits with level thighs and looks down at her hands, and back at you when she glances', async () => {
+  const { pianoBody, PIANO } = await import('./logic.mjs');
+  const down = pianoBody({ sit: 1, hands: 1 }, { glance: 0, sway: 0, lean: 0, nod: 0, toward: 0, breath: 0 });
+  const glance = pianoBody({ sit: 1, hands: 1 }, { glance: 1, sway: 0, lean: 0, nod: 0, toward: 0, breath: 0 });
+  assert.ok(down.leftUpperLeg[0] < -1.3 && down.leftLowerLeg[0] > 1.3);
+  // glancing she turns her head back against the way she sits, toward you
+  assert.ok(down.head[0] > 0.15 && glance.head[0] < down.head[0] && -Math.sign(PIANO.yaw) * glance.head[1] > 0.4);
+});
+
+test('she phrases the music: building, then both hands lift off for a breath at the end of each phrase', async () => {
+  const { pianoPerformance } = await import('./logic.mjs');
+  const at = beats => pianoPerformance(0, beats);
+  // a phrase is 16 beats: the breath comes at its very end, with both hands off the keys and nothing pressed
+  const breath = at(15.4);
+  assert.ok(breath.breath > 0.9 && breath.R.lift > 0.8 && breath.L.lift > 0.6 && breath.R.press === 0 && breath.L.press === 0);
+  assert.ok(at(4).breath === 0 && at(4).R.lift < 0.5);
+  // it builds: louder in the third bar than at the start, and she leans in more
+  assert.ok(at(10).intensity > at(0.5).intensity && at(10).lean > at(0.5).lean);
+  // the arm's weight: the wrist dips into a note, deeper when it's louder
+  const loud = at(10.01), soft = at(0.01);
+  assert.ok(loud.R.dip >= soft.R.dip);
+  // her left hand rolls chords: it plays on most eighths, not just the beat
+  const lefts = [...Array(32).keys()].filter(k => at(k / 2 + 0.04).L.press > 0.1).length;   // just after each eighth
+  assert.ok(lefts >= 24, `left hand notes: ${lefts}`);
+});
+
+test('her hands take a shape for what she does: open to wave, a finger on her chin, closed on a handle', async () => {
+  const { HANDS, handPose, restingHands, mixHand, breeze } = await import('./logic.mjs');
+  const mean = h => h.curl.reduce((a, b) => a + b, 0) / 4;
+  // the shapes differ where it shows: a waving hand is flat and fanned, a grip is a fist with the thumb across
+  assert.ok(mean(HANDS.open) < 0.3 && HANDS.open.spread > 0.5 && HANDS.open.thumb < 0.5);
+  assert.ok(mean(HANDS.grip) > 2.5 && HANDS.grip.thumb > 1.5);
+  assert.ok(HANDS.chin.curl[0] < 1 && HANDS.chin.curl[1] > 2);                 // index out, the others folded
+  for (const h of Object.values(HANDS)) assert.ok(h.curl[3] >= h.curl[0]);      // the little finger curls most
+  // resting hands are the old relaxed curl, with the thumb moving along; nothing laid over them leaves them be
+  assert.deepEqual(handPose(2.5).left, restingHands(2.5).left);
+  assert.deepEqual(restingHands(2.5).right.curl, fingerCurl(2.5).right);
+  // a layer takes over by its weight, one hand only when it names only one
+  const half = handPose(2.5, [[{ right: HANDS.grip }, 0.5]]), full = handPose(2.5, [[{ right: HANDS.grip }, 1]]);
+  assert.deepEqual(half.left, restingHands(2.5).left);
+  assert.ok(mean(half.right) > mean(restingHands(2.5).right) && mean(half.right) < mean(full.right));
+  assert.deepEqual(full.right, mixHand(restingHands(2.5).right, HANDS.grip, 1));
+  // a later layer wins over an earlier one (a gesture over her pose)
+  assert.deepEqual(handPose(1, [[{ right: HANDS.chin }, 1], [{ right: HANDS.open }, 1]]).right.spread, HANDS.open.spread);
+  // talking opens her fingers, never past straight; walking, the two hands trail their arms the opposite way
+  for (let t = 0; t < 20; t += 0.3) {
+    const quiet = handPose(t), loud = handPose(t, [], { talk: 1 });
+    for (const side of ['left', 'right']) {
+      assert.ok(mean(loud[side]) <= mean(quiet[side]) + 1e-9 && loud[side].curl.every(c => c > 0));
+    }
+  }
+  const { swing } = walkCycle(1);
+  assert.equal(swing.left, -swing.right);
+  const walking = handPose(3, [], { swing });
+  assert.notEqual(Math.sign(mean(walking.left) - mean(handPose(3).left)), Math.sign(mean(walking.right) - mean(handPose(3).right)));
+  // gestures bring their hands, mirrored with the gesture
+  assert.ok(mean(gesture('wave', 1.4).hands.right) < 0.5);
+  assert.ok(mean(gesture('wave', 0.05).hands.right) > 0.9);                    // still hanging as the arm starts up
+  assert.deepEqual(gesture('think', 2).hands.right, HANDS.chin);
+  assert.deepEqual(gesture('yawn', 1.6, 1).hands.right, gesture('yawn', 1.6, -1).hands.left);
+  assert.deepEqual(poseFor('thinking').hands, { right: HANDS.chin });
+  assert.deepEqual(poseFor('idle').hands, {});
+  // the breeze on her hair is small, comes and goes, and is never the same for long
+  let most = 0, least = 1;
+  for (let t = 0; t < 120; t += 0.25) {
+    const m = Math.hypot(...breeze(t));
+    most = Math.max(most, m); least = Math.min(least, m);
+  }
+  assert.ok(most > 0.03 && most < 0.1 && least < 0.005, `${most} ${least}`);
+});
+
+test('her feet: flat under a bent knee, rolling as she walks, pointed in the air', () => {
+  // standing idle, each foot turns up exactly as far as its shin slants back: the sole stays on the floor
+  for (let t = 0; t < 40; t += 0.37) {
+    const m = idleMotion(t);
+    for (const side of ['left', 'right']) {
+      assert.ok(Math.abs(m[`${side}UpperLeg`][0] + m[`${side}LowerLeg`][0] + m[`${side}Foot`][0]) < 1e-9);
+    }
+  }
+  // walking: toes down just after the leg was furthest back, toes up just before it lands in front, and the two
+  // feet half a cycle apart
+  let down = [0, 0], up = [0, 0];
+  for (let ph = 0; ph < 2 * Math.PI; ph += 0.02) {
+    const { bones } = walkCycle(ph);
+    if (bones.leftFoot[0] > down[1]) down = [ph, bones.leftFoot[0]];
+    if (bones.leftFoot[0] < up[1]) up = [ph, bones.leftFoot[0]];
+    assert.ok(Math.abs(bones.leftFoot[0] - walkCycle(ph + Math.PI).bones.rightFoot[0]) < 1e-9);
+  }
+  assert.ok(down[1] > 0.25 && down[1] < 0.45 && up[1] < -0.15 && up[1] > -0.35);
+  assert.ok(walkCycle(down[0]).bones.leftUpperLeg[0] > 0);                      // pushing off: that leg is behind her
+  assert.ok(walkCycle(up[0]).bones.leftUpperLeg[0] < 0);                        // landing: it is in front
+  // a hop: soles flat while she crouches, toes pointed at the top
+  const crouch = gesture('hop', 0.14).bones, top = gesture('hop', 0.27).bones;
+  assert.ok(Math.abs(crouch.leftUpperLeg[0] + crouch.leftLowerLeg[0] + crouch.leftFoot[0]) < 1e-9);
+  assert.ok(top.leftFoot[0] > 0.4 && top.rightFoot[0] > 0.4);
+  // sitting on the floor her soles are on it; on an edge her feet hang, toes down
+  const sat = sitPose(1).bones;
+  assert.ok(Math.abs(sat.leftUpperLeg[0] + sat.leftLowerLeg[0] + sat.leftFoot[0]) < 1e-9);
+  assert.ok(perchPose(1, 0).bones.leftFoot[0] > 0.2 && perchPose(0, 1).bones.leftFoot[0] < -0.4);
+});
+
+test('her arms follow through: they lag, swing a little past where they stop and settle; the rest stays tight', async () => {
+  const { followJoint, LOOSE } = await import('./logic.mjs');
+  const q = a => [0, 0, Math.sin(a / 2), Math.cos(a / 2)], angle = r => 2 * Math.atan2(r[2], r[3]);
+  for (const name of ['rightHand', 'leftLowerArm']) {
+    const memory = new Map();
+    followJoint(memory, name, q(0), 1 / 30, 0.5);
+    let most = 0, first;
+    for (let i = 0; i < 60; i++) {
+      const a = angle(followJoint(memory, name, q(1), 1 / 30, 0.5));
+      if (i === 0) first = a;
+      most = Math.max(most, a);
+    }
+    assert.ok(first < 0.3, `${name} lags: ${first}`);
+    assert.ok(most > 1.01 && most < 1.16, `${name} swings a little past: ${most}`);       // (a loose wrist most)
+    assert.ok(Math.abs(angle(followJoint(memory, name, q(1), 1 / 30, 0.5)) - 1) < 0.005);
+  }
+  // joints that carry her weight or her pose stay on the short filter: exactly that share of the way
+  const tight = new Map();
+  followJoint(tight, 'hips', q(0), 1 / 30, 0.5);
+  assert.ok(Math.abs(angle(followJoint(tight, 'hips', q(1), 1 / 30, 0.5)) - 0.5) < 1e-9);
+  assert.ok(!LOOSE.hips && !LOOSE.leftUpperLeg && !LOOSE.head);
+  // follow 1 (pinned, or after a pause) puts a loose joint straight there and stops it
+  const pinned = new Map();
+  followJoint(pinned, 'rightHand', q(0), 1 / 30, 0.5);
+  followJoint(pinned, 'rightHand', q(1), 1 / 30, 0.5);
+  assert.deepEqual(followJoint(pinned, 'rightHand', q(2), 1 / 30, 1), q(2));
+  assert.ok(Math.abs(angle(followJoint(pinned, 'rightHand', q(2), 1 / 30, 0.5)) - 2) < 1e-9);
+  // the short way round, and no dt (another figure's rig) means the plain filter
+  const plain = new Map();
+  followJoint(plain, 'rightHand', q(0.2), 0, 0.5);
+  assert.ok(Math.abs(angle(followJoint(plain, 'rightHand', q(0.6), 0, 0.5)) - 0.4) < 1e-9);
+});
+
+test('her mouth plays the sounds she says, leans into the next one, and her head dips on stressed syllables', async () => {
+  const { speechShapes, speechBeat } = await import('./logic.mjs');
+  const said = [[0, 0.1, null, 0, 0], [0.1, 0.3, 'aa', 0.9, 1], [0.3, 0.4, null, 0, 0], [0.4, 0.6, 'ou', 0.8, 0],
+                [0.6, 0.7, 'ih', 0.5, 0.5]];
+  assert.deepEqual(speechShapes(said, 0.05), { aa: 0, ih: 0, ou: 0, ee: 0, oh: 0 });       // lips shut ("m")
+  assert.deepEqual(speechShapes(said, 0.18), { aa: 0.9, ih: 0, ou: 0, ee: 0, oh: 0 });
+  assert.equal(speechShapes(said, 0.35).aa, 0);                                              // shut for the "b"
+  // into the next sound in the last 60 ms: half way through that stretch, half of each
+  const mid = speechShapes(said, 0.57);
+  assert.ok(Math.abs(mid.ou - 0.4) < 1e-9 && Math.abs(mid.ih - 0.25) < 1e-9);
+  assert.ok(speechShapes(said, 0.27).aa < 0.9);                                             // closing toward the "b"
+  assert.equal(speechShapes(said, 0.7), null);                                               // over
+  assert.equal(speechShapes(null, 0.2), null);
+  // beats: on stressed vowels only, peaking a little after the vowel starts and gone half a second later
+  assert.equal(speechBeat(said, 0.05), 0);
+  assert.ok(speechBeat(said, 0.22) > 0.99 && speechBeat(said, 0.22) <= 1);
+  assert.ok(speechBeat(said, 0.45) < speechBeat(said, 0.3));
+  assert.ok(speechBeat(said, 0.72) <= 0.5);                                                  // the secondary stress
+  assert.equal(speechBeat(said, 1.4), 0);
+});
+
+
+test('quiet idle moments mirror naturally and leave seated limbs alone', () => {
+  for (const name of ['neckEase', 'quietGlance']) {
+    assert.ok(FIDGETS.includes(name) && SEATED_FIDGETS.includes(name) && PERCHED_FIDGETS.includes(name));
+    assert.ok(IDLE[name].weight > 0);
+    for (let t = 0; t < GESTURES[name]; t += 1 / 60) {
+      const right = gesture(name, t, 1), left = gesture(name, t, -1);
+      assert.ok(Object.keys(right.bones).every(b => !/Leg|Foot|Arm|Hand/.test(b)));
+      assert.equal(right.bones.head[0], left.bones.head[0]);
+      assert.equal(right.bones.head[1], -left.bones.head[1]);
+      assert.equal(right.bones.head[2], -left.bones.head[2]);
+      assert.equal(right.look[0], -left.look[0]);
+      for (const v of Object.values(right.face)) assert.ok(Number.isFinite(v) && v >= 0 && v <= 1);
+    }
+  }
+  const aside = gesture('quietGlance', 1.4), back = gesture('quietGlance', 3.5);
+  assert.ok(aside.look[0] > 0.5 && back.look[0] === 0);
+  assert.equal(aside.face.happy, 0);
+  assert.ok(back.face.happy > 0.2, 'smile follows the return of attention');
+  assert.ok(gesture('neckEase', 1.5).eyes > 0.3);
+  assert.ok(gesture('neckEase', 3.2).bones.head[0] > 0.08, 'chin follows the release');
+});
+
+test('broken off, a fidget lets go in order: eyes and head first, a hand at her face comes away before the arm drops', () => {
+  const at = gesture('tuckHair', 1.5), start = cutShort(at, 'tuckHair', 0);
+  for (const [bone, w] of Object.entries(start.weights)) assert.ok(Math.abs(w - (at.weights?.[bone] ?? at.weight)) < 1e-9, `${bone} jumps`);
+  const s = 0.2, mid = cutShort(at, 'tuckHair', s), was = b => at.weights?.[b] ?? at.weight;
+  const left = b => mid.weights[b] / was(b);                              // how much of each bone is still held
+  assert.ok(left('head') < 0.3, 'her head is yours at once');
+  assert.ok(left('rightLowerArm') > left('rightUpperArm'), 'the elbow stays bent while the arm drops');
+  assert.ok(mid.handWeight > mid.weight, 'the fingers settle last');
+  // every bone only lets go, never grabs back
+  for (let t = 0; t < CUT_S; t += 1 / 30) {
+    const a = cutShort(at, 'tuckHair', t), b = cutShort(at, 'tuckHair', t + 1 / 30);
+    if (b) for (const bone of Object.keys(a.weights)) assert.ok(b.weights[bone] <= a.weights[bone] + 1e-9);
+  }
+  assert.equal(cutShort(at, 'tuckHair', CUT_S), null);
+  // an ordinary fidget: the arm from the shoulder out
+  const wrist = cutShort(gesture('checkWrist', 1.2), 'checkWrist', 0.5);
+  assert.ok(wrist.weights.leftUpperArm < wrist.weights.leftLowerArm && wrist.weights.leftLowerArm < wrist.weights.leftHand);
+});
+
+test('woken from a doze by something, her eyes open at once and she comes up from the chest', () => {
+  const at = gesture('doze', 2.2), s = cutShort(at, 'doze', 0.1);
+  assert.ok(at.eyes > 0.5 && s.eyes < 0.15 * at.eyes, 'her eyes open within a blink');
+  assert.equal(s.ownBlinks, false);
+  assert.ok(s.alert * s.weight >= 1, 'wide awake: no heavy lids');
+  const held = b => s.adds[b][0] / at.adds[b][0];
+  assert.ok(held('chest') < held('neck') && held('neck') < held('head'), 'chest first, then neck, then head');
+});
+
+test('a window come up beside her: eyes there first, shoulder and chest flinch, the arm comes up after, the hand last', () => {
+  const at = t => gesture('brace', t, 1);
+  assert.ok(at(0.06).eyes > 0.9, 'a blink as her eyes jump to it');
+  assert.ok(at(0.1).look[0] < -0.5, 'she looks to her right: your left');
+  assert.ok(gesture('brace', 0.1, -1).look[0] > 0.5);
+  assert.ok(at(0.25).weights.rightShoulder > at(0.25).weights.rightUpperArm, 'the shoulder before the arm');
+  assert.ok(at(0.3).weights.rightUpperArm > at(0.3).weights.rightHand, 'the hand trails');
+  assert.ok(at(0.5).adds.chest[0] < -0.05 && at(0.5).adds.chest[2] < -0.04, 'chest back and away from it (a negative tilt: to her left)');
+  assert.ok(gesture('brace', 0.5, -1).adds.chest[2] > 0.04);
+  assert.ok(at(0.5).face.surprised > 0.5 && at(1.6).face.happy > 0.2 && at(1.6).face.surprised < 0.05);
+  assert.ok(at(1.85).weights.rightUpperArm < 0.05 && at(1.85).weight < 0.3, 'all let go by the end');
+  assert.equal(at(GESTURES.brace), null);
+});
+
+test('she flinches only standing about, and not twice in a row', () => {
+  assert.ok(mayStartle({ idle: true }));
+  assert.ok(!mayStartle({ idle: false }));
+  assert.ok(!mayStartle({ idle: true, busy: true }), 'walking, sitting, on a window, mid-gesture');
+  assert.ok(!mayStartle({ idle: true, sinceLast: STARTLE_EVERY - 1 }));
+});
+
+test('typing to her: she watches the box while you type, looks back at you in a pause, glances aside in a long one', () => {
+  assert.deepEqual(typingAttention(null), { down: 0, aside: 0, lean: 0 }, 'an open, empty box is not typing');
+  assert.deepEqual(typingAttention(0.2, false), { down: 0, aside: 0, lean: 0 });
+  const typing = typingAttention(0.3);
+  assert.ok(typing.down === 1 && typing.lean === 1 && typing.aside === 0);
+  const pause = typingAttention(TYPING.watch + 1);
+  assert.ok(pause.down === 0 && pause.aside === 0, 'back at you');
+  assert.ok(typingAttention(TYPING.watch + 0.2).lean > typingAttention(TYPING.watch + 0.2).down, 'her chest lets go after her eyes');
+  assert.ok(typingAttention(7).aside > 0.9, 'a long pause: a glance aside');
+  assert.equal(typingAttention(TYPING.asideTo + 1).aside, 0, 'only once, then back to you');
+  for (let s = 0; s < 12; s += 0.05) {
+    const a = typingAttention(s), b = typingAttention(s + 0.05);
+    assert.ok(Math.abs(a.down - b.down) < 0.2 && Math.abs(a.aside - b.aside) < 0.2, 'no jumps');
+  }
+});
+
+test('getting into music: head first, then shoulders, then her body; a song she was into stopping gets a "huh?"', () => {
+  const run = (g, on, seconds, gone = true) => { for (let t = 0; t < seconds; t += 1 / 30) g = grooveStep(g, on, 1 / 30, gone); return g; };
+  let g = run(null, true, 1.4);
+  assert.ok(g.head > 0.2 && g.shoulders === 0 && g.body === 0, 'her head joins first');
+  g = run(g, true, 2);
+  assert.ok(g.head === 1 && g.shoulders === 1 && g.body === 1);
+  const depths = []; g = run(g, true, 0); for (let i = 0; i < 400; i++) { g = grooveStep(g, true, 0.05); depths.push(g.depth); }
+  assert.ok(Math.max(...depths) > 0.97 && Math.min(...depths) < 0.78, 'fuller and lighter over a phrase');
+  // bobbing parts follow who joined: shoulders lead the head by 80 ms
+  const half = bobMotion(0.02, 1, 120, { head: 1, shoulders: 0, body: 0 });
+  assert.ok(half.head[0] > 0.1 && half.rightShoulder[2] === 0 && half.chest[0] === 0);
+  const full = bobMotion(-0.12, 1, 120);
+  assert.ok(full.rightShoulder[2] > full.head[0] / 0.14 * 0.05, 'shoulders are down before her head');
+  // the music stops: the parts stay while she fades out, then the tilt
+  g = run(g, false, 0.1);
+  assert.equal(g.head, 1);
+  assert.ok(g.after != null);
+  assert.ok(Math.abs(afterMusic(0.8).head[2]) > 0.05 && afterMusic(0.2).head[2] < 0.01, 'her last dip first, then the tilt');
+  g = run(g, false, GROOVE.after);
+  assert.equal(g.after, null);
+  assert.deepEqual(afterMusic(null), {});
+  // a short burst of music, or walking off while it plays: no "huh?"
+  assert.equal(run(run(null, true, 3), false, 0.1).after, null);
+  assert.equal(run(run(null, true, 10), false, 0.1, false).after, null);
+  // it comes back quickly: she carries on; after a long break she gets into it afresh
+  assert.ok(run(run(run(null, true, 10), false, 1), true, 0.1).on > 9);
+  assert.ok(run(run(run(null, true, 10), false, 5), true, 0.1).on < 1);
+  // the music comes back while she can't bob, or she gets busy: the "huh?" is off
+  const stopped = run(run(null, true, 10), false, 0.3);
+  assert.equal(grooveStep(stopped, false, 1 / 30, false).after, null);
+  assert.equal(grooveStep(stopped, false, 1 / 30, true, false).after, null);
+});
+
+test('speaking, her arm makes one point per thought: ready before the stressed vowel, held to the end, let go after', () => {
+  // "so I THOUGHT about it" [pause] "and it WORKS, right" with a "m"-like closure in the middle of the first
+  const v = (a, b, stress = 0) => [a, b, 'aa', 0.8, stress], shut = (a, b) => [a, b, null, 0, 0];
+  const segs = [v(0, 0.2), v(0.2, 0.4), v(0.45, 0.6, 1), shut(0.6, 0.68), v(0.68, 1.1), v(1.1, 1.3),
+                shut(1.3, 1.8),                                     // a breath
+                v(1.8, 2.2), v(2.2, 2.4), v(4.3, 4.5, 1), v(4.5, 5.0), v(5.0, 5.4)];
+  const plan = phrasePlan(segs);
+  assert.equal(plan.length, 2, 'the lip closure doesn\'t split a phrase; one gesture per phrase');
+  assert.equal(plan[0].peak, 0.45);
+  assert.ok(Math.abs(plan[0].start - (0.45 - PHRASE.prep)) < 1e-9 && plan[0].end === 1.3);
+  assert.ok(plan[0].side !== plan[1].side, 'the other hand next time');
+  const hand = plan[0].side === 1 ? 'right' : 'left';
+  const at = x => phraseGesture(plan, x).bones ?? {};
+  assert.deepEqual(at(0.05), {}, 'nothing before it starts');
+  assert.ok(Math.abs(at(0.3)[hand + 'UpperArm'][0]) > Math.abs(at(0.3)[hand + 'LowerArm'][1]) / 0.9 * 0.35, 'the upper arm leads the elbow');
+  assert.ok(Math.abs(at(0.54)[hand + 'LowerArm'][1]) > Math.abs(at(1.0)[hand + 'LowerArm'][1]), 'the point, then the hold');
+  assert.ok(Math.abs(at(1.2)[hand + 'UpperArm'][0]) > 0.15, 'held to the end of the phrase');
+  const going = at(1.5);
+  assert.ok(Math.abs(going[hand + 'UpperArm'][0]) / 0.35 < Math.abs(going[hand + 'Hand'][1]) / 0.3, 'the wrist lets go last');
+  assert.deepEqual(at(1.3 + PHRASE.release + 0.01), {});
+  // short phrases and stress-less ones get nothing; gestures don't crowd each other
+  assert.deepEqual(phrasePlan([v(0, 0.3, 1), shut(0.3, 0.8), v(0.8, 1.0, 1)]), []);
+  assert.deepEqual(phrasePlan([v(0, 2)]), []);
+  const busy = []; for (let k = 0; k < 6; k++) busy.push(v(k * 1.2, k * 1.2 + 0.4, 1), v(k * 1.2 + 0.4, k * 1.2 + 0.9), shut(k * 1.2 + 0.9, k * 1.2 + 1.2));
+  const many = phrasePlan(busy);
+  for (let k = 1; k < many.length; k++) assert.ok(many[k].peak - many[k - 1].peak >= PHRASE.every);
+});
+
+test('the pointer still beside her: she watches, reaches, stops just short of it, holds, and lets go; once', () => {
+  const run = (s, obs, seconds) => { for (let t = 0; t < seconds; t += 1 / 30) s = catchStep(s, obs, 1 / 30); return s; };
+  const here = { near: true, free: true };
+  let s = run(null, here, 0.5);
+  assert.equal(s.phase, 'dwell');
+  s = run(s, { ...here, moved: true }, 1 / 30);                     // a twitch of the mouse: she waits again
+  s = run(s, here, 0.5);
+  assert.equal(s.phase, 'dwell');
+  s = run(s, here, 0.4);
+  assert.equal(s.phase, 'reach');
+  assert.ok(s.look === 1 && s.weight < 0.05, 'eyes first, the arm after');
+  s = run(s, here, 1.0);
+  assert.ok(s.weight > 0.95 && s.point > 0.5 && s.track);
+  s = run(s, here, 0.7);
+  assert.equal(s.phase, 'back');
+  s = run(s, here, CATCH.back + 0.1);
+  assert.ok(s.phase === 'off' && s.weight === 0);
+  // still there: not again (it has to leave and come back, and not within CATCH.every s)
+  s = run(s, here, 5);
+  assert.equal(s.phase, 'off');
+  s = run(run(s, { near: false, free: true }, CATCH.every), here, 1.0);   // gone a while and back: she tries again
+  assert.equal(s.phase, 'reach');
+});
+
+test('the pointer gets away: her forearm follows a moment, then she gives up; busy, she lets go at once', () => {
+  const run = (s, obs, seconds) => { for (let t = 0; t < seconds; t += 1 / 30) s = catchStep(s, obs, 1 / 30); return s; };
+  const here = { near: true, free: true };
+  let s = run(run(null, here, 0.85), here, 1.0);
+  s = catchStep(s, { near: false, free: true, moved: true }, 1 / 30);
+  assert.ok(s.phase === 'escape' && s.track && s.face.surprised > 0);
+  s = run(s, { near: false, free: true, moved: true }, CATCH.follow + 0.05);
+  assert.ok(s.phase === 'back' && !s.track, 'her hand stops following');
+  assert.ok(s.face.surprised > 0);
+  s = run(run(null, here, 0.85), here, 1.0);
+  s = catchStep(s, { near: true, free: false }, 1 / 30);
+  assert.equal(s.phase, 'back');
+  // never while she is busy
+  assert.equal(run(null, { near: true, free: false }, 3).phase, 'off');
+});
+
+test('within reach is beside her at arm height, and her hand stops short of the pointer', () => {
+  assert.ok(inReach([0.25, 0], 0.3));
+  assert.ok(!inReach([0.04, -0.2], 0.3), 'over her body');
+  assert.ok(!inReach([0.6, 0], 0.3), 'too far');
+  assert.ok(!inReach([0.2, 0.4], 0.3), 'above her head');
+  const [x, y] = reachPoint([0, 0], [0.2, 0], 0.3);
+  assert.ok(Math.abs(x - (0.2 - CATCH.short)) < 1e-9 && y === 0);
+  assert.ok(Math.abs(Math.hypot(...reachPoint([0, 0], [0.3, 0.3], 0.3)) - 0.92 * 0.3) < 1e-9, 'never past her arm');
+});
+
+test('brushing a speck off her sleeve: look, lift the arm, two strokes toward the wrist, the brushing arm down first', () => {
+  const at = t => gesture('brushSleeve', t, 1);
+  assert.ok(at(0.3).weights.head > at(0.3).weights.leftUpperArm, 'eyes and head first, then the arm comes up');
+  assert.ok(at(1.0).weights.leftUpperArm > 0.9 && at(1.0).ik.weight > 0.3 && at(1.0).ik.weight < 0.95, 'the other hand on its way');
+  assert.equal(at(1.0).ik.hand, 'right');
+  assert.equal(gesture('brushSleeve', 1, -1).ik.hand, 'left');
+  // strokes: out along the sleeve, back a little (lifted), out again, shorter
+  const a1 = at(1.25).ik.along, b1 = at(1.55).ik.along, a2 = at(1.8).ik.along, b2 = at(2.05).ik.along;
+  assert.ok(b1 - a1 > 0.5 && a2 < b1 && b2 > a2 && b2 - a2 < b1 - a1);
+  assert.ok(at(1.67).ik.above > at(1.4).ik.above, 'lifted off between strokes');
+  assert.ok(at(2.6).ik.weights.UpperArm < 0.1 && at(2.6).weights.leftUpperArm > 0.9, 'the brushing arm goes down first');
+  assert.ok(at(3.2).weights.head > at(3.2).weights.leftUpperArm, 'her head comes up last');
+  for (let t = 0; t < GESTURES.brushSleeve; t += 1 / 30) {
+    const g = at(t);
+    assert.ok(g.ik.along >= 0 && g.ik.along <= 1 && g.ik.above > 0, 'on the sleeve, never inside it');
+  }
+  // broken off, the brushing hand lets go with its arm
+  const cut = cutShort(at(1.4), 'brushSleeve', 0.4);
+  assert.ok(cut.ik.weights.UpperArm < 0.6);
+  // only standing: not sitting on the floor or on a window
+  assert.ok(!SEATED_FIDGETS.includes('brushSleeve') && !PERCHED_FIDGETS.includes('brushSleeve'));
+  assert.equal(IDLE.brushSleeve.every, 480);
+});
+
+test('after a longer walk she finished, one fuller breath: chest first, head last, and her own breath holds back', () => {
+  const trip = { trip: true, cut: false, then: null, hide: undefined };
+  assert.ok(settles(trip, 5));
+  assert.ok(!settles(trip, 2), 'a short walk');
+  assert.ok(!settles({ ...trip, cut: true }, 5), 'stopped by you');
+  assert.ok(!settles({ ...trip, then: 0 }, 5), 'jumping up onto a window next');
+  assert.ok(!settles({ ...trip, hide: 'in' }, 5), 'going behind a window');
+  assert.ok(!settles({ side: 1 }, 5), 'a stroll in her box');
+  const b = s => settleBreath(s).bones;
+  assert.ok(b(0.6).leftShoulder[2] > 0 && b(0.6).rightShoulder[2] < 0, 'shoulders rise on the in-breath');
+  const how = (s, bone, most) => Math.abs(b(s)[bone][0]) / most;     // how far along each part is
+  assert.ok(how(0.45, 'chest', 0.045) > how(0.45, 'spine', 0.02) && how(0.45, 'spine', 0.02) > how(0.45, 'head', 0.03),
+            'the chest opens first, the spine after it, her head last');
+  assert.ok(b(1.4).leftUpperArm[2] > 0.02 && b(1.4).rightUpperArm[2] < -0.02, 'arms ease away from her sides');
+  assert.ok(settleBreath(1).idle < 0.3 && settleBreath(SETTLE.length - 0.01).idle > 0.95);
+  assert.deepEqual(settleBreath(SETTLE.length), { bones: {}, idle: 1 });
+  for (let s = 0; s < SETTLE.length; s += 0.05)
+    for (const v of Object.values(b(s))) assert.ok(v.every(x => Math.abs(x) <= 0.05), 'mild');
+  for (const v of Object.values(b(SETTLE.length - 0.01))) assert.ok(v.every(x => Math.abs(x) < 0.005), 'nothing left over');
+});
+
+test('clicked, she gives a little backward, her head trailing; then forward, curious, and a small tilt', () => {
+  assert.ok(tapMotion(0.08).bones?.chest[0] < -0.03 && tapMotion(0.08).bones?.head[0] > tapMotion(0.15).bones?.head[0], 'chest gives, head trails');
+  assert.ok(tapMotion(0.4).bones?.head[0] > 0.02, 'then a touch forward');
+  assert.ok(tapMotion(0.5, 1).bones?.head[2] > 0.03 && tapMotion(0.5, -1).bones?.head[2] < -0.03);
+  assert.deepEqual(tapMotion(TAP.length), {});
+  assert.deepEqual(tapMotion(null), {});
+  for (const v of Object.values(tapMotion(TAP.length - 0.01).bones)) assert.ok(v.every(x => Math.abs(x) < 0.005), 'settled');
+  for (let s = 0; s < TAP.length; s += 0.02) assert.equal(tapMotion(s).bones?.leftUpperLeg, undefined, 'her legs stay');
+});
+
+test('one hand lets go while the other comes up, the same hand waits, and stopping mid-phrase lets go smoothly', () => {
+  // a long phrase (point at 0.4, held to 5.0), a short pause, another with a stressed vowel early on
+  const v = (a, b, stress = 0) => [a, b, 'aa', 0.8, stress];
+  const plan = phrasePlan([v(0, 0.4), v(0.4, 0.6, 1), v(0.6, 5.0), [5.0, 5.2, null, 0, 0], v(5.2, 5.6), v(5.6, 5.8, 1), v(5.8, 7.0)]);
+  assert.equal(plan.length, 2);
+  assert.notEqual(plan[0].side, plan[1].side);
+  const hand = plan[1].side === 1 ? 'right' : 'left';
+  // the second hand gets ready (not suddenly up) while the first still lets go: no jump anywhere
+  for (let t = 5.0; t < 6.5; t += 1 / 60) {
+    const a = phraseGesture(plan, t).bones ?? {}, b = phraseGesture(plan, t + 1 / 60).bones ?? {};
+    for (const bone of new Set([...Object.keys(a), ...Object.keys(b)]))
+      for (let i = 0; i < 3; i++) assert.ok(Math.abs((a[bone]?.[i] || 0) - (b[bone]?.[i] || 0)) < 0.13, `${bone} jumps at ${t.toFixed(2)}`);   // The larger vowel beat stays below 0.13 rad per frame; the old pop was 0.5.
+  }
+  assert.ok(Math.abs(phraseGesture(plan, 5.5).bones[hand + 'UpperArm'][0]) < Math.abs(phraseGesture(plan, 5.75).bones[hand + 'UpperArm'][0]), 'it gets ready');
+  // she stops speaking in the middle of the hold: let go from there, the wrist last, and over within the release
+  const stopped = t => phraseGesture(plan, t, 2.0).bones ?? {};
+  const other = plan[0].side === 1 ? 'right' : 'left';
+  assert.ok(Math.abs(stopped(1.9)[other + 'UpperArm'][0]) > 0.15);
+  assert.ok(Math.abs(stopped(2.3)[other + 'UpperArm'][0]) < Math.abs(stopped(1.9)[other + 'UpperArm'][0]));
+  assert.deepEqual(stopped(2.0 + PHRASE.release + 0.01), {});
+});
+
+// Quiet details share the existing gesture release, but have their own physical eligibility.
+for (const name of ['fingerFan', 'ankleEase', 'thoughtRelease']) {
+  test(`${name}: eligibility, mirrored motion, smooth curves and interruption at any point`, () => {
+    const ctx = name === 'ankleEase' ? { perched: {} } : {};
+    assert.ok(detailFits(name, ctx));
+    for (const key of ['walk', 'sit', 'jumping', 'hide', 'visit', 'carried'])
+      assert.ok(!detailFits(name, { ...ctx, [key]: true }), key);
+    assert.ok(!detailFits(name, { ...ctx, waiting: false }), 'speech, piano, duet, typing');
+    assert.ok(!detailFits(name, name === 'ankleEase' ? {} : { perched: {} }));
+    const length = GESTURES[name];
+    assert.equal(gesture(name, -0.1), null);
+    assert.equal(gesture(name, length), null);
+    const values = g => [g.weight, g.eyes || 0, g.calm || 0, ...(g.look || []),
+      ...Object.entries(g.bones).flatMap(([b, a]) => a.map(x => x * (g.weights?.[b] ?? g.weight))),
+      ...Object.values(g.adds || {}).flatMap(a => a.map(x => x * g.weight)),
+      ...Object.values(g.hands || {}).flatMap(h => [...h.curl, h.spread, h.thumb]),
+      ...Object.values(g.face || {})];
+    for (const hz of [30, 60, 144]) {
+      for (let t = 0; t < length - 1 / hz; t += 1 / hz) {
+        const a = values(gesture(name, t)), b = values(gesture(name, t + 1 / hz));
+        assert.ok(a.every((x, i) => Number.isFinite(x) && Math.abs(x - b[i]) < 0.22), `continuous at ${t}`);
+      }
+    }
+    for (let t = 0; t < length; t += 0.17) {
+      const g = gesture(name, t), mirrored = gesture(name, t, -1);
+      for (const [bone, a] of Object.entries(g.bones)) {
+        const other = bone.replace(/^left/, 'right');
+        assert.equal(mirrored.bones[other][0], a[0]);
+        assert.equal(mirrored.bones[other][2], -a[2]);
+      }
+      for (const [bone, a] of Object.entries(g.adds || {})) {
+        const other = bone.startsWith('left') ? bone.replace(/^left/, 'right') : bone.replace(/^right/, 'left');
+        const b = mirrored.adds[other];
+        assert.ok(Math.abs(a[0] - b[0]) < 1e-12 && Math.abs(a[1] + b[1]) < 1e-12 && Math.abs(a[2] + b[2]) < 1e-12, 'additive parts mirror too');
+      }
+      const cut = cutShort(g, name, 0);
+      assert.deepEqual(cut.adds, g.adds, 'no pop when interrupted');
+      for (const bone of Object.keys(g.bones)) assert.equal(cut.weights[bone], g.weights?.[bone] ?? g.weight);
+      assert.equal(cutShort(g, name, CUT_S), null, 'never left running');
+      assert.equal(cutShort(g, name, 0.13).eyes, 0, 'eyes reopen first');
+    }
+    for (const t of [0, length - 0.00001]) {
+      const g = gesture(name, t);
+      assert.ok(g.weight < 0.0001);
+      for (const w of Object.values(g.weights || {})) assert.ok(w < 0.0001);
+    }
+  });
+}
+
+test('finger fan: eyes, shoulder, elbow, wrist, then each finger; wrist follows the lowering elbow', () => {
+  const at = t => gesture('fingerFan', t);
+  assert.ok(at(0.2).look[1] < -0.1 && at(0.2).weights.leftUpperArm === 0);
+  const w = at(0.6).weights;
+  assert.ok(w.leftShoulder > w.leftUpperArm && w.leftUpperArm > w.leftLowerArm && w.leftHand === 0);
+  const opened = at(1.6).hands.left.curl.map((x, i) => (HANDS.relaxed.curl[i] - x) / (HANDS.relaxed.curl[i] - HANDS.splay.curl[i]));
+  assert.ok(opened.every((x, i) => !i || opened[i - 1] > x));
+  assert.ok(at(2.3).hands.left.spread > 0.9);
+  assert.deepEqual(at(2).bones.leftUpperArm, [-0.45, -0.15, -1.1]);
+  assert.deepEqual(at(2).bones.leftLowerArm, [0, -1.25, 0, -1.1]);
+  assert.deepEqual(at(2).look, [0.3, -0.35]);
+  assert.deepEqual(at(4.75).hands.left, HANDS.relaxed);
+  assert.ok(at(4).weights.leftHand > at(4).weights.leftLowerArm);
+  assert.ok(at(4).weights.leftLowerArm > at(4).weights.leftUpperArm);
+});
+
+test('ankle easing: swing settles, shin clears, two shrinking circles, toes settle before the shin', () => {
+  const at = t => gesture('ankleEase', t);
+  assert.ok(at(0.4).calm > 0.99 && at(0.4).adds.leftLowerLeg[0] === 0);
+  assert.ok(at(0.95).adds.leftLowerLeg[0] < -0.2 && at(0.95).adds.leftFoot[0] === 0);
+  let crossings = 0, last = 0;
+  for (let t = 1.11; t < 3.5; t += 0.01) {
+    const z = at(t).adds.leftFoot[2];
+    if (last && Math.sign(last) !== Math.sign(z)) crossings++;
+    last = z;
+    assert.equal(at(t).adds.leftUpperLeg, undefined, 'thigh and seat stay');
+  }
+  assert.equal(crossings, 3, 'two full circles');
+  assert.ok(Math.abs(at(3.5).adds.leftFoot[0]) < Math.abs(at(1.4).adds.leftFoot[0]));
+  assert.ok(Math.abs(at(4.1).adds.leftFoot[0]) < 0.001 && Math.abs(at(4.1).adds.leftLowerLeg[0]) > 0.1);
+  for (const perched of [{ low: true }, { corner: 1 }]) assert.ok(!detailFits('ankleEase', { perched }));
+});
+
+test('quiet details: idle thresholds, cooldowns, posture and recent history decide the picker', () => {
+  const picks = ctx => new Set(Array.from({ length: 2000 }, (_, i) => chooseIdle(ctx, i / 2000, 0.2).gesture));
+  assert.ok(picks({ idleFor: 30 }).has('fingerFan'));
+  for (const ctx of [{ idleFor: 24 }, { idleFor: 30, seated: true }, { idleFor: 30, perched: true },
+                     { idleFor: 30, recent: ['fingerFan'] }, { idleFor: 30, since: { fingerFan: 239 } }])
+    assert.ok(!picks(ctx).has('fingerFan'));
+  const edge = { perched: true, canCross: true, perchedFor: 25 };
+  assert.ok(picks(edge).has('ankleEase'));
+  for (const ctx of [{}, { ...edge, canCross: false }, { ...edge, perchedFor: 24 },
+                     { ...edge, since: { ankleEase: 179 } }, { ...edge, recent: ['ankleEase'] }])
+    assert.ok(!picks(ctx).has('ankleEase'));
+  assert.ok(!picks({ idleFor: 600 }).has('thoughtRelease'), 'event only');
+});
+
+test('thought release: a long thought earns one quiet ending, never during speech or after a busy ending', () => {
+  const step = (s, state, seconds, free = true) => thoughtStep(s, { state, free }, seconds);
+  for (const hz of [30, 60, 144]) {
+    let s = null;
+    for (let i = 0; i < 7 * hz; i++) s = step(s, 'thinking', 1 / hz);
+    assert.ok(s.earned && !s.fire);
+    s = step(s, 'speaking', 10);
+    assert.ok(s.earned && !s.fire);
+    s = step(s, 'idle', 1 / hz);
+    assert.ok(s.fire);
+    assert.ok(!step(s, 'idle', 1).fire);
+    assert.ok(!step(step(s, 'thinking', 7), 'idle', 0.1).fire, 'cooldown spans turns');
+  }
+  assert.ok(!step(step(null, 'thinking', 5.9), 'idle', 0.01).fire);
+  assert.ok(step(step(null, 'thinking', 6), 'idle', 0.01).fire);
+  let s = step(step(null, 'thinking', 7), 'idle', 0.1, false);
+  assert.ok(!s.fire && !s.earned && !step(s, 'idle', 3).fire, 'busy event discarded');
+  assert.ok(!step(step(step(null, 'thinking', 7), 'speaking', 61), 'idle', 0.1).fire, 'expires');
+  assert.ok(!step(step(step(null, 'thinking', 7), 'listening', 1), 'idle', 0.1).fire, 'new input clears it');
+  s = step(step(null, 'thinking', 7), 'idle', 0.1);
+  s = step(s, 'idle', 61);
+  assert.ok(step(step(s, 'thinking', 7), 'idle', 0.1).fire, 'can earn it again');
+  const at = t => gesture('thoughtRelease', t);
+  assert.ok(at(0.15).eyes > 0 && at(0.15).adds.head[0] === 0);
+  assert.ok(at(0.5).adds.head[0] > 0 && at(0.5).adds.chest[0] === 0);
+  assert.ok(at(1.4).eyes === 0 && at(1.4).adds.head[0] < 0 && at(1.4).face.happy > 0);
+  assert.ok(at(2.3).adds.leftHand[0] > at(2.3).adds.chest[0], 'wrists settle last');
+});
+
+test('quiet details apply to the built-in figure even without shoulders, fingers or foot bones', async () => {
+  const THREE = await import('./vendor/three.module.js');
+  const { buildFigure } = await import('./figure.mjs');
+  const rig = buildFigure(THREE);
+  assert.equal(rig.node('leftShoulder'), null);
+  for (const name of ['fingerFan', 'ankleEase', 'thoughtRelease']) {
+    for (const side of [-1, 1]) {
+      for (let t = 0; t < GESTURES[name]; t += 1 / 30) {
+        const g = gesture(name, t, side), base = name === 'ankleEase' ? perchPose(1, 0).bones : poseFor('idle').bones;
+        for (const bone of BONES) {
+          const angles = base[bone].map((x, i) => x + (g.adds?.[bone]?.[i] || 0) * g.weight);
+          rig.setBone(bone, withinLimits(bone, angles), g.bones[bone], g.weights?.[bone] ?? g.weight, 1, 1 / 30);
+        }
+        rig.setFingers?.(g.hands);
+        rig.setBlink(g.eyes || 0);
+        rig.look(...(g.look || [0, 0]));
+        rig.update(1 / 30);
+        rig.root.updateMatrixWorld(true);
+        rig.root.traverse(node => assert.ok(node.matrixWorld.elements.every(Number.isFinite), name));
+      }
+    }
+  }
+});
+
+test('arm releases keep the elbow folded until the upper arm is at least sixty percent down', () => {
+  for (let t = 0; t <= 1; t += 0.005) {
+    const r = armRelease(t, 1);
+    assert.ok(r.UpperArm <= r.LowerArm && r.LowerArm <= r.Hand && r.Hand <= r.fingers);
+    if (r.UpperArm > 0.4) assert.equal(r.LowerArm, 1);
+  }
+  assert.deepEqual(armRelease(-1, 1), { Shoulder: 1, UpperArm: 1, LowerArm: 1, Hand: 1, fingers: 1 });
+  assert.ok(Object.values(armRelease(1, 1)).every(x => x === 0));
+  for (const [name, start, duration, hand] of [
+    ['tuckHair', 1.75, 1.2, 'right'], ['brace', 0.8, 1.05, 'right'], ['almostSneeze', 2.05, 1.5, 'right'],
+    ['checkWrist', 2.6, 0.8, 'left'], ['brushSleeve', 2.65, 0.9, 'left'], ['fingerFan', 3.4, 1.35, 'left']]) {
+    for (const side of [1, -1]) {
+      const h = side === 1 ? hand : hand === 'right' ? 'left' : 'right';
+      const held = gesture(name, start, side);
+      for (let p = 0; p < 1; p += 0.025) {
+        const g = gesture(name, start + p * duration, side);
+        const upper = g.weights[h + 'UpperArm'] / held.weights[h + 'UpperArm'];
+        const lower = g.weights[h + 'LowerArm'] / held.weights[h + 'LowerArm'];
+        assert.ok(lower >= upper - 1e-9, name);
+        if (upper > 0.4) assert.equal(lower, 1, name);
+        assert.deepEqual(g.bones[h + 'LowerArm'], held.bones[h + 'LowerArm'], 'bend stays in the target');
+      }
+    }
+  }
+});
+
+test('a face-level interruption clears forward before lowering without opening the elbow', () => {
+  for (const name of ['tuckHair', 'almostSneeze', 'yawn']) for (const side of [1, -1]) {
+    const g = gesture(name, 1.4, side), h = side === 1 ? 'right' : 'left';
+    const cut = cutShort(g, name, 0.1);
+    assert.ok(Math.abs(cut.bones[h + 'UpperArm'][0] - g.bones[h + 'UpperArm'][0] + 0.1) < 1e-9);
+    assert.equal(cut.weights[h + 'LowerArm'], g.weights?.[h + 'LowerArm'] ?? g.weight);
+    assert.deepEqual(cut.bones[h + 'LowerArm'], g.bones[h + 'LowerArm']);
+    assert.deepEqual(cutShort(g, name, 0).bones, g.bones, 'no initial jump');
+  }
+});
+
+test('hair tuck reaches forward without a wind-up or fist; brace protects the collarbone', () => {
+  for (let t = 0; t < 0.9; t += 0.01) assert.ok(gesture('tuckHair', t).weight >= 0);
+  const tuck = gesture('tuckHair', 1.4);
+  assert.ok(tuck.bones.rightUpperArm[0] < -0.75 && tuck.bones.rightUpperArm[2] >= 0.75);
+  assert.ok(tuck.hands.right.curl[0] < 0.25 && tuck.hands.right.curl[1] < 0.25);
+  const brace = gesture('brace', 0.6);
+  assert.ok(brace.bones.rightUpperArm[0] === -0.55 && brace.bones.rightUpperArm[1] >= 0.4);
+  assert.equal(brace.bones.rightLowerArm[1], 1.7);
+  assert.ok(brace.hands.right.spread >= 0.35);
+});
+
+test('sneeze breaths visibly lift the chin and both shoulders while the elbow stays low', () => {
+  const first = gesture('almostSneeze', 0.9), second = gesture('almostSneeze', 1.3);
+  assert.ok(Math.abs(first.bones.head[0] + 0.18) < 0.001);
+  assert.ok(Math.abs(second.bones.head[0] + 0.25) < 0.001);
+  assert.ok(second.eyes > first.eyes && second.bones.neck[0] > second.bones.head[0]);
+  assert.equal(second.bones.leftShoulder[2], 0.05);
+  assert.equal(second.bones.rightShoulder[2], -0.05);
+  assert.equal(second.bones.rightUpperArm[2], 1.25);
+  assert.equal(second.bones.rightLowerArm[1], 2.4);
+});
+
+test('sleeve and fan sit in front of her; the brushing elbow keeps its bend on release', () => {
+  const sleeve = gesture('brushSleeve', 1.4), fan = gesture('fingerFan', 2);
+  assert.deepEqual(sleeve.bones.leftUpperArm, [-0.35, -0.35, -1.25]);
+  assert.equal(sleeve.bones.leftLowerArm[1], -1.35);
+  assert.ok(fan.bones.leftUpperArm[0] === -0.45 && fan.bones.leftUpperArm[1] < 0 && fan.bones.leftHand[1] < 0);
+  const release = gesture('brushSleeve', 2.35).ik.weights;
+  assert.ok(release.UpperArm < 0.5 && release.LowerArm === 1);
+});
+
+test('tap has a visible shoulder hitch, surprise then smile; thought release breathes out visibly', () => {
+  const tap = tapMotion(0.1);
+  assert.equal(tap.bones.chest[0], -0.07);
+  assert.equal(tap.bones.leftShoulder[2], 0.05);
+  assert.equal(tap.bones.rightShoulder[2], -0.05);
+  assert.equal(tap.face.surprised, 0.3);
+  assert.ok(tapMotion(0.4).face.happy > 0 && tapMotion(0.4).face.surprised === 0);
+  const thought = gesture('thoughtRelease', 1.4);
+  assert.equal(thought.adds.leftShoulder[2], -0.06);
+  assert.equal(thought.adds.chest[0], 0.04);
+  assert.equal(thought.adds.head[2], 0.05);
+  assert.ok(gesture('thoughtRelease', 2.2).face.happy >= 0.18);
+});
+
+test('phrase hands open finger by finger, turn up, and close after the elbow drops', () => {
+  const plan = [{ start: 0, peak: 0.4, end: 2, side: 1 }];
+  const opening = phraseGesture(plan, 0.2).hands.right.curl;
+  const amount = opening.map((x, i) => (HANDS.relaxed.curl[i] - x) / (HANDS.relaxed.curl[i] - 0.12));
+  assert.ok(amount.every((x, i) => !i || amount[i - 1] > x));
+  const held = phraseGesture(plan, 1);
+  assert.ok(held.bones.rightUpperArm[0] < -0.3 && held.bones.rightLowerArm[1] > 0.8);
+  assert.equal(held.bones.rightHand[1], 0.3);
+  assert.ok(phraseGesture(plan, 0.49).bones.rightLowerArm[1] > 1);
+  const falling = phraseGesture(plan, 2.2);
+  assert.ok(falling.bones.rightUpperArm[0] > held.bones.rightUpperArm[0]);
+  assert.equal(falling.bones.rightLowerArm[1], held.bones.rightLowerArm[1]);
+  assert.deepEqual(falling.hands.right, held.hands.right);
+  assert.ok(phraseGesture(plan, 2.74).hands.right.curl[0] > 0.79);
+  assert.deepEqual(phraseGesture(plan, 0.5, -1), {}, 'a cancelled future phrase never starts');
+});
+
+test('typing eyes step with each key, cap, and restart after a six-tenths pause', () => {
+  assert.equal(typingEyeStep(1, 0), 0.015);
+  assert.equal(typingEyeStep(10, 0.59), 0.15);
+  assert.equal(typingEyeStep(100, 0.1), 0.25);
+  assert.equal(typingEyeStep(10, 0.6), 0);
+  assert.equal(typingEyeStep(10, null), 0);
+  assert.equal(typingKeyCount(10, 0.59), 11);
+  assert.equal(typingKeyCount(10, 0.6), 1);
+  assert.equal(typingKeyCount(10, null), 1);
+});
+
+
+test('entries lead with the upper arm before folding the elbow, on either side', () => {
+  for (const [name, end, hand] of [['tuckHair', 1, 'right'], ['brace', 0.6, 'right'],
+    ['almostSneeze', 1, 'right'], ['brushSleeve', 1.3, 'left'], ['fingerFan', 1.3, 'left']]) {
+    for (const side of [1, -1]) {
+      const h = side === 1 ? hand : hand === 'left' ? 'right' : 'left';
+      let leads = false;
+      for (let t = 0; t < end; t += 0.01) {
+        const g = gesture(name, t, side), upper = g.weights?.[h + 'UpperArm'] ?? g.weight;
+        const lower = g.weights?.[h + 'LowerArm'] ?? g.weight;
+        assert.ok(upper >= lower && lower >= 0, `${name} at ${t}`);
+        leads ||= upper > lower;
+        if (g.ik) assert.ok(g.ik.weights.UpperArm >= g.ik.weights.LowerArm);
+      }
+      assert.ok(leads, name);
+    }
+  }
+  for (let t = 0; t < 1; t += 0.01) {
+    const w = armEntry(t, 1);
+    assert.ok(w.UpperArm >= w.LowerArm && w.LowerArm >= w.Hand);
+    const c = catchStep({ phase: 'reach', t, since: 0, away: false }, { free: true }, 0);
+    assert.ok(c.weights.UpperArm >= c.weights.LowerArm);
+  }
+  for (const side of [1, -1]) for (let t = 0; t <= 0.4; t += 0.01) {
+    const h = side === 1 ? 'right' : 'left';
+    const g = phraseGesture([{ start: 0, peak: 0.4, end: 2, side }], t);
+    assert.ok(Math.abs(g.bones[h + 'UpperArm'][0]) / 0.35 + 1e-9 >= Math.abs(g.bones[h + 'LowerArm'][1]) / 0.9);
+  }
+});
+
+test('sleeve target stays low and finger fan keeps its elbow open away from the face', () => {
+  for (const side of [1, -1]) {
+    const h = side === 1 ? 'left' : 'right';
+    for (let t = 0; t < GESTURES.brushSleeve; t += 1 / 60) {
+      const g = gesture('brushSleeve', t, side), arm = g.bones[h + 'UpperArm'];
+      assert.ok(Math.abs(arm[0]) <= 0.35 && Math.abs(arm[2]) >= 1.25);
+      assert.ok(Math.abs(g.bones[h + 'LowerArm'][1]) <= 1.35);
+      assert.ok(g.ik.above > 0 && g.ik.above <= 0.051);
+    }
+    for (let t = 0; t < GESTURES.fingerFan; t += 1 / 60) {
+      const g = gesture('fingerFan', t, side), arm = g.bones[h + 'UpperArm'];
+      assert.ok(Math.abs(arm[0]) <= 0.45 && arm[2] * side === -1.1);
+      assert.ok(Math.abs(g.bones[h + 'LowerArm'][1]) <= 1.25, 'open elbow preserves forward clearance');
+      assert.ok(Math.abs(g.bones[h + 'Hand'][1]) === 0.8, 'fingers turn up clear of the chin');
+    }
+  }
+});
+
+
+test('finger fan holds a readable wider spread, then closes before the arm drops', () => {
+  for (const side of [1, -1]) {
+    const hand = side === 1 ? 'left' : 'right';
+    for (const t of [1.9, 2.2, 2.6]) assert.ok(gesture('fingerFan', t, side).hands[hand].spread >= 1.59);
+    assert.ok(gesture('fingerFan', 3.35, side).hands[hand].spread < 0.2);
+    assert.deepEqual(gesture('fingerFan', 4.75, side).hands[hand], HANDS.relaxed);
+  }
 });

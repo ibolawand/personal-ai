@@ -1,3 +1,4 @@
+import pytest
 """When the microphone counts as someone talking: the voice detector decides, not loudness."""
 import types
 
@@ -161,6 +162,36 @@ def test_a_full_graphics_card_falls_back_to_the_cpu_instead_of_crashing():
     stt._cpu_model = types.SimpleNamespace(transcribe=lambda *a, **k: ([seg], None))
     assert stt.transcribe(np.zeros(16000, np.float32))[0] == "open my notes"
     assert stt.transcribe_short(np.zeros(16000, np.float32)) == "open my notes"
+
+
+def test_a_lost_graphics_card_moves_her_to_the_cpu_for_good():
+    """After the laptop slept: "cudaErrorInvalidDevice: invalid device ordinal" on every transcription. It ended her
+    main loop ("I crashed") until she was restarted (2026-11-11)."""
+    stt = S.STTEngine.__new__(S.STTEngine)
+    stt.vocabulary, stt.device = (lambda: []), "cuda"
+    seg = types.SimpleNamespace(text=" open my notes", compression_ratio=1.2, avg_logprob=-0.2, no_speech_prob=0.1)
+    tries = []
+
+    def gone():
+        tries.append(1)
+        raise RuntimeError("parallel_for failed: cudaErrorInvalidDevice: invalid device ordinal")
+        yield
+    stt.model = types.SimpleNamespace(transcribe=lambda *a, **k: (gone(), None))
+    stt._cpu_model = types.SimpleNamespace(transcribe=lambda *a, **k: ([seg], None))
+    assert stt.transcribe(np.zeros(16000, np.float32))[0] == "open my notes"
+    assert stt.transcribe(np.zeros(16000, np.float32))[0] == "open my notes"
+    assert len(tries) == 1 and stt.device == "cpu", "the dead card is tried once, not on every sentence"
+
+
+def test_an_error_that_is_not_the_graphics_card_is_not_hidden():
+    stt = S.STTEngine.__new__(S.STTEngine)
+    stt.vocabulary, stt.device = (lambda: []), "cuda"
+
+    def broken(*a, **k):
+        raise RuntimeError("model file is corrupt")
+    stt.model = types.SimpleNamespace(transcribe=broken)
+    with pytest.raises(RuntimeError):
+        stt.transcribe(np.zeros(16000, np.float32))
 
 
 def test_lift_raises_pitch_and_keeps_the_pace():

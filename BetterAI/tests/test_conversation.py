@@ -191,16 +191,7 @@ def test_whisper_hallucinations_are_recognised():
         assert not HALLUCINATIONS.match(t), t
 
 
-# ── voice tone per sentence ──
-
-@pytest.mark.parametrize("sentence,tone", [
-    ("Aw, I'm sorry to hear that.", "soft"), ("That sounds rough.", "soft"), ("Take your time.", "soft"),
-    ("Haha, you caught me!", "playful"), ("Wow, rude.", "playful"), ("Done, milk's on the list!", "playful"),
-    ("The meeting is at three.", "neutral"), ("What's on your mind?", "neutral"),
-])
-def test_sentence_tone(sentence, tone):
-    from Engines.voice_engine import sentence_tone
-    assert sentence_tone(sentence) == tone
+# voice tone per sentence: tests/test_voice_style.py
 
 
 def test_due_reminder_shows_a_card_and_snooze_works(aria, memory):
@@ -483,3 +474,38 @@ def test_plain_chat_runs_no_tools_but_keeps_the_start_of_the_prompt(aria):
     assert aria.llm.last_trace == [{"role": "assistant", "content": "Same here."}]
     aria.handle_turn("add milk to my list", check_state=False)
     assert seen[-1] == ["core", "group"] and ran == ["search_notes"], "a command gets its tools and they run"
+
+
+def test_saying_cant_in_plain_chat_is_not_a_missing_tool(aria):
+    """Every "missing tool" retry in a week of real use was chat ("I can't get pregnant", "I can't wander"), and the
+    retry sends all ~110 tools: the slowest thing she does."""
+    seen = []
+
+    def chat(prompt, history, system, schemas, execute, **_):
+        seen.append(len(schemas))
+        return "I can't wander, I'm stuck on your laptop.", []
+    aria.llm.chat_with_tools = chat
+    aria.tools.schemas_for = lambda text, recent=(): [{"n": 1}]
+    aria.tools.schemas = [{"n": i} for i in range(20)]
+    reply, _ = aria.handle_turn("wander", check_state=False)
+    assert seen == [1] and "wander" in reply
+    aria.handle_turn("open the thing", check_state=False)          # a command: there the retry stays
+    assert seen == [1, 1, 20]
+
+
+
+def test_a_summary_is_not_a_reorganised_note(aria):
+    """Asked for "a short summary at the top of this note" the model called organize_note, which rearranges the
+    whole note. Which tool a summary needs is decided in code."""
+    ran = []
+    aria.tools.execute = lambda name, args: ran.append((name, args)) or "Done."
+
+    def chat(prompt, history, system, schemas, execute, **_):
+        return "Done.", [("organize_note", execute("organize_note", {"title": "Biology"}))]
+    aria.llm.chat_with_tools = chat
+    aria.handle_turn("put a short summary at the top of this note", check_state=False)
+    assert ran == [("edit_note", {"change": "summary", "title": "Biology"})]
+    ran.clear()
+    aria.handle_turn("tidy up my biology note", check_state=False)
+    aria.handle_turn("organise this note and put a summary on top", check_state=False)
+    assert [n for n, _ in ran] == ["organize_note", "organize_note"], "asked to organise, she organises"

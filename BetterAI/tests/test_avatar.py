@@ -221,26 +221,49 @@ def calls(view, name):
     return [c for c in view.sent if c.startswith(f"window.aria.{name}(")]
 
 
-def test_asleep_the_orb_shows_and_nothing_is_sent(app, stage):
+def test_asleep_avatar_stays_visible_and_silent(app, stage):
     overlay, bridge, view = stage()
     state(app, bridge, "sleeping")
     for _ in range(5):
         overlay._tick()
-    assert not overlay._shows_avatar() and not view.shown
-    assert not any(calls(view, n) for n in ("setState", "setLevel", "lookAt", "setProps", "resume"))
+    assert overlay._shows_avatar() and view.shown
+    assert calls(view, "setState")[-1] == 'window.aria.setState("sleeping")'
+    assert not bridge.mic_open
+    assert calls(view, "wave") == []
 
 
-def test_waking_brings_the_avatar_and_sleeping_takes_her_away(app, stage):
-    import ui.overlay as O
+def test_focus_keeps_a_silent_avatar_visible_and_break_and_stop_follow_the_timer(app, stage):
+    overlay, bridge, view = stage()
+    state(app, bridge, "sleeping")
+    bridge.set_timers([{"kind": "focus", "text": "biology", "due": time.time() + 300, "created": time.time()}])
+    overlay._tick()
+    assert overlay._shows_avatar() and view.shown
+    assert calls(view, "setFocus")[-1] == 'window.aria.setFocus("work")'
+    assert calls(view, "wave") == []
+    assert not bridge.mic_open and overlay.state == "sleeping"
+    bridge.set_timers([{"kind": "focusbreak", "text": "break", "due": time.time() + 100, "created": time.time()}])
+    overlay._tick()
+    assert calls(view, "setFocus")[-1] == 'window.aria.setFocus("break")'
+    bridge.set_timers([])
+    overlay._tick()
+    assert overlay._shows_avatar()
+    overlay.hide()
+    bridge.set_timers([{"kind": "focus", "due": time.time() + 300}])
+    overlay._tick()
+    assert not overlay._shows_avatar()
+
+
+def test_waking_and_sleeping_keep_the_avatar_visible(app, stage):
     overlay, bridge, view = stage()
     state(app, bridge, "listening")
     assert overlay._shows_avatar() and view.shown
     assert view.sent[:3] == ["window.aria.resume()", "window.aria.fade(true)", "window.aria.wave()"]     # she says hello
     assert (view.rect.width(), view.rect.height()) == (300, 400)
     state(app, bridge, "sleeping")
-    assert view.sent[-2:] == ["window.aria.fade(false)", "window.aria.pause()"]
-    QTest.qWait(O.FADE_MS + 60)
-    assert not view.shown and not overlay._shows_avatar()
+    overlay._tick()
+    assert calls(view, "setState")[-1] == 'window.aria.setState("sleeping")'
+    assert not calls(view, "pause")
+    assert view.shown and overlay._shows_avatar()
 
 
 def test_wake_then_sleep_then_wake_inside_the_fade_ends_with_her_shown(app, stage):
@@ -256,7 +279,7 @@ def test_a_flash_while_asleep_does_not_show_her_and_while_awake_makes_her_hop(ap
     overlay, bridge, view = stage()
     state(app, bridge, "sleeping")
     state(app, bridge, "alert")
-    assert not view.shown and calls(view, "hop") == []
+    assert view.shown and calls(view, "hop") == []
     state(app, bridge, "listening")
     state(app, bridge, "alert")
     assert view.shown and calls(view, "hop") == ["window.aria.hop()"]
@@ -415,11 +438,11 @@ def test_without_xfixes_her_whole_box_takes_clicks_and_the_self_check_says_so(ap
     assert bridge.avatar_status == "showing, but clicks beside her are blocked (XFixes missing)"
 
 
-def test_back_to_the_orb_the_old_mask_is_used(app, stage, shaped):
+def test_on_avatar_error_the_old_orb_mask_is_used(app, stage, shaped):
     overlay, bridge, view = stage()
     state(app, bridge, "listening")
     overlay._update_mask()
-    state(app, bridge, "sleeping")
+    state(app, bridge, "error")
     overlay._update_mask()
     assert shaped["cleared"] == 1 and not overlay.mask().isEmpty()
     assert not overlay.mask().contains(overlay._avatar_rect().topLeft() + QPoint(3, 3))
@@ -447,7 +470,7 @@ class WalkingView(FakeView):
 
 
 def test_her_window_walks_with_her_and_a_drag_lets_go(app, stage):
-    from ui.overlay import Overlay, OverlayBridge
+    from ui.overlay import Overlay
     overlay, bridge, _ = stage(shown=False)
     view = WalkingView()
     overlay = Overlay(bridge, make_avatar=lambda parent: view)
@@ -469,7 +492,20 @@ def test_her_window_walks_with_her_and_a_drag_lets_go(app, stage):
         QTest.mousePress(overlay, Qt.LeftButton, pos=start)
         QTest.mouseMove(overlay, start + QPoint(30, 0))
         assert calls(view, "stopTrip")
+        # she is told where her window is as it's carried (she swings), and when she's put down (her knees give)
+        carried = calls(view, "carried")
+        assert carried and carried[-1] == f"window.aria.carried({overlay.x()},{overlay.y()})"
         QTest.mouseRelease(overlay, Qt.LeftButton, pos=start + QPoint(30, 0))
+        assert calls(view, "carried")[-1] == "window.aria.carried(null)"
+        # the release goes missing (the grab was lost): the next move without the button puts her down
+        QTest.mousePress(overlay, Qt.LeftButton, pos=start)
+        QTest.mouseMove(overlay, start + QPoint(60, 0))
+        assert calls(view, "carried")[-1] != "window.aria.carried(null)"
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtCore import QEvent, QPointF
+        p = QPointF(start + QPoint(70, 0))
+        overlay.mouseMoveEvent(QMouseEvent(QEvent.MouseMove, p, overlay.mapToGlobal(p), Qt.NoButton, Qt.NoButton, Qt.NoModifier))
+        assert calls(view, "carried")[-1] == "window.aria.carried(null)" and overlay._drag_from is None
         moved = overlay.x()
         view.report = [1, -80.0, True]
         overlay._tick()
@@ -488,7 +524,7 @@ class PerchingView(WalkingView):
 def test_she_is_told_where_to_sit_rides_along_with_the_window_and_hops_down_when_it_goes(app, stage, monkeypatch):
     import json
     import ui.desktop_windows as D
-    from ui.overlay import Overlay, OverlayBridge
+    from ui.overlay import Overlay
     _, bridge, _ = stage(shown=False)
     view = PerchingView()
     overlay = Overlay(bridge, make_avatar=lambda parent: view)
@@ -509,6 +545,9 @@ def test_she_is_told_where_to_sit_rides_along_with_the_window_and_hops_down_when
         assert sent, "she is told where she could sit"
         seats = json.loads(sent[-1][len("window.aria.setSeats("):].rsplit(",", 1)[0])
         assert seats and seats[0]["y"] == -450 and abs(seats[0]["x"]) <= seats[0]["half"]   # a stretch right over her
+        # its right end is the window's own top corner (she may sit there swinging her legs); its left end is cut
+        # by the screen's edge (her box has to stay on the screen), so it is no corner
+        assert seats[0]["corners"] == [1]
         # she jumps up 250 px (the edge is 450 px up, her seat 200 px above the bottom of her box) and lands
         y0 = overlay.y()
         view.report = [5, 0, True, 0.0]
@@ -926,12 +965,12 @@ def test_link_act_is_a_moment_never_replayed(link):
     assert link.sent == ['window.aria.react("curious")']
 
 
-def test_companion_state_shows_her_idle(app, stage):
+def test_companion_state_preserves_her_rest_and_reactions(app, stage):
     overlay, bridge, view = stage()
     state(app, bridge, "companion")
     overlay._tick()
     assert overlay._shows_avatar() and view.shown
-    assert calls(view, "setState")[-1] == 'window.aria.setState("idle")'
+    assert calls(view, "setState")[-1] == 'window.aria.setState("companion")'
 
 
 def test_avatar_act_reaches_the_page_only_while_she_shows(app, stage):
@@ -1043,3 +1082,123 @@ def test_her_window_is_put_on_every_desktop_and_a_seat_on_another_desktop_is_gon
     assert dw.window_rect(7).left == 50
     props["_NET_WM_DESKTOP"] = [dw.EVERY_DESKTOP]
     assert dw.window_rect(7) is not None
+
+
+def test_the_pointer_typing_and_a_window_beside_her_reach_the_page(link):
+    link.mark_ready()
+    link.set_pointer(120.6, 300, True)
+    link.set_pointer(120.6, 300, True)              # the same: skipped
+    link.set_pointer(120, 300, False)              # stopped moving
+    link.set_typing(True)
+    link.set_typing(True)
+    link.typed()
+    link.typed()                                   # every key goes through (never what was typed)
+    link.startle(-3)
+    link.tapped()
+    assert link.sent == ["window.aria.setPointer(120,300,true)", "window.aria.setPointer(120,300,false)",
+                         "window.aria.setTyping(true)", "window.aria.typed()", "window.aria.typed()",
+                         "window.aria.startle(-1)", "window.aria.tapped()"]
+
+
+def test_a_tap_before_her_page_is_ready_is_not_kept(link):
+    link.tapped()
+    link.mark_ready()
+    assert link.sent == []
+
+
+@pytest.mark.parametrize("release_lost", [False, True])
+def test_dragging_up_from_panel_restores_the_whole_avatar(high, shaped, release_lost):
+    overlay, view, windows, tick = high
+    overlay._place(QPoint(400, 1040 - overlay.avatar_h + 230))
+    overlay._perch, overlay._aloft = (0, 0, 0), True
+    assert overlay.height() == overlay.avatar_h - 230
+    start = QPoint(overlay.avatar_w // 2, 100)
+    QTest.mousePress(overlay, Qt.LeftButton, pos=start)
+    QTest.mouseMove(overlay, start - QPoint(0, 300))
+    assert overlay.rect().contains(overlay._avatar_rect()), "carrying her restores the legs below the old panel cut"
+    assert overlay.mask().contains(overlay._avatar_rect().bottomLeft())
+    if release_lost:
+        overlay._end_drag()
+    else:
+        QTest.mouseRelease(overlay, Qt.LeftButton, pos=start)
+    assert overlay.height() == overlay.avatar_h
+    assert overlay._perch is None and not overlay._aloft
+
+
+def test_putting_her_down_at_panel_keeps_standing_feet_in_work_area(high):
+    overlay, view, windows, tick = high
+    overlay._place(QPoint(400, 1040 - overlay.avatar_h + 230))
+    overlay._perch, overlay._aloft = (0, 0, 0), True
+    overlay._dragged = True
+    overlay._end_drag()
+    assert overlay._box_screen.y() + overlay.avatar_h <= 1040
+    assert overlay.height() == overlay.avatar_h
+    assert overlay._floor_y == overlay._box_screen.y()
+
+
+def test_hopping_up_from_panel_finishes_standing_with_full_window(high):
+    overlay, view, windows, tick = high
+    floor = 1040 - overlay.avatar_h - 14
+    overlay._floor_y = floor
+    overlay._place(QPoint(400, floor + 244))
+    overlay._perch, overlay._aloft = (0, 0, 0), True
+    overlay._on_travel([8, 0, True, 0])
+    overlay._on_travel([8, 0, False, -244])
+    assert not overlay._aloft and overlay._perch is None
+    assert overlay._box_screen.y() == floor
+    assert overlay.rect().contains(overlay._avatar_rect())
+
+
+@pytest.mark.parametrize("on_panel", [False, True])
+def test_smaller_work_area_restores_full_body_and_cancels_old_travel(high, shaped, monkeypatch, on_panel):
+    from PySide6.QtCore import QRect
+    overlay, view, windows, tick = high
+    overlay._place(QPoint(1500, 1040 - overlay.avatar_h - 14))
+    tick()
+    if on_panel:
+        overlay._place(overlay._box_screen + QPoint(0, 244))
+        overlay._perch, overlay._aloft = (0, 0, 0), True
+    overlay._travel.follow([77, 0, True, 0], (overlay._box_screen.x(), overlay._box_screen.y()))
+    smaller = QRect(0, 0, 1280, 720)
+    monkeypatch.setattr(overlay, "_screen_area", lambda: smaller)
+    tick()
+    box = overlay._avatar_rect().translated(overlay.pos())
+    assert smaller.contains(box), "a screen change must not leave her legs below the work area"
+    assert overlay.rect().contains(overlay._avatar_rect())
+    assert overlay.mask().contains(overlay._avatar_rect().bottomLeft())
+    assert overlay._floor_y == box.top() and not overlay._aloft and overlay._perch is None
+    assert calls(view, "stopTrip")
+    before = overlay._box_screen
+    overlay._on_travel([77, 0, False, 244])
+    assert overlay._box_screen == before, "the old trip cannot move her back off screen"
+
+
+def test_hidden_sleep_pauses_and_returns_to_rest_without_a_wave(app, stage):
+    overlay, bridge, view = stage()
+    state(app, bridge, "sleeping")
+    overlay._tick()
+    overlay.hide()
+    overlay._tick()
+    assert not overlay._shows_avatar()
+    assert calls(view, "pause")[-1] == "window.aria.pause()"
+    overlay.show()
+    overlay._tick()
+    assert overlay._shows_avatar()
+    assert calls(view, "resume")[-1] == "window.aria.resume()"
+    assert calls(view, "setState")[-1] == 'window.aria.setState("sleeping")'
+    assert not calls(view, "wave")
+    assert not bridge.mic_open
+
+
+def test_her_frame_rate_follows_the_screen_and_chromium_does_not_pace_her():
+    from ui.avatar_view import UNLOCK_FLAG, screen_hz, unlock_frame_rate
+    assert screen_hz(144.0) == 144 and screen_hz(59.94) == 60 and screen_hz(240) == 240
+    assert screen_hz(0) == 60 and screen_hz(None) == 60 and screen_hz("x") == 60    # the screen doesn't say
+    assert screen_hz(30) == 60 and screen_hz(1000) == 360                           # never below 60, nor silly
+    env = {}
+    unlock_frame_rate(env)
+    unlock_frame_rate(env)
+    assert env["QTWEBENGINE_CHROMIUM_FLAGS"] == UNLOCK_FLAG, "once"
+    env = {"QTWEBENGINE_CHROMIUM_FLAGS": "--foo"}
+    unlock_frame_rate(env)
+    assert env["QTWEBENGINE_CHROMIUM_FLAGS"] == "--foo " + UNLOCK_FLAG, "keeps flags already set"

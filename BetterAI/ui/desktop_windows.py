@@ -101,6 +101,38 @@ def covering(windows, box):
     return next((w for w in reversed(windows) if w.left <= middle <= w.right and _hides_her(w, head, feet)), None)
 
 
+def usable_seats(seats, bans, now):
+    """The seats she may jump to: not on a window she recently failed to land on (`bans`: window id -> until when,
+    in the same clock as `now`)."""
+    return [s for s in seats if bans.get(s.id, 0) <= now]
+
+
+def beside(windows, box, reach=200):
+    """The windows right beside her: {id: side}, side -1 for one on her left, 1 on her right. A window counts when
+    its near edge is within `reach` px of the middle of her box, it doesn't cover her middle, and it is level with
+    her body somewhere between her head and her feet."""
+    head, feet = _her_height(box)
+    middle = (box[0] + box[2]) / 2
+    out = {}
+    for w in windows:
+        if w.bottom < head or w.top > feet or w.left <= middle <= w.right:
+            continue
+        if 0 < middle - w.right <= reach:
+            out[w.id] = -1
+        elif 0 < w.left - middle <= reach:
+            out[w.id] = 1
+    return out
+
+
+def arrived_beside(before, now):
+    """Which side a window just came up right beside her (opened, or moved there, also from her other side), from two readings of beside():
+    -1, 1, or 0 when none did. `before` None (the first reading, or she moved since) counts nothing: only something
+    that changes next to her while she stands still makes her flinch."""
+    if before is None:
+        return 0
+    return next((side for wid, side in now.items() if before.get(wid) != side), 0)
+
+
 # ── reading them from X ──
 
 _SKIP_STATES = ("_NET_WM_STATE_HIDDEN", "_NET_WM_STATE_FULLSCREEN", "_NET_WM_STATE_MAXIMIZED_VERT",

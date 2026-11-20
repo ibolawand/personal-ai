@@ -28,6 +28,25 @@ That way two copies never fight over the camera and mic.
 Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWNER`, `FILE_ROOTS`,
 `CAMERA_INDEX`, `VISION_MODEL`, `LLM_NUM_CTX`, and the conversation settings below (`ARIA_QUIET`, …).
 
+## Desktop settings and diagnostics
+
+Right-click Aria → **Settings…** to save microphone mode, mute, autonomous Aria/Claude chats,
+Claude usage and quiet hours. Preferences live in `~/.config/aria/settings.json` (`XDG_CONFIG_HOME` is respected)
+and override the corresponding launch/environment defaults. Microphone mode takes effect on restart; other
+settings apply immediately. Typing mode still allows the existing typed “listen” command. Empty quiet hours
+disable the quiet period; otherwise use `HH:MM-HH:MM` (overnight ranges work).
+
+**How is Aria running?** opens a scrollable card with the last week's response timings, recorded problems,
+and service checks with fixes. Checks run outside the UI thread. Claude's status describes local configuration,
+not a live paid model request.
+
+Spontaneous Claude chats now respect quiet hours and the autonomous-chat switch (`ARIA_AUTONOMOUS_CHATS=0`
+as the environment default). Their Claude subprocess is polled every 100 ms and terminated/reaped when you
+wake Aria, type, disable Claude/chats, enter quiet hours or shut down. Cancelling does not trigger the offline
+cooldown. A local-model reply already being generated is not itself cancelled, but its result is discarded
+if you interrupt before it finishes.
+Duet orchestration and scheduling live in `Engines/DuetCoordinator.py`; the settings dialog is in `ui/settings.py`.
+
 ---
 
 ## Brain
@@ -57,6 +76,14 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
     starts with one is rewritten, and if two rewrites fail she says a short line written in code instead.
   - "What?" / "huh?" makes her say her last message again, more simply.
   - After she asks you something, she waits 2 minutes for your answer instead of 1 before dozing off.
+  - **Two messages in a row in casual chat** (`Engines/Double.py`, `Aria._reply_parts` / `_maybe_follow_up`), so
+    she doesn't only react. Code decides both:
+    - A short chat reply made of a reaction and a question ("Haha no way." / "Did you finish it?") comes as two
+      bubbles about a second apart. Commands, tool answers, lists and long replies stay as one bubble.
+    - Sometimes (about 1 in 4, at most every third turn, only when her reply didn't already ask something) she
+      adds one short line of her own 2–4 s later: an afterthought or a small question. The local model writes
+      it, never the big model. It's dropped if you start typing or talking first, and it goes into the history
+      so you can answer it. With the voice on she says it too.
 
 - **Model:** Ollama `qwen3:30b-a3b-instruct-2507-q4_K_M` with native tool calling (`llm_engine.py`), 12288-token
   context (her largest request is ~10.8 k tokens; at 8192 Ollama had been silently cutting it). A mixture-of-experts
@@ -77,6 +104,7 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
   - writing quiz questions (judging your answers stays local)
   - anything asked by name: "ask the big model why …", "frag die große KI, was …", "frag Claude: …". The note open
     in MyNotion only goes along when the question is about it ("… was diese Notiz bedeutet").
+  - Claude's lines when he talks with Aria and you (below): the topic and that conversation's lines only.
 
   It runs through the Claude Code program already signed in on the laptop (`claude -p`), so it uses the Claude
   subscription and needs no API key. Claude is started with no tools, no settings and in an empty folder: it gets
@@ -89,6 +117,36 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
   - **Settings** in `Engines/.env`: `ARIA_BIG_MODEL=0` turns it off (everything local again),
     `ARIA_BIG_MODEL_NAME` picks the model (default `sonnet`), `ARIA_BIG_CMD` is the path of `claude` if it isn't found.
   - Not marked: a proposal for selected text in MyNotion (it is shown as text to accept, the log still has the call).
+- **Aria and Claude talk together, with you** (`Engines/Duet.py`, `Aria._duet`, `tests/test_duet.py`), to
+  brainstorm or just for fun: "brainstorm with Claude about my birthday party", "you and Claude chat about cats",
+  "let's talk with Claude", "bring Claude in, what should I cook", "du und Claude, redet über Musik". Claude (through
+  `claude -p`) and Aria (the local model) take turns, three rounds at most. Claude's bubbles are orange and start with
+  "Claude:", and he speaks in his own calm voice (`CLAUDE_VOICE=am_michael`, `CLAUDE_LIFT` in `Engines/.env`); while he
+  talks, Aria's mouth stays still. Join in anytime: type, or talk in the short pause after each line (when she's
+  listening). "stop", "that's enough" or "thanks" ends it. Words like "brainstorm", "ideas" or "plan" make it a
+  brainstorm, and Aria sums up the best ideas at the end; otherwise it's banter. Claude is sent only the topic and the
+  lines of this conversation, never your memory, history, mail or calendar. Each of his lines uses your Claude
+  subscription and takes a few seconds. ("ask Claude …" is still a single question.)
+  - **Claude has a 3D figure** (`ui/claude_view.py`, `ui/avatar/claude.html`, `claude.js`, `claude.mjs`,
+    `claudelogic.mjs`): an original toon character in Aria's style (messy chestnut hair, round glasses, a cream sweater
+    and an orange scarf), in a small see-through window of his own beside her (on her left, or her right at the edge
+    of the screen), with his feet level with hers. He pops in with a wave when the conversation starts and shrinks
+    away when it ends; the window is hidden and paused the rest of the time and never takes a click. His mouth moves
+    with his voice, and each line's feeling picks his face and a gesture (a smile, a hop when excited or laughing, a
+    curious head tilt, hand to chin when thinking, a sigh when soft or sad). While he talks Aria leans in and looks
+    at him; while she talks he turns to face her. She stays put during the conversation (no walks). His movement
+    transitions continue smoothly when an entrance or exit is interrupted, his bone smoothing follows elapsed
+    time, and his scarf reacts to hops. Invalid voice levels are discarded and his mouth settles closed when he
+    stops speaking. His movement rules are tested with `node --test ui/avatar/claudelogic.test.mjs`; his looks are
+    checked by eye.
+  - **They chat by themselves now and then** (`Aria._chat_loop`, `_chat_with_claude`): at a random time every 30
+    to 120 minutes, outside quiet hours when autonomous chats are enabled, the two of them have a short chat (2 rounds) on a light topic from a list in
+    `Engines/Duet.py` (pizza toppings, black holes, "would you rather…"), never the same as the last few. These chats
+    use Claude Haiku (cheap and quick; brainstorms keep the usual model) and Claude gets only the topic and their
+    lines. They never start over a conversation with you (not while she's awake, a turn is running or you're typing)
+    and stop the moment you type or wake her. Spoken out loud only when you talked to her in the last 10 minutes;
+    otherwise their bubbles and figures only. She remembers what they chatted about, so "what were you two talking
+    about?" works.
 - **Tool routing** (`ToolEngine.schemas_for`): all ~78 tool descriptions took 5,487 of the model's 8,192 context
   tokens on every turn. Now each message gets a core set (reminders, notes, weather, maths…) plus only the groups it's
   about (music, laptop, files, notes & calendar, screen, focus, memory, home, misc), and groups used in the last two
@@ -135,10 +193,19 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 
 ## Overlay UI — `ui/overlay.py`
 
+- **Completed actions have small animations** (`Engines/AvatarEvents.py`, `ui/avatar/presence.mjs`): after a
+  successful timer/reminder tool call, a clock and checkmark appear; saved notes slide into a little notebook;
+  adding checklist items or ticking them off shows a checkmark. They fade after 2.4 seconds, coalesce when several
+  actions finish together, and never replay after a page reload. Errors, pending confirmations and phone commands
+  do not show a success animation. These use actual tool results, not the assistant's wording.
+- **Conversation choreography:** Aria looks toward Claude while he speaks and turns her attention partly back
+  to you during her lines. Both have restrained listening nods; Claude's eyes turn ahead of his head, and full
+  emotional gestures have a cooldown and never interrupt his entrance wave. Silent duet lines also select the
+  appropriate speaker/listener state.
+
 - Transparent, frameless, always-on-top orb in the bottom-right corner. Clicks pass through everywhere except the orb, bubbles and input.
-- **Awake, she is a 3D character** (`ui/avatar/`, `ui/avatar_view.py`, `ui/xshape.py`). Asleep you see the orb, exactly
-  as before. When she wakes, the orb fades into a small anime-style figure (about 300 × 400 pixels, her whole body),
-  and back when she sleeps.
+- **Awake or asleep, she is a 3D character** (`ui/avatar/`, `ui/avatar_view.py`, `ui/xshape.py`). She stays a small anime-style figure
+  while sleeping, sitting quietly until you wake her. The orb is a fallback when the avatar is unavailable.
   - **Her box hugs her:** her character's box is only 250 px wide, and while nothing else is up (no bubble, card,
     text box or hover caption) the overlay's window is exactly that box. So walking to the edge of the screen she
     gets right up to it: the window manager keeps every window fully on the screen, and the old 420 px window
@@ -149,6 +216,12 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
   - **Small things that make her feel alive:** a big jump of her gaze comes with a blink, as in people (it hides the
     eyes snapping across); a wave lifts the elbow to a little below her shoulder, swung forward, with the forearm
     up beside her face (not the whole arm out level with her shoulder).
+  - **Expressions and mannerisms:** curiosity lifts one brow and tips her head; uncertainty adds a small opposing
+    tilt and shoulder lift; thinking narrows her eyes slightly; amusement brings a soft smile, without a laughing shoulder lift.
+    Expressions ease in and out and the smile yields to speech mouth shapes. Existing gestures and the thinking
+    state select them; `window.aria.emote("curious|uncertain|focused|amused")` previews an explicit 3.2-second cue.
+    The built-in figure has dedicated brow/eye/mouth changes; VRM models use matching expression channels when
+    available, otherwise restrained standard VRM expression blends, with the same body mannerisms. No text sentiment classifier is used.
   - **Who she is:** the character in `ui/avatar/aria.vrm` (or the file `ARIA_AVATAR` in `Engines/.env` names). Right now
     that is VRoid's sample character "AvatarSample_B" (by the VRoid Project; free for everyone to use, no credit needed),
     put there on 2026-11-13. Any VRM file works, for example one you export from VRoid Studio: replace the file and
@@ -165,6 +238,16 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
   - **She does things of her own while idle** (every 6 to 16 seconds, only while awake with nothing going on). A
     weighted picker (`chooseIdle` in `ui/avatar/logic.mjs`) chooses among about a dozen things and never repeats one
     of the last three, so she doesn't loop:
+    - **She has weight when you drag her:** picked up, her feet leave the floor: her legs hang loose with the knees
+      a little bent and the toes pointing down, and her arms lift out from her sides for balance. Moved sideways she
+      swings like something held from above: her legs trail behind the movement (from the hips, the shins following),
+      her back leans the other way to stay upright and her head stays nearly level; change direction and she swings
+      through, stop and she swings past once and settles. Put down, her knees give quickly and she straightens up.
+      Only the pose lags: her window follows the mouse exactly. A short nudge is no landing; grabbing her again
+      straight away doesn't crouch her in the air; a stroll inside her box stops. If the mouse release goes missing
+      (the grab was lost, or she's hidden mid-drag) she's put down where she is instead of dangling forever
+      (`carryInput`, `carrySwing`, `carryPose`, `setDown` in `ui/avatar/logic.mjs`; the overlay sends her window's
+      position on every drag move: `AvatarLink.carried`).
     - **She comes along when you switch desktop:** her window is on every workspace (`on_every_desktop` in
       `ui/desktop_windows.py`, set when the overlay is shown). A window she sat on or hid behind that stayed on the
       other desktop counts as gone: she hops down or steps out.
@@ -191,6 +274,18 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
       push off, a fall that speeds up, a crouch to land, back where she was standing. If the window moves she
       rides along; if it closes, is minimized, made full-size or another window covers her spot for a second, she
       hops down (one odd reading, like a window being redrawn, doesn't count; the log says why: `[Avatar] hopped down`).
+      **On a corner:** when the stretch she goes to ends at the window's own top corner (not where another window
+      covers it or the screen cuts it), most times (60 %) she sits right at that corner, the nearer one, and swings
+      her legs the whole time: one forward as the other goes back, about once a second, livelier for a while and
+      then lazier but never stopping, feet trailing their shins, thighs lifting a little on each kick and her body
+      rocking back a hair (`dangle(t, corner)` and `planPerch` in `ui/avatar/logic.mjs`; the overlay marks the
+      corners in `_watch_seats`). Try it: `tools/avatar_look.py OUT --seat X,Y,W,H 'window.aria.act("perchCorner")|3500|'`.
+      **Crossing her ankles:** sitting on an ordinary stretch of edge (not a corner, not the panel) she now and then
+      lets her swing die away, leans back a touch, lifts one knee a little so the foot clears and brings it over in
+      front of the other ankle (the thigh turns in, the toes follow a moment later), rests like that a few seconds
+      with one wiggle of the toes, then uncrosses the same way and swings again (7 s; `crossAnkles` and `crossFits`
+      in `ui/avatar/logic.mjs`, fitted on her model by measuring her ankles). If she hops down, loses her seat or is
+      picked up meanwhile, her ankles uncross at once.
       Drag her off and she stands where you put her. Only windows with a free stretch of top edge (not covered by
       a window above it) and room above it for her head (about 200 px of screen) qualify; maximized and
       fullscreen ones never do. High up, her box sticks out above the top of the screen: only the empty part of it
@@ -200,7 +295,11 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
       where she stands, and sits there facing you like on a window, her legs hanging down behind the panel (the
       part of her box below the work area is cut off: the window manager keeps windows above the panel; the text box moves up to just above the panel, so you can still
       click her and type). After a
-      while she leans forward, pushes herself up and stands where she was (`edgeSit` in `ui/avatar/logic.mjs`,
+      while she leans forward, pushes herself up and stands where she was. Picking her up restores the cropped
+      part as she moves away from the edge; putting her down keeps her whole standing box inside the work area.
+      Changing screens or the work area cancels the old trip and seat, restores her full standing box inside
+      the new work area, and rebuilds the window mask.
+      Hopping up from the panel leaves her standing, with no window seat to follow (`edgeSit` in `ui/avatar/logic.mjs`,
       `any_maximized` in `ui/desktop_windows.py`). Try it: `tools/avatar_look.py OUT --seat max
       'window.aria.act("perch")|4000|'`. The windows
       are read from X11 (`ui/desktop_windows.py`, python-xlib: visible top edges, title bars included, shadows
@@ -226,10 +325,48 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
     - **a smile to herself**, head tilted; **a sigh** (a breath in, a long breath out, a relaxed face); **something
       catches her eye** in a corner of the screen and she leans to look.
     - **a look around**, **a lean** onto one leg, **rocking** on her heels with her arms held back.
-    - **a yawn:** the back of a hand over her mouth, eyes shut, mouth open, head back, then she sags a little (also sitting);
+    - **a yawn:** her fingers over her mouth, eyes shut, mouth open, head back, then she sags a little (also sitting);
       **a look at her wrist:** forearm up, eyes and head down on it, then back up at you; **shaking out her hands:**
       shoulders up and dropped, both hands shaken loose at her sides, dying away; **a stretch to the side:** one
-      arm up over her head, leaning away from it with her hip out the other way.
+      arm up over her head, leaning away from it with her hip out the other way; **tucking a strand of hair behind
+      her ear:** her head tips toward the hand first and her eyes glance down, the elbow reaches forward and out below shoulder height and the
+      forearm folds up after it with soft, nearly extended index and middle fingers, her fingertips land at her temple and sweep slowly back behind her ear while her
+      head leans into her hand, a beat with a small smile, then the elbow drops by her
+      side first, the wrist trails it and her fingers relax last (3 s; also sitting on a window; `tuckHair` in
+      `ui/avatar/logic.mjs`. Her head,
+      neck and chest lead on their own blend weight, a gesture's `weights`); **an almost-sneeze** (rare: at most every
+      10 min): she goes still, her chin lifts clearly on two breaths (0.18 then 0.25 rad), both shoulders
+      rise and her eyes squint as a cupped hand comes up under her nose with the elbow low, a frozen beat with a tiny tremble... nothing. She lets the breath
+      go and sags a little with relief and a small smile; her elbow drops first, the wrist trails, the fingers open
+      last (3.6 s; also on a window; `almostSneeze`; a rare move has `every` in `IDLE`).
+    - **Motion clips under her movement** (`ui/avatar/motions.mjs`, `vrmrig.mjs` `setMotion`, `motions/`): on a VRM,
+      walking plays Mixamo's "Female Walk" (`motions/walk.fbx`), run by her own step phase (`walkTime`) so its stride
+      keeps pace with how fast she moves; her coded walk cycle gives way to it, and is all there is without the file.
+      Sitting still on a window's edge or the floor plays the sitting clips (Quaternius' Universal Animation Library,
+      CC0; idle: hands in her lap; talking: she gestures) on her body above the hips only, so her legs keep the seat's
+      pose and their swing. Clips are retargeted to her bones when the page loads, and everything her code does
+      (where she looks, breathing, lip sync, reactions, gestures) still shows on top. Standing is her own coded motion:
+      the mannequin's and Mixamo's idle clips were tried and looked worse. Jumping, sitting down or getting up, being
+      carried, peeking, the piano and the desk keep their fitted poses (`MASKS` says which bones each clip moves).
+    - **Game-style shading** (`ui/avatar/vrmrig.mjs` `SHADING`, `polishShading`): on a VRM, hair and clothes get a
+      crisp cel-shadow edge, her face a soft one, and a thin light along her silhouette that takes the light's colour,
+      so she stands out from any desktop behind her. Eyes are left as the file has them.
+    - **Hands, feet and hair** (`ui/avatar/logic.mjs`, on a VRM: `ui/avatar/vrmrig.mjs`): her hands take a shape for
+      what she does (`HANDS`, `handPose`): open and fanned to wave (the fingers trail each swing), her index finger on
+      her chin when she thinks, fingers across her mouth for a yawn, closed on the umbrella's handle, her jacket's hem
+      and her card, spread wide in a stretch and in the air of a hop, limp and flapping when she shakes them out, and
+      opening on the beats of her own voice. Fingers settle a moment after her arms, index first. Her feet roll when
+      she walks (off the toes behind, heel first in front, `footRoll`), stay flat on the floor under a bent knee or a
+      crouch, point in the air and hang loose when she sits on a window. Her long hair has weight further down each
+      strand, so it hangs when she tips or turns her head (it used to stand out at the head's angle), and a faint
+      breath of air (`breeze`) keeps it from freezing while she stands still. The thinking pose, the yawn and the wave
+      were refitted on her model so the hand is where it should be (chin, mouth, beside her head and clear of her hair).
+      Her arms have weight (`LOOSE`, `followJoint`): shoulder, upper arm, forearm and hand each follow on a spring,
+      the hand loosest, so they lag a moment, carry on a little past where a movement stops and settle (a landing,
+      the end of a wave, stopping a walk); her hips, spine, legs and head stay on the short filter. Her upper lids
+      come down with her eyes when she looks down.
+      `tools/avatar_look.py` can look closely: `window.aria.closeUp(x, y, height, yaw)` and
+      `window.aria.tune({hands: {...}})`.
     - **How all of it moves** (`ui/avatar/logic.mjs`): standing, she rests on one leg at a time with the other knee
       loose, holds it 6 to 12 seconds and shifts with a little overshoot (`weightShift`), her knees are never locked
       and each arm drifts on its own rhythm (`idleMotion`). Her pelvis turns a little onto the standing leg and her
@@ -239,6 +376,15 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
       leads and neck, chest and hips follow one after another. The quiet fidgets wind up a touch the other way first,
       go slightly too far and settle. A blink shuts fast and opens more slowly, and now and then she blinks twice
       (`blinkWeight`, `nextBlink`).
+    - **Tired late at night:** from about 22:00 she gets sleepy, most from 1:00 to 5:00, and is fresh again by
+      8:00 (`tiredness`, smooth round the clock). Her upper lids hang a little lower, her blinks are slower and
+      heavier, her idle sway and breath slow down, and she yawns more often. Now and then (at most every 10 min,
+      only after 20 s with nothing going on; standing, sitting on the floor or on a window) she **nods off**: her
+      lids close as her head sinks, slowly and then heavier, catching itself once halfway; then she starts awake:
+      chest first, then neck, then head, a touch past upright, eyes wide open for a moment, two quick blinks, a
+      little shake of the head and a sheepish smile (`doze` in `ui/avatar/logic.mjs`; it is added on top of
+      whatever pose she is in, and her own blinks wait while it runs). It only changes how she is while she's
+      already up; she never wakes herself because of it.
     - **Sitting down when she's bored:** after about 45 seconds with nothing going on she may sit on the floor. She
       turns side-on first (so her skirt stays put), then folds down hugging her knees (elbows beside her knees, forearms
       wrapped round the front of her shins, one hand over the other wrist), her head and eyes turned back
@@ -258,8 +404,14 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
     forearm swings from the elbow with the hand trailing; it winds up first, goes a little too far and settles, and comes
     down with the elbow still bent. **Listening** (only while the microphone is really open, see "She
     listens only when you type it"): leans in, head tilted, hands forward, small nods with your voice. **Thinking:** looks
-    up and aside, weight on one leg, a hand toward her chin. **Speaking:** her mouth takes turns through the vowel shapes (a, i, u, e, o) as
-    loud as her voice is, and her head, chest and shoulders move in time with it (her hands stay down by her sides
+    up and aside, weight on one leg, her index finger on her chin. **Speaking:** her mouth follows the sounds she
+    actually says: Kokoro reports every phoneme and how long it lasts, `Engines/LipSync.py` turns them into a timeline
+    of mouth shapes (lips together on m, b and p, round on "oo" and "w", spread on "ee", wide on "ah", diphthongs moving
+    from one shape to the next), the voice engine moves it onto the audio as played (voice lift, trimmed silence,
+    pauses) and the page plays it on its own clock, leaning into the next sound 60 ms early (`speechShapes`). How far
+    it opens still follows the loudness. Her head and chest dip on the stressed syllables (`speechBeat`) instead of
+    nodding on a rhythm of their own. (Another voice engine gives no phonemes: then the shapes take turns as before.)
+    Her shoulders move in time with her voice (her hands stay down by her sides
     with only small beats), with a flicker of a
     smile on the louder moments (all still when she is silent). **A reminder or timer going off:** her eyes widen and she hops: she winds up into a crouch, leaves the ground,
     sinks a little on landing and straightens, her chest and head following her hips.
@@ -271,7 +423,13 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
     box), drag her, right-click for the menu; bubbles and cards stack above her head.
   - **Clicks beside her pass through** to the window behind: only her outline, the bubbles and the cards take clicks
     (the X11 input shape, so her picture isn't cut the way the orb's circle is).
-  - **She costs nothing while asleep or hidden:** her page is paused and draws nothing. Its small built-in browser stays
+  - **Asleep, she rests on screen:** she goes to a window edge (or the bottom panel), swings her legs, and
+    occasionally dozes; with no suitable edge she sits on the floor. Waking gets her up. This is only animation:
+    no voice, model, camera or extra microphone use. The usual wake word, typing, click and hotkey still work.
+    Music and newly raised windows do not interrupt quiet sleep. After-school companion reactions remain;
+    focus scenes still take precedence.
+  - **At the screen's own refresh rate:** awake or asleep she draws as often as the screen refreshes (measured 144 fps on Lala's 144 Hz screen; never below 60). Chromium's built-in 60 fps pacing is turned off (`unlock_frame_rate`) and the page paces itself on a fixed schedule at the rate the overlay passes in (`screen_hz`, `nextFrame` in `ui/avatar/avatar.js`). Claude's duet avatar does the same. Hidden pages pause completely.
+    Its small built-in browser stays
     loaded, though: measured at roughly 450 MB of memory on top of the overlay (2026-11-13). `ARIA_AVATAR=0` switches
     her off and frees that; then Aria is the orb only.
   - **If anything is missing or breaks** (the page, the 3D libraries in `ui/avatar/vendor/`, QtWebEngine, the graphics),
@@ -287,10 +445,10 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
     mouth), which the page only applies. Tests: `node --test ui/avatar/logic.test.mjs`, `tests/test_avatar.py`.
 - **Companion after school** (`Engines/Companion.py`, `tests/test_companion.py`): once school is over for the day
   (the last lesson in your WebUntis timetable; a day without lessons counts as free; if the timetable can't be
-  read, weekdays count as school until 16:00), she wakes herself the moment you use the laptop: the orb turns into
-  her, she waves and puts one line in her bubble ("school's done! Maths test Thursday, btw", "+ take an umbrella
+  read, weekdays count as school until 16:00), she starts keeping you company the moment you use the laptop:
+  her resting avatar reacts and puts one line in her bubble ("school's done! Maths test Thursday, btw", "+ take an umbrella
   later ☔" when rain is likely). **After school she never speaks, never opens the microphone and never calls the
-  model** in this mode (free days are different: see "On free days she talks" below). She then stays on screen while you use the laptop, sitting, wandering and peeking as usual, and falls asleep
+  model** in this mode (free days are different: see "On free days she talks" below). She then stays on screen while you use the laptop, resting with occasional reactions, and returns to quiet sleep
   after 10 min without keyboard or mouse. Once a day, and again after you were away 2 hours.
   - **She reacts to the app in front** now and then: a gesture and a glance at it (VS Code: she thinks; a video:
     curious; MyNotion: a smile; …), at most every 5 min and not in the first minute after you switch, plus rarely
@@ -322,6 +480,74 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
     memory, nothing written down or sent; only listened to while her avatar shows and another app is playing).
     Talk, podcasts and noise have no clear beat, so she doesn't bob to them. She stops while she speaks, walks,
     hides or makes a gesture, and in lessons; it fades out within about a second when the music stops.
+    She gets into it bit by bit: after a second of steady beat her head joins, her shoulders half a second later
+    (dipping 80 ms ahead of her head), then her body; once she's in it she goes fuller and lighter over a phrase of
+    about 12 s. When a song she was into for 8 s or more stops, her last dip trails off and she gives a small
+    puzzled tilt and glance up ("huh?"); walking off while it plays doesn't count (`grooveStep`, `afterMusic`).
+  - **Avatar reacts to what happens around her** (`ui/avatar/logic.mjs`, `ui/avatar/presence.mjs`):
+    - **breaking off a fidget:** when something happens mid-fidget (you click her, talk, a card comes up) she lets
+      go in order instead of everything fading at once: her eyes come to you at once (shut ones open within
+      0.12 s), head and neck follow, then her chest; her arms come down from the shoulder out with the fingers
+      last. The elbow keeps its bend until the upper arm is at least 60% down (`armRelease`); a hand at her
+      face (hair tuck, almost-sneeze, yawn) first swings 0.1 rad forward to clear it. Woken from a doze, she
+      comes up from the chest, wide-eyed (`cutShort`).
+    - **a window beside her:** when an app window opens (or is moved) right beside her while she stands still,
+      she flinches: eyes to it with a blink, the near shoulder up and her chest back and away, the near forearm up
+      across her upper chest with a 1.7 rad elbow bend and a loosely spread hand by her collarbone; a beat while she looks it over, then she relaxes with a
+      small "oh, it's you" smile (1.9 s; at most every 20 s; not while walking, sitting, on a window or busy).
+      Her own walking past windows doesn't count (`brace`, `mayStartle`; `beside`/`arrived_beside` in
+      `ui/desktop_windows.py`, read in `_watch_seats`). (The built-in figure has no shoulder bones: on it the
+      shoulder lift here, in the music and in the listening nods is missing; the VRM has them.)
+    - **watching you type:** with the text box open, each key brings her eyes, then her head, down to the box and
+      she leans in a little. Her eyes step right 0.015 per key, capped at 0.25, and return to the start after
+      a 0.6 s pause (`typingEyeStep`, `typingKeyCount`); 1.5 s after your last key she looks back at you; in a long pause (6 s) she glances up
+      and aside once, giving you room to think. An open, empty box doesn't count. She's only told that a key was
+      typed, never what (`typingAttention`; `set_typing`/`typed` in `ui/avatar_view.py`).
+    - **listening nods at your pauses:** while she listens she leans in a little, and when you pause (0.45 s of
+      quiet after at least 1.2 s of talking) she gives one small acknowledgement, a head dip (the neck a moment
+      behind, shoulders softening last) or, every other time, a small tilt; at most every 7 s, so most pauses go by
+      quietly; she remembers the last one across turns. It used to be a nod on a 7.7 s clock (`listenStep`,
+      `listenAway`, `listenNod` in `ui/avatar/presence.mjs`).
+    - **gestures for a whole thought:** speaking (with her voice's timeline), her arm makes one point per phrase:
+      the upper arm comes forward a quarter second before a stressed vowel, the elbow just after it, the forearm
+      makes a 0.2 rad beat on the vowel. The arm comes forward 0.35 rad with 0.9 extra elbow bend to waist/lower
+      chest height; her palm turns up and the fingers open in sequence. She holds to the phrase end, then lowers
+      the upper arm before unfolding the elbow and relaxing the wrist and fingers.
+      Phrases end at real breaths, not at lips closing on "m" or "p"; gestures are at least 2.4 s apart, mostly
+      taking turns between her hands. Decided from the sounds only, never from what the words mean. It replaces the
+      arm offer on a 6.8 s clock, which stays for voices without a timeline (`phrasePlan`, `phraseGesture`).
+    - **trying to catch the mouse pointer:** leave the pointer still beside her, about at arm's height and within
+      reach, for a moment: her eyes go to it, then her arm reaches out (the hand put there by IK, so it fits her own
+      arm), elbow low and forward, slowing just short of it with her index finger aimed toward the pointer and a curious little smile, and after a moment
+      she lets go. Move it away while she reaches and her hand follows it for a split second, a moment's surprise,
+      and she gives up. Once per visit of the pointer, at most every 90 s, only standing about (`catchStep`,
+      `inReach`, `reachPoint`; `set_pointer` in `ui/avatar_view.py`).
+    - **brushing a speck off her sleeve** (rare: at most every 8 min, standing only): eyes and head down on one
+      forearm, that arm comes forward and across her stomach with a 1.75 rad elbow bend, the other hand comes over with its elbow leading and brushes along the sleeve
+      toward the wrist, a long stroke, a lift back, a shorter one; the brushing arm drops while she still looks, then
+      the sleeve arm, her head last (3.6 s; `brushSleeve`; the brushing hand is put on her own sleeve by IK).
+    - **a breath after a longer walk:** having walked across the screen for 4 s or more (and not stopped by you,
+      or going on to jump or hide), she takes one fuller breath: chest opens, then her spine, her head lifts last,
+      then a slow breath out with her arms easing away from her sides (2.8 s; `settles`, `settleBreath`).
+    - **spreading her fingers:** after 25 s standing quietly, at most every 4 min, she looks down at one hand,
+      lifts it outward at chest height, turning the forearm so the spread is visible from the front; shoulder, elbow and wrist follow in order, then she slowly fans the fingers more widely (1.6 spread) from index to little
+      finger, thumb last. She holds the stretch, curls them back, and lowers the elbow with the wrist trailing
+      (4.8 s; `fingerFan`). Both sides work; the built-in figure shows the arm and wrist, without individual fingers.
+    - **easing an ankle on a window:** after 25 s on an ordinary edge, at most every 3 min, she looks down,
+      stills her leg swing, lifts one shin and rolls the ankle twice, the second circle smaller. The foot relaxes
+      before the shin lowers and her swing returns. Her hips and thighs stay seated; never on a corner or the
+      bottom panel, and losing the seat or hopping down breaks it off (`ankleEase`, 5.2 s). A rig without foot
+      bones keeps the shin movement and loses the ankle detail.
+    - **letting a long thought go:** after at least 6 s thinking, once her answer is over and she's idle, her eyes
+      gently close, her chin dips, shoulders drop 0.06 rad and chest settles 0.04 rad, then her head comes back
+      a little past level with a 0.05 rad tilt, eyes reopen,
+      and a longer small smile settles with her wrists (2.8 s; `thoughtStep`, `thoughtRelease`). At most once a minute;
+      a busy ending discards it, new input clears it, and an answer longer than a minute lets it expire. All three
+      details give way through the ordinary ordered release to speech, carrying, travel, sitting, piano or a duet
+      (`detailFits`, `cutShort`); no new host signals, sensors or data collection.
+    - **when you click her:** a quick blink, her chest gives backward 0.07 rad with her head trailing 0.06 rad; both
+      shoulders hitch 0.05 rad, with brief surprise then a smile. Her head comes forward 0.05 rad, curious, with a 0.07 rad tilt as she turns to you (0.8 s; not again for 1.5 s; a drag doesn't
+      count; `tapMotion`, `tapped` in `ui/avatar_view.py`).
   - **Starts chats on free days** (`Engines/Openers.py`, `Companion._opener`, `tests/test_openers.py`): on days with
     no lessons (WebUntis shows none, which covers holidays; Saturday and Sunday when the timetable can't be read) she
     opens a conversation herself now and then, in a bubble with a gesture. To answer, click her and type: the line is
@@ -349,7 +575,7 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
     keeping you company, no fade (talking to her after school counts as the day's greeting; quietly reading her
     reply counts as being there). She doesn't doze off while you're typing to her (a key in the last 15 s). A Telegram message or MyNotion's panel doesn't send her away either. "Go to sleep" (said, typed or from the menu) means it: no
     companion until you were away 2 hours or the next day. `ARIA_COMPANION=0` in `Engines/.env` turns it off.
-- **Animated orb per state:**
+- **Animated orb per state** (fallback when the avatar is disabled or unavailable):
   - **sleeping:** dim breathing, dust drifting up, floating "z"s
   - **listening:** cyan orb, equaliser spikes and particles pulled inward, both following your mic volume
   - **thinking:** spiky blob, three comets with tails, a spinning dashed halo, particles swirling in
@@ -380,12 +606,39 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
 
 ## Voice — `speech_to_text.py`, `wakeworddetector.py`, `Engines/voice_engine.py`
 
+- **Voice delivery profiles:** set `ARIA_VOICE_PROFILE=natural`, `calm`, or `clear` in `Engines/.env` and restart
+  Aria. Natural keeps the expressive default; calm softens loudness, pitch changes and pace; clear slows speech
+  and leaves longer pauses for explanations. The selected profile applies to both duet voices. Short audio clips
+  now receive edge fades and peak limiting too, and invalid samples are silenced before audio processing.
+- **Animation refinements:** speech emphasis and music beats use separate clocks, restoring music bobbing and
+  avoiding a frame error after creating the piano. Piano entrances/exits continue from their current pose when
+  interrupted. Music bobbing yields to the desk and piano; checking an item directly on a card also acknowledges
+  the successful change with the existing checkmark animation.
+
 - **Her voice fits her avatar** (`blend_voice`, `lift` in `Engines/voice_engine.py`, `tests/test_stt.py`): she looks
   like a young, playful anime girl, but spoke with Kokoro's `af_heart`, a calm, mature narrator voice (~205 Hz). Now
   she's a blend of `af_heart` (the clearest voice) and the brighter `af_bella`, lifted 2 semitones: pitch and voice size
   go up together (a smaller, younger speaker, as anime voices are measured to be: higher pitch, higher formants),
   ~230 Hz, at the same pace and with no robotic pitch-shift sound. Change it in `Engines/.env`:
   `KOKORO_VOICE=af_heart*0.5+af_bella*0.5` (any voice or weighted blend), `VOICE_LIFT=2` (semitones; 0 = off).
+- **She says things with feeling** (`Engines/VoiceStyle.py`, `tests/test_voice_style.py`). Kokoro has no emotion
+  control, so code decides the feeling of every sentence from its words, punctuation and emojis (and the mood of the
+  conversation when the sentence is plain): happy, excited, teasing, curious, thinking, soft (comforting) or sad. Each
+  feeling has its own voice colour (a little of `af_bella` mixed in when happy, the breathier `af_nicole` when soft or
+  sad), a pitch change of up to one semitone, its own pace and loudness, and its own pauses. A comforting line after
+  another gets a breath first, and every sentence's pace varies by about 3 %, so they don't all have the same cadence.
+  "haha", "hehe", "lol", "lmao" and "*laughs*" become a separate short laugh anywhere in a reply, and a leading laugh, "hmm…", "Oh!" or
+  "Aww," is said on its own with a beat after it ("Haha! … You caught me."). The voices are mixed once at startup:
+  no slower speech, no graphics card.
+- **Laughs follow her actual voice**, never a random idle: a quiet idle smile has no giggle or shoulder bounce.
+  A laugh is one short "Hah!" in her laughing voice (`LAUGH_WORD` in `Engines/voice_engine.py`; Lala picked it by
+  ear from six versions: a chuckle spliced from copies of one vowel sounded creepy). Its vowel carries a laugh cue
+  in the speech timeline: her shoulders bounce, her head tips back slightly and
+  her eyes squint into a smile, settling when the laugh ends. Happy words and emojis alone do not trigger it.
+  The movement follows playback, gives way to travel/carry/piano, and clears when speech stops.
+  Compare the former spoken readout and current laugh offline with
+  `.venv/bin/python tools/voice_preview.py ~/.cache/aria-codex --laugh`; it saves before/after WAVs and
+  their final playback timelines for filming.
 - A long first sentence starts playing after its first clause (the voice is made on the CPU, ~1 s for a long
   sentence), so she starts talking sooner.
 - **The model re-reads less:** her instructions now start the same every turn. The clock and "you last talked…" come
@@ -454,7 +707,7 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
   pause; playful ones ("Haha, rude!") a bit quicker and brighter. Your mood still sets her overall pace.
 - **Talks while thinking:** replies are streamed. Aria starts speaking the first sentence after about 0.6 s,
   while the rest is still being written. Code blocks are never read out (they go to the clipboard).
-- **Voice engine:** Kokoro (`af_heart` voice) runs on the CPU, about 4x faster than real time. That leaves the whole
+- **Voice engine:** Kokoro (`af_heart*0.5+af_bella*0.5` blend, lifted two semitones by default) runs on the CPU, about 4x faster than real time. That leaves the whole
   graphics card to the language model, which before had to run 62% on the CPU next to Chatterbox.
   - `KOKORO_VOICE` in `Engines/.env` changes the voice, e.g. `af_bella`, `af_nicole`, `bf_emma` (British).
   - `TTS_ENGINE=chatterbox` switches back to Chatterbox, which copies the voice in `Engines/ref_voice.wav` but needs about 4 GB of graphics-card memory.
@@ -464,7 +717,15 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
   - every sentence is levelled to the same loudness, and peaks are softly capped
   - low rumble, harsh highs and sharp "s" sounds are reduced
   - silence is trimmed and the edges fade in and out, so nothing clicks
-  - calm delivery: subdued moods, a relaxed pace, and longer pauses between sentences
+  - `ARIA_VOICE_PROFILE=expressive` is Aria's new default: warm greetings, lingering questions and teasing,
+    brighter excitement, and gentle comfort without an exaggerated slow voice. Pace drifts slightly across a
+    reply rather than jumping randomly. Long sentences can pause once at a change of thought (a dash, semicolon,
+    or “but…”); lists, numbers and short acknowledgements stay together. No extra words or laughs are inserted.
+  - The expressive profile keeps at least 78% of her base voice in emotional blends, preserving her identity.
+    Claude keeps the previous natural delivery. Set `ARIA_VOICE_PROFILE=natural` for Aria's previous delivery;
+    `calm` and `clear` remain available. Restart Aria after changing these environment settings.
+  - Generate a local before/after preview without opening the mic or playing sound:
+    `.venv/bin/python tools/voice_preview.py /tmp/aria-voice` (requires cached Kokoro assets).
   - `VOICE_GAIN` in `Engines/.env` sets the overall volume (e.g. `0.7` is quieter)
 - **Sleep that sticks** (only with the camera on, `ARIA_CAMERA=1`): after "go to sleep", the camera only wakes Aria if you were away from the desk for at least 2 minutes.
   Looking away or down for less than 20 seconds doesn't count as leaving.
@@ -479,10 +740,18 @@ Settings live in `Engines/.env` (gitignored): `DB_PATH`, Spotify keys, `ARIA_OWN
   "every month on the 1st to pay rent". When one goes off, the next is scheduled straight away. Cancelling stops the series.
   A monthly reminder on the 31st goes off on the last day of shorter months.
 - "What reminders do I have?", "cancel the pasta timer", "snooze that for 5 minutes"
+- **Short cancel commands are decided in code** (`Engines/Cancel.py`, `Aria._cancel_command`, `tests/test_cancel.py`):
+  "cancel", "stop the timer", "exit the timer", "cancel the tea timer", "end the focus session", and right after she
+  set something (within 2 min) "no don't do that" / "never mind". A bare "cancel" takes back what she just set, else
+  stops a running focus session, else cancels the newest timer. "Undo that" brings it back. Anything else ("cancel my
+  meeting tomorrow", "stop the music") goes to the model as before. The model used to cancel the wrong thing, couldn't
+  stop a focus session this way, and said "I won't set the timer" while it kept running.
 - Saved in SQLite, so they survive a restart. When one is due: the orb flashes, the LEDs animate, Aria speaks it,
   and your phone gets a notification if you're not at the desk.
 
 ## She doesn't start conversations
+
+(Exceptions since: weekend openers, and her short chats with Claude, see "Aria and Claude talk together".)
 
 Aria only talks when you wake her ("Hey Aria", typing, the orb), or to say something you set up: reminders, timers,
 event heads-ups, the morning briefing when you first wake her, and short posture nudges. She used to start
@@ -502,6 +771,14 @@ checks for that: quiet hours, a locked screen, something fullscreen, another app
   your current stretch without a break.
 
 ## Focus mode — `Engines/FocusMode.py`
+
+- **A tiny focus desk** (`ui/avatar/focusdesk.mjs`, `presence.mjs`): during an active work block she turns,
+  sits at a wooden desk and writes in a notebook, pausing occasionally. The desk is measured to her figure and
+  uses the existing arm IK; a VRM's fingers hold the pen and rest on the page. It gives way when you open the text
+  box, show a card or start a conversation. Work takes priority over the piano scene. During a Pomodoro break
+  she puts her hands down, stands, and does a shoulder stretch when free. Interrupting a transition continues
+  from its current pose. Expired/stopped/paused timers clear the scene. The avatar stays visible through work
+  and break even while Aria sleeps, without enabling the microphone or model; a hidden overlay stays hidden.
 
 - "Start a 45 minute focus session on databases". Works with just the laptop:
   - Cinnamon's notification popups are paused during the session and restored afterwards (left off if they were off)
@@ -928,6 +1205,32 @@ mail from `noted.db` and talks to Gmail herself to send, archive and check when 
 
 ## Music & home
 
+- **She plays the piano to piano music** (`Engines/Piano.py` decides when; `ui/avatar/logic.mjs` what she does:
+  `pianoLayout`, `pianoStage`, `pianoPerformance`, `pianoBody`; `ui/avatar/piano.mjs` the piano, the IK and the
+  notes; `tests/test_piano.py`, `logic.test.mjs`). "play some piano music on Spotify", "play a piano playlist",
+  "spiel Klaviermusik", "play Einaudi piano": when the Spotify play she just did has "piano" / "Klavier" in what you
+  asked or in what Spotify answered (decided in code), a small white grand piano with a bench and sheet music grows
+  in beside her and she sits down to play.
+  - **Staging:** three-quarters, the way a concert audience sees a pianist (she turns to your right), so you see her
+    face, her hands and the keys; the camera rises a little and looks down while she plays. Everything is measured
+    from her own body, so the piano fits her VRM and the built-in figure alike.
+  - **Coming and going:** the piano pops in, she turns, sits, and her hands lift onto the keys, each part overlapping
+    the next. When the music stops: hands off the keys, she stands, turns back to you, the piano shrinks away. "Stop it", "pause" or "enough" while she plays stops her too, however the model handles the music (it used to stop Spotify through the general media tool and her keyboard kept going).
+    Stopped halfway, she goes back from wherever she was. Sitting on a window when it starts, she hops down first.
+  - **Playing** (reworked after "the arm movements are bad", modelled on how real pianists move and how anime piano
+    scenes show it): a four-bar phrase that builds and falls back. Her right hand plays the melody and glides
+    between notes on an arc, the elbow leading and the hand following on a spring; her left hand rolls broken
+    chords. The arm's weight goes into each note: the wrist dips into it and comes back up, deeper when the music
+    is louder, and the forearm rolls a little from note to note. Her arms are placed by IK on the actual keys, the
+    key under each hand goes down, and (on a VRM) the playing finger curls down while the others lift. She leans in
+    as the phrase builds, toward the high notes, and at the end of each phrase both hands lift off the keys, the
+    wrists leading and the fingers trailing, her head comes up for a breath, and she sinks back in for the next
+    phrase. Little notes float up, more when it's loud. With a beat from the music (`Engines/Beat.py`) she plays
+    in time with it.
+  - **Moments:** every 20 seconds or so she closes her eyes for a few seconds, feeling the music, and between those
+    she looks up from the keys and smiles at you.
+  - **Stops** when other music is played, the music is paused, or Spotify has been quiet for two checks 30 s apart
+    (at most 90 minutes). No walks or fidgets while she plays.
 - **Spotify** (`Controller/Spotify_controll.py`):
   - picks the song that actually matches: "NF No Excuses" used to play "DROP!" by Forrest Frank because it was more
     popular. Now title and artist words decide, remixes only when asked, and "X by Y" works. If nothing really
