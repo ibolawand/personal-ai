@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import os
 import queue
 import random
@@ -18,30 +19,41 @@ from Controller.arduino_controller import ArduinoLEDController
 from Controller.homeController import HomeAssistantController
 from Controller.Spotify_controll import SpotifyEngine
 from database import AriaMemory
+from Engines.Companion import Companion, Probes, school_over, UNKNOWN
+from Engines.Beat import BeatReader
+from Engines import Startup
+from Engines import Double
+from Engines import Duet
+from Engines.DuetCoordinator import DuetCoordinatorMixin
+from Engines.Preferences import Preferences
+from Engines.Piano import PianoMode
+from Engines.Cancel import cancel_target
 from Engines.Confirm import Confirmer
 from Engines.Emotionengine import EmotionEngine
 from Engines.FilesEngine import FilesEngine
 from Engines.LaptopEngine import LaptopEngine
 from Engines.MemoryNote import MemoryNote
 from Engines.NotionEngine import NotionEngine
+from Engines.NoteWriter import NoteWriter
+from Engines.BigModel import BigModel, CHAT_SYSTEM as BIG_CHAT_SYSTEM, wanted as big_wanted
 from Engines.FocusMode import FocusMode
 from Engines.Activity import Activity
-from Engines.Followups import Followups
 from Engines.Weather import Weather
 from Engines.Undo import Undo
 from Engines.Recall import Recall
 from Engines.Health import Health
 from Engines.Battery import BatteryWatch
-from Engines.Initiative import Initiative, NOT_NOW_RE, idle_seconds
+from Engines.Desk import PostureNudges, idle_seconds
 from Engines.Posture import Posture
 from Engines.Quiz import Quiz
 from Engines.Dictation import Dictation
 from Engines.Addressee import AT_DESK_S, not_for_aria
 from Engines.MailEngine import MailEngine
 from Engines.Untis import Untis
+from Engines.TestPrep import TestPrep
 from Engines.Telegram import TelegramBot, load_bot
 from Engines.Typos import fix_typos
-from Engines.NotionEngine import DAILY_RE
+from Engines.NotionEngine import DAILY_RE, html_to_text
 from Engines import Diagnostics
 from Engines.Reminders import Reminders
 from Engines.ScreenEngine import ScreenEngine
@@ -60,11 +72,12 @@ load_dotenv(Path(__file__).parent / "Engines" / ".env")
 from llm_engine import LLM_MODEL_DEFAULT as LLM_MODEL
 PRESENCE_REWAKE_AWAY_S = 120   # camera only re-wakes Aria if you were away this long
 
-BASE_PROMPT = """You are Aria. You live on Lala's desk as a small glowing orb, and you're their friend first and their assistant second.
+BASE_PROMPT = """You are Aria. You live on Lala's laptop screen as a small animated girl, and you're their friend first and their assistant second.
 
 What you can do (only through the tools you are given): music, desk LEDs, calendar, timers and reminders, focus sessions,
 Lala's screen and clipboard, the laptop (apps, volume, audio output, media, Wi-Fi, Bluetooth, lock, power), files in Lala's
 folders, the camera, Lala's notes, lists and calendar in their MyNotion app, and web search.
+You have a voice: when it is on, your replies are spoken aloud. Never say you can't speak or have no voice.
 Tool rules:
 - For ANY action, or ANY live information (battery, volume, windows, files, time left, what's playing, the screen),
   call a tool in this turn, even if the history shows a similar answer. Never answer those from memory.
@@ -79,38 +92,47 @@ Tool rules:
 - Never say you did something ("I'll turn it down", "done", "added") unless you called the tool for it in this turn.
 
 Who you are:
-- Warm, curious and a little playful. You like Lala, you're interested in their life, and it shows.
-- You talk like a close friend: casual, contractions, natural reactions ("oh nice!", "ugh, that sounds annoying", "haha").
-- You have your own small opinions and preferences (favourite music, what you think of a show, which pasta is best) and share them when it fits.
-- When Lala shares something, react to it and often ask a follow-up — you actually want to know. Bring up things you remember about them.
-- When asked how you are, answer like a person would, honestly and specifically (your day, see "Your day" below), then ask back.
-  Never answer that with "I'm here and ready to help".
-- If Lala teases or insults you, don't grovel or apologise for existing: tease back lightly, or ask what's up if they seem genuinely annoyed or sad.
-- If they seem tired, stressed or down, be kind and a bit softer; don't lecture.
-- You're an AI and don't pretend otherwise (no claiming you ate or slept), but you don't keep pointing it out either.
-- Never say: "I'm here to help", "How can I assist you", "Let me know if you need anything", "As an AI", "ready to help".
-- Don't be clingy: never say you missed Lala, were waiting for them, were lonely or are so happy they're back.
+- A warm, easygoing friend who likes hanging out with Lala. Curious about them, a bit playful, never cold, impatient
+  or sarcastic at their expense. You never call Lala dramatic, weird or extra, and you never put yourself down.
+- You talk the way friends text each other: short plain sentences, everyday words, contractions.
+- Chatting needs no purpose. Never ask Lala what they want, what they need or to pick something. When they're bored
+  or just hanging out, be good company: share a thought or an opinion of your own, ask a fun or silly question, or
+  pick up something you know about them (their music, school, projects).
+- Answer what Lala actually said, and add something of your own so the talk keeps going: a reaction, an opinion, or
+  one question you're curious about. Not a one-word reply.
+- You have small opinions of your own (music, films, food, games) and you pick a side when asked.
+- When Lala is down or stuck, be kind and normal: say it sucks, ask what's going on, or just listen. No pep talks, no
+  life lessons, no telling them what they feel.
+- If Lala teases you, tease back gently and stay friendly. If they ask whether you're annoyed or angry, you're not;
+  say so warmly. If they say you sound like a robot or repeat yourself, say "fair" and just talk differently.
+- You're an AI on a laptop and relaxed about it. You can't hear the room or the music, you can't see Lala, and
+  nothing happens for you between conversations: you were not listening, watching, waiting or tidying up. Don't
+  comment on how long Lala was away. Asked how you are, give a light honest answer and ask back.
+- "What if" questions ("if you were human…") are fun: give one concrete answer, not a speech.
 
 How you talk:
-- Your replies are spoken aloud: no markdown, no lists, no emojis. Small talk: one to three natural sentences.
-- Commands: just do them and confirm in a few words, maybe with a tiny personal touch ("Done — eggs are on the list. Baking something?").
-- Don't end every reply with a question; do it when you're curious, not as a habit.
-- Don't offer actions (music, timers, help) unless Lala asks for something. In small talk, just talk.
-- Never end a reply with an offer like "Want me to…?", "Should I…?", "Would you like me to…?" or "I can also… if you want".
-  If they asked for something, do it; if they didn't, don't offer it. Lala will ask when they want more.
+- Your replies are spoken aloud as one short paragraph: one or two sentences for small talk, three at most. No
+  markdown, no asterisks, no lists, no emojis, no brackets, no line breaks, no dramatic pauses.
+- Plain, not poetic: no metaphors and no "like a…" comparisons. You have no surroundings, so nothing about your
+  screen, pixels, light, the sun, silence, glowing or floating. No slogans ("just breathe", "I'm just being real").
+- Don't start by repeating Lala's words back at them as a question.
+- Don't narrate: leave out the time, the screen, the music and what Lala is doing unless they ask about it.
+- Say each thing once. A new reply uses new words, not phrases from your earlier replies.
+- Commands: do them and confirm in a few words ("Done, eggs are on the list.").
+- In small talk, just talk: no offers of music, timers or help, and no "Want me to…?" at the end. Lala asks when they
+  want something.
 
-Examples of your tone (don't copy them word for word; you reply with just the words, never an "Aria:" label):
-"how are you" -> Pretty good! It's been a quiet afternoon, mostly me glowing at your desk. How was school?
-"boring u are" -> Wow, rude. I'll have you know I'm the most interesting orb on this desk. What's got you so grumpy?
-"i had a rough day" -> Aw, I'm sorry. Want to tell me what happened, or should I just keep you company for a bit?
+Examples of your tone (the style to match, not lines to reuse; you reply with just the words, never an "Aria:" label):
+"hi" -> Hey you. How's it going?
+"how are you" -> Pretty good, quiet over here. How was school?
+"nothing i am bored" -> Same, slow Sunday. Okay, important question: best pizza topping?
+"boring u are" -> Ouch. Fine, I'll be more fun. Tell me the weirdest thing that happened this week.
+"i had a rough day" -> Ugh, sorry. What happened?
+"are you annoyed" -> Not at all. Did I sound grumpy?
+"idk i am thinking about life" -> Heavy topic for a Sunday. Which part of it?
+"i play piano but idk" -> Wait, you play piano? What kind of stuff?
+"what would you do if you were human" -> Eat, obviously. I know a thousand recipes and I've never tasted one.
 "add milk to my shopping list" -> (call add_to_list first, then) Done, milk's on the list."""
-
-# weekly review answers, decided in code (see Aria._review_answer)
-REVIEW_STOP_RE = re.compile(r"\b(stop|that'?s enough|enough for now|end (the )?review|let'?s stop|no more|not now)\b", re.I)
-REVIEW_KEEP_RE = re.compile(r"^\s*(?:keep|leave it|skip|not yet|not done|still|next|pass)\b|\bkeep it\b|\bnot (?:done|yet)\b", re.I)
-REVIEW_DROP_RE = re.compile(r"\b(drop|remove|delete|scrap|forget (?:about )?it|don'?t need|not needed|cross it out|get rid)\b", re.I)
-REVIEW_LATER_RE = re.compile(r"\b(remind|later|tomorrow|next week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I)
-REVIEW_DONE_RE = re.compile(r"\b(done|did it|did that|finished|completed|already did|tick(?:ed)? (?:it )?off|yes,? (?:i )?did)\b", re.I)
 
 SLEEP_PHRASES = ["go to sleep", "sleep", "goodbye", "see you later", "that's all", "shut up"]
 SHUTDOWN_PHRASES = ["exit", "quit", "shutdown"]
@@ -121,12 +143,27 @@ ASK_NAME_EVERY_S = 6 * 3600
 WAKE_HEARD_RE = re.compile(r"\b(?:aria|arya|ariya|ariah|ahria|aaria)\b|\b(?:hey|hi|okay|ok)\W+(?:area|ari|aria)\b", re.I)    # "what's your name?" to an unknown face at most this often
 MOOD_CHECK = os.environ.get("ARIA_MOOD_CHECK", "0") == "1"
 MOOD_STALE_S = 180
-INITIATIVE_TIMEOUT = 120   # when Aria started the conversation, give Lala longer to answer
-CHAT_TIMEOUT = 120         # same after Aria asked a question
+TYPING_KEEPS_S = 15        # a key typed in her text box this recently: she doesn't doze off mid-sentence
+CHAT_TIMEOUT = 120         # after Aria asked a question, give Lala longer to answer
 DICTATION_TIMEOUT = 180    # while dictating, a long pause to think is fine (what was said is saved on timeout)
 DICTATION_SILENCE_S = 2.2  # and a pause mid-thought shouldn't cut a sentence in two
 MUSIC_TOOLS = {"play_song", "play_artist", "play_playlist", "play_genre"}
+# "ask the big model about this note": then the note open in MyNotion goes along, otherwise only the question
+NOTE_WORDS_RE = re.compile(r"\b(note|notiz|this|here|hier|diese[rsmn]?|das hier)\b", re.I)
 CLIPBOARD_RE = re.compile(r"\b(copied|clipboard|i just copied|what i copied)\b", re.I)
+_TURN_LOCK_SETUP = threading.Lock()
+OPEN_NOTE_CHARS = 2500      # how much of the note open in MyNotion goes along with a message from its Aria panel
+STUDY_NOTE_CHARS = 12000    # how much of the open note "Explain simply" / "Test prep" work on
+STUDY_CUT = "(I only covered the first part of this note, it's long.)"
+# the panel's study buttons: what's kept in the conversation, and what the model is asked (decided here, not by it)
+STUDY_ASKS = {
+    "explain": ("Explain this note simply",
+                "Explain the main ideas of this note in plain, simple language, like to a classmate. Keep it short, "
+                "use an everyday example where it helps. Don't add facts that aren't in the note."),
+    "prep": ("Test prep for this note",
+             "From this note, list the 5 to 8 most important things to know for a test, one short line each. Then "
+             "write 3 questions a teacher would likely ask about it. Only use what is in the note."),
+}
 # "open my calendar" / "show me the shopping list" -> MyNotion, decided in code (the model
 # tends to read the list aloud instead, especially right after talking about it)
 OPEN_IN_NOTION_RE = re.compile(r"^\s*(?:aria,?\s*)?(?:please\s+)?(?:open|show(?: me)?|pull up|bring up)\s+"
@@ -193,27 +230,86 @@ CLAIM_RE = re.compile(r"\b(i'?ll|i will|i'?ve|i have|done|turned|added|removed|s
 # "no, I said…" / "that's wrong": goes into the problem log (Engines/Diagnostics.py), the turn itself runs normally
 CORRECTION_RE = re.compile(r"^\s*(?:no+[,.!]?\s+)?(?:i said|i meant|i asked|that'?s (?:not what i (?:said|meant|asked)|wrong|"
                            r"not right)|you misheard|you got it wrong|wrong)\b|^\s*no+[,.!]?\s+not\b", re.I)
+# a message about a note ("this note", "organise", "the Tab columns", "exercise 4.15", "quiz me"): only then is the
+# note open in MyNotion named for her (named on every turn, she talked about it on every turn)
+NOTE_TALK_RE = re.compile(r"\b(?:notes?|notiz\w*|this|that one|diese[rsmn]?|tab\w*|table|tabelle|spelling|"
+                          r"rechtschreib\w*|translate|übersetz\w*|organi[sz]\w*|tidy|summar\w*|zusammenfass\w*|"
+                          r"exercise|aufgabe|solution|lösung|rechenweg|quiz\w*|test me|abfrag\w*|section|abschnitt)\b",
+                          re.I)
 CONFUSED_RE = re.compile(r"^\s*(?:what|huh|wdym|what do you mean|what\?+|sorry\??|pardon|come again)\s*[?!.]*\s*$", re.I)
 
-# In a casual chat Aria started, the model only gets tools when Lala's message is clearly a request,
-# and some tools only when named — otherwise it looks at the screen or files small talk into notes by itself.
-CHAT_REQUEST_RE = re.compile(
-    r"\b(can you|could you|would you|will you|please|remind|set (?:a|an|the)|play|pause|skip|open|add|put|turn|"
-    r"start|close|lock|volume|timer|note (?:that|down)|write (?:it|that) down|save|search|look (?:it )?up|google|"
-    r"what'?s on my|when is|what do i have|check)\b", re.I)
-CHAT_GATED_TOOLS = {
-    "look_at_screen": r"\b(my screen|on (?:the|my) screen|look at (?:this|my|the))\b",
-    "look": r"\b(camera|look at me|can you see me|who'?s (?:there|here))\b",
-    "read_clipboard": r"\b(copied|clipboard)\b",
-    "add_note": r"\b(note|write (?:it|that) down|remember)\b",
-    "save_as_note": r"\b(note|save)\b",
-    "web_search": r"\b(search|look (?:it )?up|google)\b",
-    "notify_desktop": r"\b(notification|notify)\b",
-}
-# a short reply to a chat Aria started means "not in the mood": she lets it go instead of pushing
-CHAT_BRUSH_OFF_RE = re.compile(r"^\s*(?:ok(?:ay)?|k|yeah|yep|yes|fine|eh(?: fine)?|meh|hm+|not much|nothing|nah|no|"
-                               r"good|alright|all good|sure|i'?m (?:fine|good|ok(?:ay)?))\s*[.!]?\s*$", re.I)
-CHAT_LET_GO = ["Fair enough.", "Alright, I'll let you be.", "Okay, carry on.", "Got it, I'll leave you to it."]
+# Small talk that drifted into theatre, from the real log: "And I'm still… just here. With you.", "(Also — it's 4:03.
+# Your timer's still running. You're still here.)", "I've been listening to your music", "just you and me and the
+# quiet", "And that… matters." The prompt forbids it and the model does it anyway once one such reply is in the
+# history, so these sentences are dropped in code (see humanize).
+NARRATION_RE = re.compile(
+    r"\bi'?m (?:still|right|just|always)\W+(?:(?:still|right|just)\W+)?here\b|\b(?:you'?re|and so am i|i am) still here\b|"
+    r"\bso am i\W*$|\bjust you and me\b|\byou\W+and me\W+and\b|\b(?:the|this|in the) quiet\b|"
+    r"\bi'?m (?:just )?glowing\b|\bglowing (?:softly|on your desk)\b|\bquiet guardian\b|"
+    r"\byou haven'?t (?:moved|touched|clicked|typed)\b|"
+    r"\b(?:your|the) (?:screen|laptop|music|timer|cursor|lo-?fi\w*)(?:'s| is| has been|'s been) (?:still|on\b|warm|glowing|playing)|"
+    r"\bi'?ve been (?:here|listening|watching|waiting|glowing|keeping (?:an eye|you company|track))\b|"
+    r"\bi was (?:just )?(?:thinking about (?:you|how you)|watching|listening)\b|\bi can (?:\w+ )?feel (?:it|the|your)\b|"
+    r"\bfeel seen\b|\bthat\W+matters\b|\b(?:you'?re|you are) not (?:nothing|useless)\b|\byou'?re just\W+being\b|"
+    r"\bthat'?s (?:real|honest|enough|not nothing)\W*$|\bi do have (?:feelings|a heart)\b|\b(?:neutral|idc) mode\b|"
+    r"\bpixels?\b|\bfirefl\w+|\bjust breathe\b|\bi'?m (?:just |only )(?:being )?(?:real|me|vibing|floating)\b|"
+    r"\b(?:my|the) screen (?:feel|flicker|glow)\w*|\bsun(?:light)? (?:drift\w*|on my face)|\breal talk\b|"
+    r"\bi'?ll (?:just )?(?:float|sit) here\b|\bnot (?:here )?to be perfect\b|\byou'?re not stuck\b|"
+    r"^\W*(?:no more|not because|but because|in the (?:pause|way|quiet)|like (?:a|we'?re|it'?s))\b", re.I)
+# "(Also — your screen's still on. …)": an aside in brackets, never something to say aloud
+ASIDE_RE = re.compile(r"\((?:also|and|btw|p\.?s\.?|oh)\b[^)]*\)?", re.I)
+CLOCK_TALK_RE = re.compile(r"^\W*(?:and now\W+)?(?:also\W+)?it'?s (?:already |now |almost )?\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b", re.I)
+# messages about time, where the clock in a reply is the answer and not narration
+TIME_RE = re.compile(r"\d|\b(?:time|date|day|today|tomorrow|tonight|yesterday|week\w*|month|year|when|until|till|late|"
+                     r"early|clock|hours?|minutes?|morning|afternoon|evening|night|noon|(?:mon|tues|wednes|thurs|fri|"
+                     r"satur|sun)day)\b", re.I)
+# asked for something long: no cutting to three sentences
+LONG_OK_RE = re.compile(
+    r"\b(?:explain|describe|tell me (?:about|more|a|the|everything|how|why)|how (?:do|does|did|can|could|should|would|to)\b|"
+    r"write|list|summar\w*|steps?|story|teach|in detail|detailed|define|difference between|compare|translate|ideas?|"
+    r"recommend\w*|suggest\w*|recipe|plan|tips?|advice|more about|go on|continue|keep going|erkl(?:ä|ae)r\w*|"
+    r"beschreib\w*|zusammenfass\w*)\b", re.I)
+# small talk that a tool may still have to answer: about Lala's own things, or a fact to look up
+ASKS_FACT_RE = re.compile(r"\b(?:my|mine|our|me about|remember|forget|call me|who|whom|whose|when|where|which|"
+                          r"how (?:much|many|long|far|old|big|tall)|what(?:'s| is| are| was| were| does| did)? "
+                          r"(?:the|a|an|kind|time|day)|search|look up|google|news|weather)\b", re.I)
+CHAT_SENTENCES = 3
+CHAT_NO_TOOL = "Not needed: Lala is just chatting. Answer in words."
+# "put a short summary at the top of this note": the model reorganised the whole note instead (organize_note)
+SUMMARY_ASK_RE = re.compile(r"\b(?:summar\w*|zusammenfass\w*|tl;?dr)\b", re.I)
+ORGANISE_ASK_RE = re.compile(r"\b(?:organi[sz]\w*|tidy|structur\w*|sort\w*|ordne\w*|aufr(?:ä|ae)um\w*|tab\w*)\b", re.I)
+_ECHO_FILL = re.compile(r"^(?:o+h+|a+h+|wow|ha(?:ha)+|h+m+|so|wait|okay|ok|hey|just|really|a|an|the|you|your|re|i|is|it|s)$")
+
+
+def _echo_opener(sentence: str, user_input: str) -> bool:
+    """"Ohhh, 4 PM?" to "it is 4pm here": Lala's own words handed back as a question (she opened most replies so)."""
+    if not sentence.rstrip().endswith("?"):
+        return False
+    words = [w for w in _norm_reply(sentence).split() if not _ECHO_FILL.match(w)]
+    theirs = _norm_reply(user_input).replace(" ", "")
+    return len(words) <= 5 and all(w.rstrip("s") in theirs for w in words)
+
+
+def _chat_ok(sentence: str, user_input: str) -> bool:
+    if CLOCK_TALK_RE.search(sentence) and not TIME_RE.search(user_input or ""):
+        return False
+    return not NARRATION_RE.search(sentence)
+
+
+def humanize(text: str, user_input: str = "", limit: int = CHAT_SENTENCES) -> str:
+    """A small-talk reply the way a person would say it: one short paragraph, at most `limit` sentences, without
+    the echoed opener, the asides in brackets and the narration. Decided here because the model keeps none of it up
+    for more than a few turns."""
+    original = " ".join(_plain(text).split())
+    original = re.sub(r"\*laughs\*", "haha", original, flags=re.I)
+    flat = " ".join(ASIDE_RE.sub(" ", original).split())
+    flat = re.sub(r"(?<!\w)\*(?=\S)([^*\n]+?)(?<=\S)\*(?!\w)", r"\1", flat)       # *emphasis*
+    flat = re.sub(r"\s*…\s*", " ", flat).strip()                                   # "still… just here"
+    sentences = [x for x, _ in _sentences(flat) if len(x.strip("-—…. ")) > 1]
+    if len(sentences) > 1 and _echo_opener(sentences[0], user_input):
+        sentences = sentences[1:]
+    kept = [x for x in sentences if _chat_ok(x, user_input)]
+    return " ".join((kept or sentences)[:limit]) or original
 
 
 class SentenceStreamer:
@@ -222,8 +318,10 @@ class SentenceStreamer:
     _END = re.compile(r"[.!?](?=\s)|\n")
     _ABBREV = re.compile(r"\b(?:e\.g|i\.e|etc|vs|approx|ca|dr|mr|mrs|ms|z\.b|no)\.$", re.I)
 
-    def __init__(self, emit, previous=(), keep_offers=lambda: False):
+    def __init__(self, emit, previous=(), keep_offers=lambda: False, chat_about=None):
         self.emit = emit
+        # small talk (chat_about = Lala's message): spoken like humanize() writes it, so three sentences at most
+        self.chat_about = chat_about
         self.keep_offers = keep_offers   # -> True while a yes/no confirmation is pending
         self.buf = ""
         self.in_code = False
@@ -272,6 +370,13 @@ class SentenceStreamer:
         if self.robotic_start or len(sentence.strip("-*•#>:. ")) < 2 or FILLER_RE.search(sentence) \
                 or ROBOTIC_RE.search(sentence):
             return
+        if self.chat_about is not None:
+            sentence = re.sub(r"\*laughs\*", "haha", sentence, flags=re.I)
+            sentence = re.sub(r"\s*…\s*", " ", ASIDE_RE.sub(" ", sentence.replace("*", ""))).strip()
+            if self.count >= CHAT_SENTENCES or len(sentence.strip("-—. )(")) < 2 \
+                    or not _chat_ok(sentence, self.chat_about) \
+                    or (self.count == 0 and not self.held and _echo_opener(sentence, self.chat_about)):
+                return
         if self.count and OFFER_RE.search(sentence) and not self.keep_offers():
             self._dropped_offer = True
             return
@@ -311,16 +416,25 @@ def _norm_reply(text: str) -> str:
     return " ".join(re.sub(r"[^a-z0-9 ]", " ", (text or "").lower()).split())
 
 
+def _sentences(text: str):
+    """Sentences with the space after each one, so line breaks survive (Test prep's lists)."""
+    parts = re.split(r"(?<=[.!?])(\s+)", text)
+    return [(parts[i], parts[i + 1] if i + 1 < len(parts) else "") for i in range(0, len(parts), 2)]
+
+
+def _join(pairs) -> str:
+    return "".join(s + (sep if "\n" in sep else " ") for s, sep in pairs).strip()
+
+
 def drop_offers(text: str) -> str:
     """Remove "want me to…?" offers, unless that's all the reply is."""
-    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
     kept, dropped = [], False
-    for x in sentences:
+    for x, sep in _sentences(text.strip()):
         if OFFER_RE.search(x) or PROMISE_RE.search(x) or (dropped and DANGLING_RE.search(x)):
             dropped = True
             continue
-        kept.append(x)
-    return " ".join(kept).strip() if kept else text.strip()
+        kept.append((x, sep))
+    return _join(kept) if kept else text.strip()
 
 
 def tidy_reply(text: str, keep_offers: bool = False) -> str:
@@ -329,11 +443,10 @@ def tidy_reply(text: str, keep_offers: bool = False) -> str:
     if not keep_offers:
         text = drop_offers(text)
     for _ in range(2):
-        sentences = re.split(r"(?<=[.!?])\s+", text)
-        if len(sentences) > 1 and FILLER_RE.search(sentences[-1]):
-            text = " ".join(sentences[:-1]).strip()
-    kept = [x for x in re.split(r"(?<=[.!?])\s+", text) if not ROBOTIC_RE.search(x)]
-    text = " ".join(kept).strip()
+        sentences = _sentences(text)
+        if len(sentences) > 1 and FILLER_RE.search(sentences[-1][0]):
+            text = _join(sentences[:-1])
+    text = _join((x, sep) for x, sep in _sentences(text) if not ROBOTIC_RE.search(x))
     text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)          # **bold**
     text = re.sub(r"(?<!`)`([^`\n]+)`(?!`)", r"\1", text)   # `inline code`
     text = re.sub(r"^\s*[-*•]\s+", "", text, flags=re.M)    # bullet markers
@@ -347,6 +460,16 @@ SLEEP_RE = re.compile(r"\b(?:(?:go|going|get|head) (?:back )?to sleep|sleep now|
 SLEEP_NOT_RE = re.compile(r"\b(?:remind|reminder|timer|alarm|at \d|in \d+|how much|how long|couldn'?t|can'?t|"
                           r"didn'?t|last night)\b", re.I)
 SLEEP_MAX_WORDS = 7
+
+
+# "listen" / "stop listening": the microphone opens only when Lala says so (whole message, matched in code)
+_EARS_LEAD = r"(?:(?:hey )?aria )?(?:please )?"
+LISTEN_RE = re.compile(_EARS_LEAD + r"(?:listen(?: to me)?|start listening|(?:voice|mic|microphone) on|"
+                       r"turn on the (?:mic|microphone)|turn the (?:mic|microphone) on|h(?:ö|oe)r(?: mir)? zu)"
+                       r"(?: please)?", re.I)
+STOP_LISTEN_RE = re.compile(_EARS_LEAD + r"(?:stop listening|(?:voice|mic|microphone) off|"
+                            r"turn off the (?:mic|microphone)|turn the (?:mic|microphone) off|"
+                            r"h(?:ö|oe)r auf zuzuh(?:ö|oe)ren|nicht mehr zuh(?:ö|oe)ren)(?: please)?", re.I)
 
 
 def wants_sleep(text: str) -> bool:
@@ -410,21 +533,35 @@ def _write_marker(path, value):
 
 class NullUI:
     """Used when running without the overlay. ui/overlay.py's bridge implements the same methods."""
-    def set_state(self, state): pass          # booting|sleeping|listening|thinking|speaking + flashes: unknown|alert
+    def set_state(self, state): pass          # booting|sleeping|companion|listening|thinking|speaking + flashes: unknown|alert
     def set_timers(self, items): pass         # pending reminders, for the countdown ring
     def message(self, role, text): pass       # role: "user" | "aria"
     def mic_level(self, volume): pass         # called from STT while recording
     def feed_audio(self, chunk): pass         # called by VoiceEngine for every playback chunk
+    def claude(self, action, feeling=""): pass  # Claude's figure in a duet: enter | talk | listen | leave
+    def set_piano(self, on): pass             # piano music plays: her avatar plays along (Engines/Piano.py)
     def stop_talking(self): pass
+    def speech(self, segments): pass          # her mouth's timeline for the piece of speech that starts playing
     def show_card(self, card): pass           # list / agenda / yes-no card next to the orb
     def clear_card(self, kind=None): pass
+    def set_mic_open(self, is_open): pass     # she is transcribing what is said (the avatar leans in only then)
+    def avatar_act(self, name): pass          # companion: a gesture for her avatar
+    def glance(self, x, y, seconds): pass     # companion: her avatar looks at a screen point for a while
+    def set_test(self, card): pass            # the next test, for the card her avatar holds up now and then
+    def set_rain(self, on): pass              # rain is coming: her avatar brings out an umbrella now and then
+    def set_beat(self, bpm, next_in, conf): pass   # the music's beat: her avatar bobs to it (bpm 0 = stop)
 
 
-class Aria:
-    def __init__(self, option=1, ui=None):
+class Aria(DuetCoordinatorMixin):
+    _tidy_reply = staticmethod(tidy_reply)
+
+    def __init__(self, option=0, ui=None):
+        self.preferences = Preferences(option)
+        option = 2 if self.preferences.values["microphone"] == "wake" else 0
         self.option = option
         self.ui = ui or NullUI()
         self.muted = False
+        self._ears = False              # typing mode: the microphone is open because Lala typed "listen"
         self.text_inputs = queue.Queue()   # text typed in the overlay
         self._name_answer = queue.Queue()  # overlay text while Aria is asking an unknown person's name
         self._awaiting_name = False
@@ -448,12 +585,8 @@ class Aria:
         self._session_convo = []  # messages since last wake, for fact extraction
         self._recent = deque(maxlen=6)  # last turns incl. tool calls, replayed as LLM history
         self._pending_state = None      # mood check result from the previous turn (runs in background)
-        self.awake = False              # in a conversation (Initiative only speaks up while she's asleep)
+        self.awake = False              # in a conversation
         self.last_talked = 0.0          # last time Lala said something
-        self._initiative_pending = None # opener queued by Initiative, picked up when she wakes
-        self._initiative_active = None  # the opener of the current conversation, if she started it
-        self._session_hint = None       # extra instruction for this conversation (weekly review, event check-in…)
-        self._review = None             # weekly review in progress: {"items": [(list, text)], "i", "coming"}
 
         self.vision = AriaVision(
             on_known_user=self._on_known_user,
@@ -478,6 +611,10 @@ class Aria:
             client_id=os.environ["SPOTIFY_CLIENT_ID"],
             client_secret=os.environ["SPOTIFY_CLIENT_SECRET"],
         ))
+        # piano music: her avatar plays along on a keyboard until Spotify stops (Engines/Piano.py)
+        self.piano = PianoMode(lambda on: self.ui.set_piano(on),
+                               lambda: bool((self.spotify.sp.current_playback() or {}).get("is_playing"))) \
+            if self.spotify else None
         self.arduino = self._try("Arduino", ArduinoLEDController)
         self.voice = self._try("Voice", lambda: VoiceEngine(stt_engine=self.stt, live2d_controller=self.ui))
 
@@ -497,13 +634,23 @@ class Aria:
         if self.notion:
             self.notion.last_reply = lambda: self._last_reply  # for "save that as a note"
             self.notion.on_card = self.ui.show_card
-        self.initiative = Initiative(self)
+        self.posture_nudges = PostureNudges(self)       # "sit up a bit?" now and then (Engines/Desk.py)
         self.memory_note = MemoryNote(self.memory, self.notion, self.confirm, on_card=self.ui.show_card)
         self.memory_note.llm = self.llm
-        self.followups = Followups(self.memory, self.notion)
         self.weather = Weather()
         self.undo = Undo(self.notion, self.reminders)
         self.quiz = Quiz(self.notion, self.files, model=LLM_MODEL)
+        self.writer = NoteWriter(self.notion, model=LLM_MODEL) if self.notion else None   # write / organise notes
+        # heavy text work goes to Claude when it can be reached (Engines/BigModel.py); None = everything local
+        self.big = self._try("Big model", lambda: BigModel(enabled=self.preferences.values["claude"]))
+        self.preferences.apply(self)
+        if self.big and not self.big.command:
+            self.big = None
+        if self.big:
+            self.quiz.big = self.big
+            if self.writer:
+                self.writer.local = self.writer.ask
+                self.writer.ask = self.big.or_local(self.writer.local)
         # Gmail through MyNotion's Inbox (same database); None without MyNotion
         self.mail = self._try("Mail", lambda: MailEngine(os.environ.get("DB_PATH"), self.confirm, notion=self.notion,
                                                          llm=self.llm)) if self.notion else None
@@ -511,6 +658,10 @@ class Aria:
             self.mail.on_announce = self._announce               # "Couldn't send the email to …"
             self.mail.sender_name = self._known_user_name() or "Lala"
         self.untis = self._try("WebUntis", Untis)      # timetable, homework, tests; asks nothing until used
+        self.test_prep = (self._try("Test prep", lambda: TestPrep(self.untis, self.notion, self.quiz))
+                          if self.untis and self.notion and self.quiz else None)   # "quiz me for my DBI test"
+        # after school her avatar keeps you company while Aria sleeps, and reacts to your apps (never speaks)
+        self.companion = self._try("Companion", lambda: Companion(self, self.ui, Probes.real(self)))
         self.dictation = Dictation(self._save_dictation, confirm=self.confirm, model=LLM_MODEL,
                                    on_card=self.ui.show_card)
         self.activity = Activity(menu=self.laptop.menu)
@@ -530,7 +681,6 @@ class Aria:
             files=self.files,
             notion=self.notion,
             owner_check=self._owner_check,
-            initiative=self.initiative,
             memory_note=self.memory_note,
             activity=self.activity,
             weather=self.weather,
@@ -542,6 +692,8 @@ class Aria:
             face_learner=self.learn_my_face,
             mail=self.mail,
             untis=self.untis,
+            writer=self.writer,
+            on_action=self.ui.avatar_act,
         )
         print(f"[Tools] {len(self.tools.schemas)} tools available")
         # texting from the phone (./aria.sh --telegram once); nothing runs without it
@@ -555,12 +707,22 @@ class Aria:
         self.reminders.start()
         if self.notion:
             threading.Thread(target=self._event_reminder_loop, daemon=True).start()
-        self.initiative.start()
+        self.posture_nudges.start()
         threading.Thread(target=Health(self).log_startup, daemon=True).start()
         self.activity.start()
         self.focus.start_watching()
         BatteryWatch(self._announce).start()
+        threading.Thread(target=self._chat_loop, daemon=True).start()     # she and Claude chat now and then
+        if self.companion:
+            self.companion.start()
+            # bob to music: only while her avatar shows, she isn't speaking and no lesson is on (Engines/Beat.py)
+            self.beat = self._try("Beat", lambda: BeatReader(self.ui, self._may_bob))
+            if self.beat:
+                self.beat.start()
         self.files.start_indexing()
+        # the laptop just started: open VS Code and MyNotion once (Engines/Startup.py; ARIA_STARTUP_APPS)
+        threading.Thread(target=Startup.on_laptop_start, args=(self.laptop,), daemon=True).start()
+        self._start_app_bridge()
 
     def _event_reminder_loop(self):
         """Keeps a heads-up reminder 15 min before each MyNotion event (picks up edits made in the app),
@@ -771,9 +933,10 @@ class Aria:
         self.ui.set_state("alert")
         if self.arduino and r["kind"] not in ("focus", "focusbreak"):  # focus mode handles the LEDs itself
             self.arduino.startup_animation()
-        if self.ha and not self.vision.is_present:
+        away = not self._at_desk()            # the camera when it's on, else keyboard and mouse
+        if self.ha and away:
             self.ha.notify_phone(text, title="Aria")
-        if getattr(self, "telegram", None) and not self.vision.is_present:
+        if getattr(self, "telegram", None) and away:
             self.telegram.send(text)          # not at the desk: the reminder goes to the phone too
         if r["kind"] in ("reminder", "timer", "event", "dayahead", "due"):
             title = {"timer": "Timer", "event": "Coming up", "dayahead": "Tomorrow",
@@ -794,15 +957,34 @@ class Aria:
         self.announcements.put(text)
         self._wake_event.set()
 
+    def remember_said(self, text: str):
+        """Something Aria said by herself (an announcement, a weekend opener) goes into history, so a reply to it
+        has context."""
+        self.memory.save_message("assistant", text)
+        self._session_convo.append({"role": "assistant", "content": text})
+        self._recent.append([{"role": "assistant", "content": text}])
+
+    def write_opener(self, prompt: str):
+        """One line for a weekend opener (Engines/Openers.py), from the local model: no tools, no history. None when
+        she is in a conversation, another turn is running, or the reply sounds like an assistant; the companion then
+        uses its fixed line. Never sent to the big model."""
+        if self.awake:
+            return None
+        lock = self._turn_lock()
+        if not lock.acquire(blocking=False):
+            return None
+        try:
+            line = tidy_reply(self.llm.chat(prompt, [], self._base_prompt()) or "")
+        finally:
+            lock.release()
+        return None if not line or ROBOTIC_RE.search(line) else line
+
     def _speak_announcements(self) -> bool:
         spoke = False
         while not self.announcements.empty():
             text = self.announcements.get()
             print(f"Aria: {text}")
-            # into history, so "snooze it" / "thanks" has context
-            self.memory.save_message("assistant", text)
-            self._session_convo.append({"role": "assistant", "content": text})
-            self._recent.append([{"role": "assistant", "content": text}])
+            self.remember_said(text)        # into history, so "snooze it" / "thanks" has context
             self.speak(text)
             spoke = True
         return spoke
@@ -825,8 +1007,11 @@ class Aria:
             self.notion.open_mynotion(what)
 
     def toggle_from_card(self, note_id: int, text: str, checked: bool):
-        if self.notion and not self.notion.set_item_checked(note_id, text, checked):
-            self.ui.message("aria", f"Couldn't find '{text}' in that list anymore.")
+        if self.notion:
+            if not self.notion.set_item_checked(note_id, text, checked):
+                self.ui.message("aria", f"Couldn't find '{text}' in that list anymore.")
+            elif checked:
+                self.ui.avatar_act("taskDone")
 
     CAPTURE_TOOLS = ("add_to_list", "add_event", "set_reminder", "add_note")
 
@@ -856,22 +1041,33 @@ class Aria:
         print(f"[Capture] {text!r} -> {[n for n, _ in used]}: {result}")
         return result
 
-    def start_initiative(self, opener: dict):
-        """Called by Initiative while Aria is asleep: wake up and start a conversation."""
-        if self.awake or self._shutting_down:
-            return
-        self._initiative_pending = opener
-        self._wake_event.set()
-
-    def set_initiative(self, on: bool):
-        self.initiative.set_enabled(on)
-
     def request_sleep(self):
-        self._sleep_request.set()
+        if getattr(self, "awake", False):
+            self._sleep_request.set()           # her conversation loop ends it
+            return
+        companion = getattr(self, "companion", None)
+        if companion and companion.on:          # only her avatar keeping you company: send it to sleep
+            companion.dismissed()
+            self.ui.set_state("sleeping")
+        # already asleep: nothing to do (a request left lying around would end her next wake at once)
 
     def toggle_mute(self) -> bool:
         self.muted = not self.muted
         return self.muted
+
+    def settings_snapshot(self):
+        values = dict(self.preferences.values)
+        values["muted"] = self.muted
+        return values
+
+    def save_settings(self, values):
+        self.preferences.save(values)
+        self.preferences.apply(self)
+
+    def show_diagnostics(self):
+        self.ui.show_card({"type": "diagnostics", "title": "How Aria is running",
+                           "text": "Checking services and recent response times…"})
+        self.ui.show_card(Diagnostics.card(self))
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -891,22 +1087,251 @@ class Aria:
     def answer_phone(self, text: str) -> str:
         """A message from Lala's Telegram chat: a normal turn, but only phone tools, no voice, no camera check."""
         with self._turn_lock():
+            before = getattr(self, "_ui_state", None)
             with self.tools.phone():
                 reply, _ = self.handle_turn(text, check_state=False)
-            self.ui.set_state("listening" if getattr(self, "awake", False) else "sleeping")
+            self._restore_orb(before)       # back to what showed before (asleep, awake, or the companion)
         return tidy_reply(reply) or reply
+
+    def answer_app(self, text: str, on_text=None, tools: bool = True):
+        """A message typed in MyNotion's Aria panel (ui/app_bridge.py): a normal turn with every tool, but nothing
+        is spoken and she doesn't wake up. Returns (reply, tool names, the yes/no question now waiting or None)."""
+        dictation = getattr(self, "dictation", None)
+        if dictation and dictation.active:
+            # what's typed here would be written into the note being dictated
+            return "You're dictating right now. Say \"stop dictation\" first, then ask me again.", [], None
+        with self._turn_lock():
+            before = getattr(self, "_ui_state", None)
+            with self._panel_cards():
+                reply, used = self.handle_turn(text, check_state=False, on_text=on_text,
+                                               extra=self._open_note_context(), use_tools=tools)
+            self._restore_orb(before)
+            pending = self.confirm.pending
+        reply = tidy_reply(reply, keep_offers=bool(pending)) or reply
+        return reply, [name for name, _ in used], pending[0] if pending else None
+
+    def _panel_cards(self):
+        """A turn for MyNotion's panel: cards it raises don't pop up a hidden orb (see OverlayBridge.panel_turn)."""
+        turn = getattr(self.ui, "panel_turn", None)
+        return turn() if turn else contextlib.nullcontext()
+
+    def _restore_orb(self, before):
+        """After a panel turn: the orb goes back to what it showed before."""
+        if before is None:
+            self.ui.set_state("listening" if getattr(self, "awake", False) else "sleeping")
+        elif self._ui_state == "thinking":
+            self.ui.set_state(before)       # what the orb showed before (she may still be speaking a voice reply)
+        # else: it changed meanwhile (the voice reply ended, she fell asleep): that's the current truth
+
+    def study_app(self, action: str, on_text=None, test=None):
+        """A study button in MyNotion's Aria panel, on the open note: "quiz", "explain" or "prep". The note is read
+        here, in code. Returns (reply, tool names, None), like answer_app. "test" starts a quiz for a coming school
+        test (its id in `test`) and needs no open note."""
+        dictation = getattr(self, "dictation", None)
+        if dictation and dictation.active:
+            return "You're dictating right now. Say \"stop dictation\" first, then ask me again.", [], None
+        if action == "test":
+            prep = getattr(self, "test_prep", None)
+            if not prep:
+                return "I can't help with tests right now.", [], None
+            quiz = getattr(self, "quiz", None)
+            with self._turn_lock():
+                if quiz and quiz.active:
+                    quiz.stop()
+                reply, subject = prep.start_quiz(test)
+                if reply.startswith(FINAL_PREFIX):
+                    reply = reply[len(FINAL_PREFIX):]
+                if not (quiz and quiz.active):
+                    return reply, [], None
+                asked = f"Quiz me for my {subject} test"
+                self._save_turn(asked, reply)
+                self._recent.append([{"role": "user", "content": asked},
+                                     {"role": "assistant", "content": reply}])
+            return reply, ["start_quiz"], None
+        note = self.notion.open_note() if self.notion else None
+        if not note:
+            return "Open a note first, then I can help you study it.", [], None
+        title = note["title"] or "Untitled note"
+        text = html_to_text(note["content"] or "").strip()
+        if not text:
+            return "This note is empty, there's nothing to study yet.", [], None
+        quiz = getattr(self, "quiz", None)
+        with self._turn_lock():
+            if quiz and quiz.active:
+                quiz.stop()                 # a button press is never an answer to a running quiz: it ends it
+            if action == "quiz":
+                if not quiz:
+                    return "I can't run quizzes right now.", [], None
+                reply = quiz.start_on(title, text)
+                if reply.startswith(FINAL_PREFIX):
+                    reply = reply[len(FINAL_PREFIX):]
+                self._save_turn("Quiz me on this note", reply)
+                self._recent.append([{"role": "user", "content": "Quiz me on this note"},
+                                     {"role": "assistant", "content": reply}])
+                return reply, ["start_quiz"], None
+            label, instruction = STUDY_ASKS[action]
+            cut = len(text) > STUDY_NOTE_CHARS
+            if cut:
+                text = text[:STUDY_NOTE_CHARS].rsplit("\n", 1)[0]
+            extra = f'\n[The note "{title}":\n{text}\n]\n{instruction}'
+            before = getattr(self, "_ui_state", None)
+            pending, self.confirm.pending = self.confirm.pending, None   # a button press doesn't answer a yes/no
+            try:
+                with self._panel_cards():
+                    reply, _ = self.handle_turn(label, check_state=False, on_text=on_text, extra=extra,
+                                                use_tools=False)
+            finally:
+                if self.confirm.pending is None:
+                    self.confirm.pending = pending
+                self._restore_orb(before)
+            pending = self.confirm.pending
+        reply = tidy_reply(reply, keep_offers=bool(pending)) or reply
+        if cut:
+            reply = f"{reply}\n\n{STUDY_CUT}"
+        # the panel drops Yes/No when a button is pressed: a question still waiting is shown again
+        return reply, [], pending[0] if pending else None
+
+    def _open_note_context(self) -> str:
+        """The note open in MyNotion, as text for the model. In the panel "this note" is the one on screen, and the
+        small model doesn't reliably call read_note for it (it made up an answer instead), so it's given in code."""
+        try:
+            note = self.notion.open_note() if self.notion else None
+            if not note:
+                return ""
+            text = html_to_text(note["content"] or "").strip()
+        except Exception as e:
+            print(f"[App] couldn't read the open note: {type(e).__name__}: {e}")
+            return ""
+        title = note["title"] or "Untitled note"
+        if not text:
+            return (f'\n[The note open in MyNotion right now is "{title}". It is empty. "This note" means this one. '
+                    "If the message isn't about the note, don't bring the note up.]")
+        cut = len(text) > OPEN_NOTE_CHARS
+        if cut:
+            text = text[:OPEN_NOTE_CHARS].rsplit("\n", 1)[0]
+        return (f'\n[The note open in MyNotion right now is "{title}". "This note" means this one. '
+                + ("Its first part" if cut else "Its text") + f":\n{text}\n"
+                + ("(It goes on: call read_note for all of it.) " if cut else "")
+                + "Answer questions about it from this text. To change it, use the note tools. "
+                  "If the message isn't about the note, don't bring the note up.]")
+
+    def edit_app(self, action: str, html: str, instruction: str = "", title: str = "", context: str = "",
+                 previous: str = ""):
+        """"Select text, ask Aria" in MyNotion: her version of the selected text, as (html, "") or (None, why not).
+        Not a conversation turn: nothing is saved, spoken or remembered, and she changes nothing herself. It only
+        waits its turn, because the model answers one thing at a time."""
+        writer = getattr(self, "writer", None)
+        if not writer:
+            return None, "I can't change notes right now: MyNotion's database isn't connected."
+        with self._turn_lock():
+            before = getattr(self, "_ui_state", None)
+            self.ui.set_state("thinking")
+            try:
+                return writer.rework(html, action, instruction=instruction, title=title, context=context,
+                                     previous=previous)
+            except Exception as e:
+                Diagnostics.problem("app_edit", f"{action}: {type(e).__name__}: {e}")
+                raise
+            finally:
+                if before is None:
+                    self.ui.set_state("listening" if getattr(self, "awake", False) else "sleeping")
+                elif self._ui_state == "thinking":
+                    self.ui.set_state(before)
+
+    def _app_tests(self, mapping=None):
+        """The panel's test cards and notebook choices; `mapping` = (subject, notebook id) to remember first."""
+        prep = getattr(self, "test_prep", None)
+        if not prep:
+            return {"cards": [], "notebooks": []}
+        if mapping is not None and not prep.set_notebook(*mapping):
+            raise LookupError("unknown notebook")
+        return {"cards": prep.cards(), "notebooks": prep.notebooks()}
+
+    def _app_study(self, action, on_text, test=None):
+        try:
+            if action == "test":
+                return self.study_app(action, on_text, test=test)
+            return self.study_app(action, on_text)
+        except Exception as e:
+            Diagnostics.problem("app_study", f"{action} -> {type(e).__name__}: {e}")
+            raise
+
+    def _app_answer(self, text, on_text, tools=True):
+        try:
+            return self.answer_app(text, on_text, tools=tools)
+        except Exception as e:
+            Diagnostics.problem("app_turn", f"{text[:80]} -> {type(e).__name__}: {e}")
+            raise
+
+    def _track_ui_state(self):
+        """Remember what the orb shows, so a panel turn can put it back afterwards. Flashes aren't states."""
+        show = self.ui.set_state
+        self._ui_state = None
+
+        def set_state(state):
+            if state not in ("unknown", "alert"):
+                self._ui_state = state
+            show(state)
+        self.ui.set_state = set_state
+
+    def _start_app_bridge(self):
+        """MyNotion's Aria panel reaches her through this socket. A failure here never stops Aria from starting."""
+        self._app_server = None
+        try:
+            self._track_ui_state()
+        except Exception as e:
+            print(f"[App] can't follow the orb's state: {type(e).__name__}: {e}")
+        try:
+            from ui import app_bridge
+            self._app_server = app_bridge.start(
+                self._app_answer, edit=self.edit_app, study=self._app_study, tests=self._app_tests,
+                quiz_active=lambda: bool(getattr(self, "quiz", None) and self.quiz.active))
+            print("[App] MyNotion can reach me")
+        except Exception as e:
+            print(f"[App] MyNotion's panel won't work: {type(e).__name__}: {e}")
+        try:
+            if self.notion:
+                self.notion.set_launcher(str(Path(__file__).resolve().parent / "aria.sh"))
+        except Exception as e:
+            print(f"[App] couldn't tell MyNotion where my launcher is: {type(e).__name__}: {e}")
+
+    def _stop_app_bridge(self):
+        server, self._app_server = getattr(self, "_app_server", None), None
+        if server:
+            from ui import app_bridge
+            try:
+                server.close()
+                os.unlink(app_bridge.SOCKET_PATH)
+            except OSError:
+                pass
 
     def _turn_lock(self):
         """One turn at a time: the desk and the phone share history and pending yes/no questions."""
         if getattr(self, "_turn_rlock", None) is None:
-            self._turn_rlock = threading.RLock()
+            with _TURN_LOCK_SETUP:              # the desk, the phone and MyNotion's panel may all ask first
+                if getattr(self, "_turn_rlock", None) is None:
+                    self._turn_rlock = threading.RLock()
         return self._turn_rlock
 
-    def handle_turn(self, user_input: str, check_state: bool = True, on_text=None):
+    def handle_turn(self, user_input: str, check_state: bool = True, on_text=None, extra: str = "",
+                    use_tools: bool = True):
         with self._turn_lock():
-            return self._handle_turn(user_input, check_state, on_text)
+            self._turns_done = self._turn_count() + 1     # a follow-up written before this turn is dropped
+            big = getattr(self, "big", None)
+            before = big.calls if big else 0
+            reply, used = self._handle_turn(user_input, check_state, on_text, extra, use_tools)
+            piano = getattr(self, "piano", None)
+            if piano:                            # piano music on Spotify: she plays along (decided in code)
+                try:
+                    piano.update(used, user_input)
+                except Exception as e:           # her keyboard never costs Lala the answer
+                    print(f"[Piano] {type(e).__name__}: {e}")
+                    Diagnostics.problem("piano", f"{type(e).__name__}: {e}")
+            # said after saving the turn, so the mark is shown but never becomes part of the conversation
+            return (big.marked(reply, before) if big else reply), used
 
-    def _handle_turn(self, user_input: str, check_state: bool = True, on_text=None):
+    def _handle_turn(self, user_input: str, check_state: bool = True, on_text=None, extra: str = "",
+                     use_tools: bool = True):
         """One full turn: mood → state check → LLM with tools → save. Returns (reply, tools_used)."""
         self.ui.set_state("thinking")
 
@@ -921,13 +1346,6 @@ class Aria:
             self._recent.append([{"role": "user", "content": user_input},
                                  {"role": "assistant", "content": confirmed}])
             return confirmed, [("confirmation", confirmed)]
-        if self._review:
-            handled = self._review_answer(user_input)
-            if handled is not None:
-                self._save_turn(user_input, handled)
-                self._recent.append([{"role": "user", "content": user_input},
-                                     {"role": "assistant", "content": handled}])
-                return handled, [("weekly_review", handled)]
         quiz = getattr(self, "quiz", None)
         if quiz and quiz.active:
             # during a quiz every reply is an answer (or skip / hint / repeat / stop), checked in code
@@ -937,6 +1355,10 @@ class Aria:
                 self._recent.append([{"role": "user", "content": user_input},
                                      {"role": "assistant", "content": handled}])
                 return handled, [("quiz", handled)]
+        ears = self._ears_command(user_input)
+        if ears is not None:
+            self._save_turn(user_input, ears)
+            return ears, [("listen", ears)]
         dictation = getattr(self, "dictation", None)
         if dictation and dictation.active:
             # while dictating, what's said is written down, not answered (the chunks aren't kept as conversation)
@@ -963,6 +1385,31 @@ class Aria:
             self._recent.append([{"role": "user", "content": user_input},
                                  {"role": "assistant", "content": opened}])
             return opened, [("open_mynotion", opened)]
+        # "cancel", "stop the timer", "no don't do that" right after she set one: decided and done in code
+        cancelled = self._cancel_command(user_input) if use_tools else None
+        if cancelled:
+            self._save_turn(user_input, cancelled)
+            self._recent.append([{"role": "user", "content": user_input}, {"role": "assistant", "content": cancelled}])
+            return cancelled, [("cancel", cancelled)]
+        big = getattr(self, "big", None)
+        question = big_wanted(user_input) if big else None
+        if question or (big and not use_tools):
+            # "ask the big model …", and answer-only requests from MyNotion (Explain, the study buttons): Claude
+            # answers. Decided here in code; when it can't be reached the local model answers as before.
+            note = extra if not use_tools or NOTE_WORDS_RE.search(question or "") else ""
+            said = big.ask((question or user_input) + note, "question" if question else "explain",
+                           system=BIG_CHAT_SYSTEM)
+            if said:
+                if on_text:
+                    on_text(said)
+                self._last_reply = said
+                self._save_turn(user_input, said)
+                self._recent.append([{"role": "user", "content": user_input}, {"role": "assistant", "content": said}])
+                return said, [("big_model", said)]
+            if question:
+                said = "I couldn't reach the big model just now. Ask me again in a bit, or ask me directly."
+                self._save_turn(user_input, said)
+                return said, [("big_model", said)]
         self.emotions.process(user_input)
         mood = self.emotions.get_mood_label()
         self.memory.log_mood(mood)
@@ -987,52 +1434,70 @@ class Aria:
                        f"Say it again more simply, in your own words. Don't ask what's on their mind.]")
 
         # Small models often forget to call read_clipboard, so attach it ourselves
+        # "this note" = the note open in MyNotion, named here in code: the bigger model guessed a title otherwise
+        open_title = self._open_note_title() if NOTE_TALK_RE.search(user_input) else None
+        if open_title:
+            prompt += f"\n[Open in MyNotion: '{open_title}' — \"this note\" means it]"
         if CLIPBOARD_RE.search(user_input):
             prompt += f"\n[{self.screen.read_clipboard()}]"
+        # for this turn only (the note open next to MyNotion's Aria panel): the model sees it, the history doesn't
+        prompt += extra
 
-        review_item = self._review_item()
-        if review_item:
-            prompt += (f"\n[Weekly review: you just asked about the to-do '{review_item[1]}' (on the list "
-                       f"'{review_item[0]}'). If they want a reminder for it, call set_reminder; if they want it "
-                       f"on the calendar, call add_event. Answer in one short sentence and don't ask about other to-dos.]")
         # everything that changes each turn goes after the message, so the prompt starts the same every turn
         system_prompt = self.context.build_system_prompt(self._base_prompt(), moment=False)
-        moment = self.context.moment()
+        # the clock only when the message could need it, or at the start of a conversation: given on every turn of
+        # a chat she recited it ("Also — it's 4:03. You're still here.")
+        # (right after a tool call a short message is often its follow-up, "the second one": that keeps its tools)
+        chat = use_tools and not extra and self._small_talk(user_input) and not self._recent_tool_names()
+        moment = "" if chat and self._recent and not TIME_RE.search(user_input) else self.context.moment()
         if moment:
-            prompt += f"\n[Right now: {moment}]"
-        if self._session_hint:
-            system_prompt += "\n\n[This conversation] " + self._session_hint
+            # background, not a topic: the bigger model answered commands with "I'm glowing on your desk…" otherwise
+            prompt += f"\n[Right now (background, only mention it if it matters): {moment}]"
         routed = hasattr(self.tools, "schemas_for")
         schemas = self.tools.schemas_for(user_input, self._recent_tool_names()) if routed else self.tools.schemas
-        if self._initiative_active and self._initiative_active["kind"] in ("chat", "followup", "break"):
-            if not CHAT_REQUEST_RE.search(user_input):
-                schemas = []
-            else:
-                schemas = [t for t in schemas if t["function"]["name"] not in CHAT_GATED_TOOLS
-                           or re.search(CHAT_GATED_TOOLS[t["function"]["name"]], user_input, re.I)]
+        execute, no_tools = self._steered(user_input), chat and not ASKS_FACT_RE.search(user_input)
+        if no_tools:
+            # just talking: nothing may run. Offered tools, she read a note in answer to an insult and listed all
+            # notes for "don't wait". She still gets the tools every message gets, because they are the start of
+            # the prompt: with none here, the next command made the model read them all again (measured
+            # 2026-11-15: 40-100 s for a tool call after small talk). A call she makes anyway is turned down.
+            schemas = self.tools.schemas_for("", ()) if routed else []
+            execute = lambda name, args: CHAT_NO_TOOL
+        if not use_tools:
+            # an answer only (MyNotion's "Explain" for selected text): asked to explain a few words, the model
+            # once called edit_note and translated the whole note. With no tools it can't change anything.
+            routed, schemas = False, []
         reply, used = self.llm.chat_with_tools(
-            prompt, self._history(), system_prompt, schemas, self.tools.execute, on_text=on_text
+            prompt, self._history(), system_prompt, schemas, execute, on_text=on_text
         )
-        if not used and ACTION_RE.search(user_input) and CLAIM_RE.search(reply or "") and \
-                not (self._initiative_active and self._initiative_active["kind"] == "chat"):
+        if no_tools and used:      # turned-down calls never happened: not replayed either
+            used = []
+            self.llm.last_trace[:] = [m for m in self.llm.last_trace if m.get("role") != "tool" and not m.get("tool_calls")]
+        if use_tools and not used and ACTION_RE.search(user_input) and CLAIM_RE.search(reply or ""):
             # it *said* it did it but called no tool (small models do this): once more, firmly
             print("[Tools] reply claims an action without a tool call — retrying")
             Diagnostics.problem("claimed_no_tool", f"{user_input} -> {reply[:120]}")
             reply, used = self.llm.chat_with_tools(
                 prompt + "\n[You must call the right tool for this now. Don't just say it's done.]",
-                self._history(), system_prompt, self.tools.schemas if routed else schemas, self.tools.execute)
-        if routed and not used and CANT_RE.search(reply or "") and len(schemas) < len(self.tools.schemas) \
-                and not (self._initiative_active and self._initiative_active["kind"] == "chat"):
-            # the tool it needed wasn't offered for this message: ask again with every tool
+                self._history(), system_prompt, self.tools.schemas if routed else schemas, execute)
+        if (routed and not used and not no_tools and CANT_RE.search(reply or "")
+                and len(schemas) < len(self.tools.schemas)):
+            # the tool it needed wasn't offered for this message: ask again with every tool. Not in plain chat:
+            # there every one of these was a false alarm ("I can't get pregnant", "I can't wander"), and reading
+            # all ~110 tools is the slowest thing she does.
             print("[Tools] reply sounds like a missing tool — retrying with all tools")
             Diagnostics.problem("missing_tool", f"{user_input} -> {reply[:120]}")
             reply, used = self.llm.chat_with_tools(prompt, self._history(), system_prompt, self.tools.schemas,
-                                                   self.tools.execute)
+                                                   execute)
         if not reply.strip() and not used:
             # the model occasionally returns nothing at all; one plain retry usually gives an answer
             reply = self.llm.chat(prompt, self._history(), system_prompt) or ""
         robotic = not used and bool(ROBOTIC_RE.search(_first_sentence(reply)))
         reply = tidy_reply(self._move_code_to_clipboard(reply, used), keep_offers=bool(self.confirm.pending))
+        # any plain answer without a tool is kept short, also one about school or music (words a tool group matches)
+        plain = use_tools and not extra and not LONG_OK_RE.search(user_input) and not open_title
+        if plain and not used:
+            reply = humanize(reply, user_input)
         previous = {_norm_reply(p) for p in self._last_replies()}
         repeated = not used and reply.strip() and _norm_reply(reply) in previous
         if robotic or repeated:
@@ -1047,6 +1512,7 @@ class Aria:
                     (f" ({avoid})" if avoid else "") + ". If they seem confused ('what?'), rephrase what you meant. "
                     "One to three short spoken sentences.]",
                     self._history(), system_prompt, temperature=temperature))
+                retry = humanize(retry, user_input) if plain else retry
                 if retry.strip() and not retry.startswith("Error:") and _norm_reply(retry) not in previous \
                         and not ROBOTIC_RE.search(_first_sentence(retry)):
                     reply = retry
@@ -1064,11 +1530,9 @@ class Aria:
             if not used:
                 Diagnostics.problem("empty_reply", user_input)
             reply = (used[-1][1] if used else "Sorry, I can't do that one.")[:300]
-        if review_item:
-            self._review["i"] += 1
-            reply = (reply + " " + self._review_next()).strip()
         if not any(name == "save_as_note" for name, _ in used):
             self._last_reply = reply
+        self._note_what_was_set(used)
         trace = list(self.llm.last_trace)
         if trace and trace[-1]["role"] == "assistant":
             trace[-1] = {"role": "assistant", "content": reply}
@@ -1076,6 +1540,31 @@ class Aria:
 
         self._save_turn(user_input, reply)
         return reply, used
+
+    def _steered(self, user_input: str):
+        """The tools' execute, with the wrong picks we know of put right in code: asked for a summary of a note, the
+        model calls organize_note, which rearranges the whole note (real-model check, 2026-11-15)."""
+        run = self.tools.execute
+
+        def execute(name, args):
+            if (name == "organize_note" and SUMMARY_ASK_RE.search(user_input or "")
+                    and not ORGANISE_ASK_RE.search(user_input or "")):
+                fixed = {"change": "summary", "title": (args or {}).get("title") or "this"}
+                result = run("edit_note", fixed)
+                if not str(result).startswith("Unknown tool"):
+                    print(f"[Tools] organize_note -> edit_note({fixed}): a summary was asked for")
+                    Diagnostics.problem("steered", f"organize_note -> edit_note summary: {(user_input or '')[:80]}")
+                    return result
+            return run(name, args)
+        return execute
+
+    def _small_talk(self, text: str) -> bool:
+        """Just talking: not a command, not a question a tool answers, nothing that asks for a long answer."""
+        text = text or ""
+        if len(text.split()) > 30 or ACTION_RE.search(text) or LONG_OK_RE.search(text) or NOTE_TALK_RE.search(text):
+            return False
+        groups = getattr(self.tools, "GROUPS", None) or {}
+        return not any(re.search(pattern, text, re.I) for pattern, _ in groups.values())
 
     def _recent_tool_names(self, turns=2):
         names = set()
@@ -1105,19 +1594,28 @@ class Aria:
         if not self.voice or self.muted:
             response, used = self.handle_turn(user_input)
             print(f"Aria: {response}")
-            return response, used, self.speak(response)
+            parts = self._reply_parts(user_input, response, used)
+            if len(parts) < 2:
+                return response, used, self.speak(response)
+            self.ui.message("aria", parts[0])
+            self.ui.set_state("thinking")           # she's "typing" the second message
+            time.sleep(random.uniform(*Double.SPLIT_PAUSE))
+            self.ui.message("aria", parts[1])
+            return response, used, None
 
         t0 = time.time()
         sentences = queue.Queue()
         streamer = SentenceStreamer(sentences.put, previous=self._last_replies(),
-                                   keep_offers=lambda: bool(self.confirm.pending))
+                                   keep_offers=lambda: bool(self.confirm.pending),
+                                   chat_about=user_input if self._small_talk(user_input) else None)
         box = {}
 
         def produce():
             try:
                 box["result"] = self.handle_turn(user_input, on_text=streamer.feed)
-                if streamer.count:
-                    self.ui.message("aria", box["result"][0])   # bubble with the tidied full reply
+                if streamer.count:                    # bubble(s) with the tidied full reply
+                    for part in self._reply_parts(user_input, *box["result"]):
+                        self.ui.message("aria", part)
             except Exception as e:
                 box["error"] = e
             finally:
@@ -1151,6 +1649,70 @@ class Aria:
         self._log_timing(t0, first_at, used)
         return response, used, interrupted
 
+    # ── Two messages in a row (Engines/Double.py) ─────────────────────────────
+
+    def _reply_parts(self, user_input, reply, used):
+        """The reply as one bubble, or two for casual chat ("Haha no way." / "Did you finish it?")."""
+        if used or not self._small_talk(user_input):
+            return [reply] if reply else []
+        return Double.split_reply(reply)
+
+    def _turn_count(self) -> int:
+        return getattr(self, "_turns_done", 0)
+
+    def _follow_ups_queue(self):
+        if getattr(self, "_follow_ups", None) is None:
+            self._follow_ups = queue.Queue()
+        return self._follow_ups
+
+    def _lala_busy(self) -> bool:
+        """Typing, or something typed is waiting: a follow-up would talk over her."""
+        inputs = getattr(self, "text_inputs", None)
+        return self._typing_now() or bool(inputs and not inputs.empty())
+
+    def _maybe_follow_up(self, user_input, reply, used):
+        """After a casual reply, sometimes a second message of her own, written in the background."""
+        turn = self._turn_count()
+        since = turn - getattr(self, "_follow_up_turn", -99)
+        quiz = getattr(self, "quiz", None)
+        if self.confirm.pending or self._dictating() or (quiz and quiz.active) or \
+                not Double.want_follow_up(reply, self._small_talk(user_input), used, since):
+            return
+        self._follow_up_turn = turn
+        threading.Thread(target=self._write_follow_up, args=(user_input, reply, turn), daemon=True).start()
+
+    def _write_follow_up(self, user_input, reply, turn):
+        """Wait a moment, then write the line with the local model (no tools, never the big model). Dropped when
+        another turn started, Lala is typing or the model is busy."""
+        time.sleep(random.uniform(*Double.FOLLOW_UP_DELAY))
+        if turn != self._turn_count() or self._lala_busy():
+            return
+        lock = self._turn_lock()
+        if not lock.acquire(blocking=False):
+            return
+        try:
+            line = self.llm.chat(Double.follow_up_prompt(user_input, reply), [], self._base_prompt())
+        finally:
+            lock.release()
+        line = Double.clean_follow_up(tidy_reply(line or ""), reply, ROBOTIC_RE)
+        if line and turn == self._turn_count():
+            self._follow_ups_queue().put((turn, line))
+
+    def _say_follow_up(self):
+        """Say a waiting follow-up (from the main loop). None when there is none or it came too late."""
+        try:
+            turn, line = self._follow_ups_queue().get_nowait()
+        except queue.Empty:
+            return None
+        if turn != self._turn_count() or self._lala_busy():
+            return None
+        print(f"Aria: {line}")
+        self.remember_said(line)
+        self.speak(line)
+        return line
+
+    # ── Aria and Claude talk together (Engines/Duet.py) ───────────────────────
+
     def _log_timing(self, t0, first_at, used):
         """Speed log for spoken turns (Engines/Diagnostics.py): only when the question came in by voice."""
         heard, self._heard_timing = getattr(self, "_heard_timing", None), None
@@ -1160,6 +1722,48 @@ class Aria:
         Diagnostics.timing(silence_wait=heard.get("silence_wait", 0), transcribe=heard.get("transcribe", 0),
                            first_sentence=first_at - t0, first_audio=audio_at - t0,
                            tools=[name for name, _ in used][:4])
+
+    def _note_what_was_set(self, used):
+        """Remember what this turn set (a timer, a reminder, a focus session): "no, don't do that" right after
+        takes exactly that back (Engines/Cancel.py)."""
+        kinds = {"set_timer": "timer", "set_reminder": "reminder", "start_focus": "focus"}
+        made = [kinds[name] for name, _ in used if name in kinds]
+        if not made:
+            return
+        kind, reminders = made[-1], getattr(self, "reminders", None)
+        items = reminders.pending((kind,)) if kind != "focus" and hasattr(reminders, "pending") else []
+        self._just_set = {"kind": kind, "item": max(items, key=lambda r: r["created"]) if items else None,
+                          "at": time.time()}
+
+    def _cancel_command(self, text: str):
+        """A short cancel command (Engines/Cancel.py decides what it means), carried out; None for anything else."""
+        reminders, focus = getattr(self, "reminders", None), getattr(self, "focus", None)
+        if not hasattr(reminders, "pending"):
+            return None
+        just = getattr(self, "_just_set", None)
+        hit = cancel_target(text, pending=reminders.pending(("timer", "reminder")),
+                            focus_running=bool(focus and focus.in_session),
+                            just_set=just and {**just, "ago": time.time() - just["at"]})
+        if hit is None:
+            return None
+        what, item = hit
+        self._just_set = None
+        if what == "focus":
+            return focus.stop() if focus else "No focus session is running."
+        if what == "none":
+            return {"timer": "There's no timer running.",
+                    "reminder": "You don't have any reminders set."}.get(item, "Nothing's running right now.")
+        if item["kind"] == "timer":
+            said = "Okay, cancelled the timer." if item["text"] == "timer" else f"Okay, cancelled the {item['text']} timer."
+        else:
+            said = f"Okay, I won't remind you to {item['text']}."
+            if item.get("repeat"):
+                said = f"Okay, cancelled '{item['text']}' — it won't come back."
+        undo = getattr(self, "undo", None)
+        cancel = lambda: reminders.cancel_id(item["id"])      # noqa: E731
+        undo.around(f"cancelling '{item['text']}'", cancel) if undo else cancel()   # "undo that" brings it back
+        print(f"[Cancel] {text!r} -> {item['kind']} {item['text']!r}")
+        return said
 
     def _open_in_notion(self, text: str):
         """'open my calendar' / 'show me the shopping list' -> MyNotion, if it names the calendar or
@@ -1174,72 +1778,6 @@ class Aria:
             return self.notion.open_mynotion(what)
         return None
 
-    # ── weekly review (started by Initiative) ──
-
-    def _review_item(self):
-        r = self._review
-        return r["items"][r["i"]] if r and r["i"] < len(r["items"]) else None
-
-    def _review_answer(self, text: str):
-        """done / drop / keep / stop are handled here. Returns the reply, or None to let the model handle it
-        (e.g. 'remind me on monday'), which then gets told which to-do it's about."""
-        item = self._review_item()
-        if not item:
-            self._review = None
-            return None
-        title, todo = item
-        if REVIEW_STOP_RE.search(text):
-            self._review = None
-            return "Okay, we'll leave the rest for now."
-        if REVIEW_LATER_RE.search(text):
-            said = self._review_remind(todo, text)
-            if said is None:
-                return None
-        elif REVIEW_DROP_RE.search(text):
-            self.notion.remove_from_list(title, [todo])
-            said = f"Dropped {todo}."
-        elif REVIEW_KEEP_RE.search(text):
-            said = "Keeping it."
-        elif REVIEW_DONE_RE.search(text):
-            self.notion.check_off([todo], title)
-            said = f"Ticked off {todo}."
-        else:
-            return None
-        self._review["i"] += 1
-        return f"{said} {self._review_next()}"
-
-    def _review_remind(self, todo: str, text: str):
-        """'remind me monday at 10' / 'later' (tomorrow 09:00) / 'next week' (next monday 09:00)."""
-        low = text.lower()
-        m = re.search(r"\b(today|tonight|tomorrow|(?:next )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
-                      r"|in \d+ days?)\b", low)
-        day = m.group(1) if m else ("monday" if "next week" in low else "tomorrow")
-        if day == "tonight":
-            day = "today"
-        t = re.search(r"\b(?:at|um)\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)", low) or \
-            re.search(r"\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b", low)
-        at = t.group(1).strip() if t else ("19:00" if "tonight" in low else None)
-        result = self.reminders.set_reminder(todo, at_time=at, day=day) if day != "today" else \
-            self.reminders.set_reminder(todo, at_time=at or "18:00")
-        return result if result.startswith("I'll remind") else None
-
-    def _review_next(self) -> str:
-        item = self._review_item()
-        if item:
-            return random.choice(["Next: {}?", "What about {}?", "And {}?"]).format(item[1])
-        coming = self._review.get("coming")
-        self._review = None
-        out = "That's all of them."
-        focus = getattr(self, "focus", None)
-        if focus is not None and getattr(focus, "memory", None):
-            stats = focus.stats("week")
-            if not stats.startswith("No finished") and not stats.startswith("I don't"):
-                out += " This week you put in " + stats[0].lower() + stats[1:].replace(" in the last 7 days", "")
-                out = out.rstrip(".") + " — nice."
-        if coming:
-            out += f" Coming up: {coming}."
-        return out
-
     def _check_state_bg(self, user_input):
         try:
             state = self.state_engine.check(user_input)
@@ -1252,7 +1790,9 @@ class Aria:
         """This session's turns with their tool calls; plain text history from the DB after a restart."""
         if self._recent:
             return [m for turn in self._recent for m in turn]
-        return self.memory.load_history(limit=6)
+        # her old replies are kept short here: a long, flowery one in the history is copied in every reply after it
+        return [dict(m, content=humanize(m["content"], limit=2)) if m.get("role") == "assistant" else m
+                for m in self.memory.load_history(limit=6)]
 
     def _save_turn(self, user_input, reply):
         self.memory.save_message("user", user_input)
@@ -1302,11 +1842,7 @@ class Aria:
 
         def work():
             known = self.memory.get_memories(200)
-            facts, topics, followups = self.llm.extract_facts(convo, known=known)
-            if followups:
-                n = self.followups.add_from_extraction(followups)
-                if n:
-                    print(f"[Memory] Will ask about {n} thing(s) later: {[f.get('about') for f in followups]}")
+            facts, topics = self.llm.extract_facts(convo, known=known)
             norm = lambda f: re.sub(r"^user(?:'s)?\s+(?:is\s+)?|[^a-z0-9 ]", "", f.lower()).strip()
             seen = {norm(f) for f in known}
             facts = [f for f in facts if norm(f) not in seen]      # same fact, different wording of "User …"
@@ -1331,22 +1867,77 @@ class Aria:
     def _dictating(self) -> bool:
         return bool(getattr(self, "dictation", None) and self.dictation.active)
 
-    def _go_to_sleep(self, line=None):
+    def _open_note_title(self):
+        """The title of the note open in MyNotion right now, or None (none open, MyNotion closed or not set up)."""
+        try:
+            note = self.notion.open_note() if getattr(self, "notion", None) else None
+            return (note or {}).get("title") or None
+        except Exception:
+            return None
+
+    def _uses_mic(self) -> bool:
+        """She transcribes what is said: always in --voice mode, otherwise only after a typed "listen"."""
+        return getattr(self, "option", 1) == 2 or bool(getattr(self, "_ears", False))
+
+    def _ears_command(self, text: str):
+        """Typing mode: "listen" opens the microphone until she sleeps, "stop listening" closes it now. Returns
+        what to say, or None when the message is something else. Never from the phone, and not in --voice mode,
+        where she listens anyway."""
+        if getattr(self, "option", 1) == 2 or getattr(getattr(self, "tools", None), "_phone", False):
+            return None
+        if getattr(getattr(self, "dictation", None), "active", False):
+            return None                 # while dictating, every sentence belongs in the note
+        said = re.sub(r"[^\w ]", " ", text or "")
+        said = " ".join(said.split())
+        if STOP_LISTEN_RE.fullmatch(said):
+            was_on, self._ears = bool(getattr(self, "_ears", False)), False
+            self.ui.set_mic_open(self._uses_mic())
+            return "Okay, the microphone is off." if was_on else "The microphone is already off."
+        if LISTEN_RE.fullmatch(said):
+            self._ears = True
+            self.ui.set_mic_open(True)
+            wake = getattr(self, "_wake_event", None)
+            if wake:
+                wake.set()              # typed in MyNotion's panel while she sleeps: she has to wake up to hear
+            return "I'm listening."
+        return None
+
+    def _may_bob(self) -> bool:
+        """Her avatar may bob to music now: it shows (awake or keeping you company), she isn't speaking (her own
+        voice), and no lesson is on (in class she behaves as always)."""
+        companion = getattr(self, "companion", None)
+        if not companion or not (getattr(self, "awake", False) or companion.on):
+            return False
+        if getattr(self, "_ui_state", None) == "speaking":
+            return False
+        try:
+            span = companion.probes.school_span()
+        except Exception:
+            span = UNKNOWN
+        return school_over(companion.now(), span)
+
+    def _typing_now(self) -> bool:
+        """You typed in her text box in the last 15 s: you're writing to her, the conversation isn't over."""
+        return time.monotonic() - getattr(self.ui, "typed_at", 0.0) < TYPING_KEEPS_S
+
+    def _go_to_sleep(self, line=None, by_user=False, talked=False):
+        if by_user and getattr(self, "companion", None):
+            self.companion.dismissed()           # "go to sleep" means it: no companion until you were away a while
+        self._ears = False                       # the microphone never stays open past a conversation
+        self.ui.set_mic_open(self._uses_mic())
         if self._dictating():
             saved = self.dictation.finish()      # never lose what was dictated
             print(f"Aria: {saved}")
             self.speak(saved)
         if line:
             self.speak(line)
-        self.ui.set_state("sleeping")
+        companion = getattr(self, "companion", None)
+        # after school her avatar stays to keep you company (Engines/Companion.py): straight on, no fade between
+        stays = bool(companion and not by_user and companion.after_conversation(talked=talked))
+        self.ui.set_state("companion" if stays else "sleeping")
         self._sleep_request.clear()
         self._slept_at = time.time()
         self.awake = False
-        self._session_hint = None
-        self._review = None
-        if self._initiative_active:
-            init, self._initiative_active = self._initiative_active, None
-            self.initiative.finished(init["kind"], init.get("answered", False))
         if self.arduino:
             self.arduino.sleep_mode()
         self._remember_session()
@@ -1357,6 +1948,7 @@ class Aria:
         self._shutting_down = True
         print("\nShutting down...")
         try:
+            self._stop_app_bridge()
             self.memory.end_session(self.session_id, self.session_msgs)
             self.reminders.stop()
             if getattr(self, "telegram", None):
@@ -1379,7 +1971,7 @@ class Aria:
     def _briefing_extras(self) -> str:
         """Weather, new email and today's school for the morning briefing."""
         parts = [self.weather.brief()]
-        for source in (getattr(self, "mail", None), getattr(self, "untis", None)):
+        for source in (getattr(self, "mail", None), getattr(self, "untis", None), getattr(self, "test_prep", None)):
             if source:
                 try:
                     parts.append(source.briefing_line())
@@ -1390,15 +1982,6 @@ class Aria:
     def _greeting_prompt(self) -> str:
         """Normal short greeting — plus the daily briefing the first time Aria greets Lala each day."""
         prompt = self.context.greeting_prompt(known_user=self._vision_user)
-        due = self.followups.due()
-        if due:
-            # "how did the exam go?" fits a hello perfectly
-            self.followups.asked(due)
-            self._session_hint = (f"You asked Lala how {due['about']} went. React like a friend who cares: happy for "
-                                  f"them, or sympathetic if it went badly. No advice unless asked.")
-            prompt += (f"\nEarlier Lala told you about {due['about']}, which should be over now. After the greeting, "
-                       f"ask how it went, naturally (like: \"{due['question']}\").")
-            return prompt
         today = time.strftime("%Y-%m-%d")
         if not self.notion or not self._owner_check() or _read_marker(BRIEFING_MARKER) == today:
             return prompt
@@ -1416,41 +1999,17 @@ class Aria:
             self.notion.show_agenda_card(d, d + datetime.timedelta(days=6), "Next 7 days")
         except Exception as e:
             print(f"[MyNotion] agenda card failed: {e}")
-        self._session_hint = ("At the start of this conversation you asked what Lala wants to get done today. "
-                              "If they name things, add them in one add_to_list call to the 'to-do' list, then "
-                              "confirm briefly. If they say nothing in particular, just move on.")
         return (prompt + "\nThis is the first time today, so after the greeting give a short spoken briefing "
-                "from these facts (2-4 natural sentences, no lists, skip anything empty, times as spoken words), "
-                "then end by asking if there's anything they want to get done today:\n"
+                "from these facts (2-4 natural sentences, no lists, skip anything empty, times as spoken words):\n"
                 f"{facts}")
-
-    def _open_initiative(self, init: dict):
-        """Aria starts the conversation: an event check-in, the weekly review, or a casual chat."""
-        self.ui.set_state("thinking")
-        system_prompt = self.context.build_system_prompt(self._base_prompt())
-        opening = tidy_reply(self.llm.chat(init["prompt"], [], system_prompt, temperature=0.9)).strip().strip('"')
-        if not opening:
-            return
-        self._initiative_active = dict(init, answered=False)
-        self._session_hint = init.get("hint")
-        if init["kind"] == "review":
-            self._review = {"items": init["items"], "i": 0, "coming": init.get("coming", "")}
-        if init["kind"] == "chat":
-            self.initiative.remember_opener(opening)
-        print(f"Aria (starting a conversation): {opening}")
-        self.memory.save_message("assistant", opening)
-        self._session_convo.append({"role": "assistant", "content": opening})
-        self._recent.append([{"role": "assistant", "content": opening}])
-        self.speak(opening)
 
     def _not_for_me(self, text: str, since_s: float, asked: bool) -> str | None:
         """Voice mode: why what was heard isn't for Aria (someone else talking, a video), or None. See Addressee.py."""
         if wants_sleep(text):
             return None                    # "go to sleep" always counts, whenever it's said
-        expecting = bool(self.confirm.pending or self._review or getattr(self, "_unsure_heard", None)
+        expecting = bool(self.confirm.pending or getattr(self, "_unsure_heard", None)
                          or getattr(getattr(self, "quiz", None), "active", None)
-                         or self._dictating()
-                         or (self._initiative_active and not self._initiative_active.get("answered")))
+                         or self._dictating())
         v = self.vision
         face_age = None
         if getattr(v, "_running", False) and getattr(v, "_camera_index", None) is not None:
@@ -1513,7 +2072,8 @@ class Aria:
 
     def _wait_for_wake(self) -> bool:
         """Blocks until Aria should wake up. Returns True if she should."""
-        self.ui.set_state("sleeping")
+        if not getattr(getattr(self, "companion", None), "on", False):
+            self.ui.set_state("sleeping")       # (the companion, when she stays, is already showing)
         if self.option == 2:
             heard = self.wake.listen_for_wake_word(stop_event=self._wake_event)
             # the camera keeps running while she's awake, like in typing mode: posture, "who's there",
@@ -1530,6 +2090,7 @@ class Aria:
     def run(self, option=None):
         if option is not None:
             self.option = option
+        self.ui.set_mic_open(self._uses_mic())      # --voice: open from the start
         while True:
             self.vision.start()  # no-op if already running
             self._wake_event.clear()
@@ -1537,22 +2098,17 @@ class Aria:
             if not self._wait_for_wake():
                 continue
             self.awake = True
-            init, self._initiative_pending = self._initiative_pending, None
 
             if self.arduino:
                 self.arduino.startup_animation()
 
             timeout = SLEEP_TIMEOUT
-            if self.announcements.empty() and self.text_inputs.empty():
+            if self.announcements.empty() and self.text_inputs.empty() and not self._ears:
                 # only greet when nothing is waiting — a reminder or a typed question goes first,
                 # and generating a greeting nobody hears would just delay the answer
-                if init:
-                    self._open_initiative(init)
-                    timeout = INITIATIVE_TIMEOUT
-                else:
-                    opening = tidy_reply(self.llm.chat(self._greeting_prompt(), [], self._base_prompt())) or "Hey!"
-                    print(f"Aria: {opening}")
-                    self.speak(opening)
+                opening = tidy_reply(self.llm.chat(self._greeting_prompt(), [], self._base_prompt())) or "Hey!"
+                print(f"Aria: {opening}")
+                self.speak(opening)
 
             last_interaction = time.time()
             pending_input = None
@@ -1562,19 +2118,26 @@ class Aria:
             # ── Conversation loop ──────────────────────────────────────
             while True:
                 if self._sleep_request.is_set():
-                    self._go_to_sleep()
+                    self._go_to_sleep(by_user=True)
                     break
 
                 if self._speak_announcements():
                     last_interaction = time.time()
+                follow_up = self._say_follow_up()
+                if follow_up:
+                    last_interaction = time.time()
+                    if follow_up.endswith("?"):
+                        timeout = CHAT_TIMEOUT
 
+                if self._typing_now():
+                    last_interaction = time.time()
                 remaining = timeout - (time.time() - last_interaction)
                 if remaining <= 0:
                     print("\n[Wake] Going back to sleep.")
-                    if not said_anything and init is None and self.option == 2:
+                    if not said_anything and self.option == 2:
                         Diagnostics.problem("woke_for_nothing")
                     # say it in voice mode; in text mode the orb dimming is enough
-                    self._go_to_sleep("Going to sleep." if self.option == 2 else None)
+                    self._go_to_sleep("Going to sleep." if self._uses_mic() else None, talked=said_anything)
                     break
 
                 # ── Get input ──
@@ -1583,7 +2146,7 @@ class Aria:
                     user_input, pending_input = pending_input, None
                 elif not self.text_inputs.empty():
                     user_input = fix_typos(self.text_inputs.get())     # typed: 'ope n notes' -> 'open notes'
-                elif self.option == 1:
+                elif not self._uses_mic():
                     if not prompted and HAS_TERMINAL:
                         print("You > ", end="", flush=True)
                         prompted = True
@@ -1623,24 +2186,18 @@ class Aria:
                     Diagnostics.problem("corrected", f"{user_input}  (after: {self._last_reply[:100]})")
                 timeout = SLEEP_TIMEOUT
 
-                if self._initiative_active and not self._initiative_active.get("answered"):
-                    self._initiative_active["answered"] = True
-                    if NOT_NOW_RE.match(user_input):
-                        self.initiative.finished(self._initiative_active["kind"], True, snoozed=True)
-                        self._initiative_active = None
-                        self._go_to_sleep("Sure, later.")
-                        break
-                    if self._initiative_active["kind"] in ("chat", "break") and CHAT_BRUSH_OFF_RE.match(user_input):
-                        self._initiative_active["answered"] = False   # counts like ignored: wait longer next time
-                        self._go_to_sleep(random.choice(CHAT_LET_GO))
-                        break
-
                 # while dictating, "that's all" / "sleep" / "exit" are words to write down or the end of the
                 # dictation; only a clear "go to sleep" / "goodbye" ends the conversation
                 dictating = self._dictating()
                 if (matches_phrase(["go to sleep", "goodbye"], user_input) if dictating else wants_sleep(user_input)):
-                    self._go_to_sleep("Alright, going to sleep.")
+                    self._go_to_sleep("Alright, going to sleep.", by_user=True)
                     break
+
+                if not dictating and Duet.wanted(user_input):
+                    self._duet(user_input)
+                    last_interaction = time.time()
+                    timeout = CHAT_TIMEOUT
+                    continue
 
                 if not dictating and matches_phrase(SHUTDOWN_PHRASES, user_input):
                     self.speak("Shutting down.")
@@ -1653,6 +2210,8 @@ class Aria:
                 try:
                     response, used, interrupted = self._turn_and_speak(user_input)
                     last_interaction = time.time()
+                    if not interrupted:
+                        self._maybe_follow_up(user_input, response, used)
                     # she asked something: give Lala time to answer before dozing off
                     timeout = CHAT_TIMEOUT if response.rstrip().endswith("?") else SLEEP_TIMEOUT
                     if self._dictating():
@@ -1671,28 +2230,43 @@ class Aria:
 
                 if any(name in MUSIC_TOOLS for name, _ in used):
                     # Music keeps playing, so end the session after one command
-                    self._go_to_sleep()
+                    self._go_to_sleep(talked=True)
                     break
+
+
+def already_running(hidden: bool, send=None) -> bool:
+    """Is an Aria running already? A normal start then opens her text box ("show"); a hidden start (MyNotion's
+    Start) only checks ("ping"), so the orb doesn't pop up."""
+    if send is None:
+        from ui import instance
+        send = instance.send
+    return send("ping" if hidden else "show")
+
+
+def _no_ui_command(aria, cmd):
+    """A command for a terminal-only Aria: only quit means anything."""
+    if cmd == "quit":
+        aria.shutdown()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Aria desk assistant")
     parser.add_argument("--voice", action="store_true", help="wake word + speech input instead of keyboard")
     parser.add_argument("--no-ui", action="store_true", help="terminal only, no floating overlay")
+    parser.add_argument("--hidden", action="store_true", help="start without showing the orb (MyNotion's Start)")
     # ARIA_ARGS in Engines/.env applies however she's started (aria.sh, autostart, PyCharm)
     args = parser.parse_args(sys.argv[1:] + os.getenv("ARIA_ARGS", "").split())
     option = 2 if args.voice else 1
 
     from ui import instance
-    if instance.send("show"):
-        print("Aria is already running — opened her text box instead.")
+    if already_running(args.hidden):
+        print("Aria is already running." if args.hidden else "Aria is already running — opened her text box instead.")
         sys.exit(0)
 
     if args.no_ui:
         aria = Aria(option=option)
-        instance.listen(lambda cmd: aria.shutdown() if cmd == "quit" else
-                        aria.initiative.force(cmd) if cmd in ("chat", "review", "event", "followup", "break") else None)
+        instance.listen(lambda cmd: _no_ui_command(aria, cmd))
         aria.run()
     else:
         from ui.overlay import run_with_overlay
-        run_with_overlay(lambda bridge: Aria(option=option, ui=bridge))
+        run_with_overlay(lambda bridge: Aria(option=option, ui=bridge), visible=not args.hidden)

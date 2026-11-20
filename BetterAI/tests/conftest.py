@@ -21,6 +21,18 @@ from pathlib import Path
 # must happen before any Aria module computes its cache paths
 _CACHE = tempfile.mkdtemp(prefix="aria-test-cache-")
 os.environ["XDG_CACHE_HOME"] = _CACHE
+os.environ["XDG_CONFIG_HOME"] = _CACHE + "/config"
+
+# sounddevice initializes PortAudio at import time, which can hang on a headless host.
+# Fast tests use FakeStream; accidental hardware access should fail explicitly.
+def _no_audio_device(*args, **kwargs):
+    raise AssertionError("Tests must stub audio device access")
+
+
+_sounddevice = types.ModuleType("sounddevice")
+_sounddevice.InputStream = _no_audio_device
+_sounddevice.query_devices = _no_audio_device
+sys.modules["sounddevice"] = _sounddevice
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -160,9 +172,6 @@ def aria(notion):
     a.session_msgs = 0
     a._pending_state = None
     a._last_reply = ""
-    a._session_hint = None
-    a._review = None
-    a._initiative_active = None
     a.last_talked = 0
     a.awake = False
     a.screen = types.SimpleNamespace(read_clipboard=lambda: "", copy_to_clipboard=lambda t: "Copied.")

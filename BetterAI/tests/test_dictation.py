@@ -110,7 +110,6 @@ def test_handle_turn_writes_into_todays_note(aria, notion):
 def test_falling_asleep_saves_what_was_dictated(aria, notion):
     aria.tools = types.SimpleNamespace(schemas=[], execute=lambda name, args: getattr(notion, name)(**args))
     aria.dictation = Dictation(aria._save_dictation, confirm=aria.confirm, cleanup=lambda p: p)
-    aria._initiative_active = None
     aria._sleep_request = __import__("threading").Event()
     aria._remember_session = lambda *a, **k: None
     aria.handle_turn("dictate into my ideas note", check_state=False)

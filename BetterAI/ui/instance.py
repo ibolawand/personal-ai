@@ -2,14 +2,14 @@
 Single-instance control.
 
 The first Aria listens on a Unix socket. Launching Aria again (menu, autostart,
-or the Ctrl+Alt+Space hotkey running `aria.sh --toggle`) doesn't start a second copy,
+or the Super+Space hotkey running `aria.sh --toggle`) doesn't start a second copy,
 which would fight over the camera and mic. It sends a command to the running one instead:
 
     toggle  show/hide the text box (the hotkey)
     show    open the text box
     quit    shut Aria down
     capture open the quick capture box (Ctrl+Alt+N)
-    chat / review / event / followup / break   start that kind of conversation right now (to try it out)
+    ping    nothing; only checks that Aria is running (MyNotion's Start: she starts without the orb)
 """
 
 import os
@@ -17,7 +17,7 @@ import socket
 import threading
 
 SOCKET_PATH = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", f"aria-{os.getuid()}.sock")
-COMMANDS = ("toggle", "show", "quit", "capture", "chat", "review", "event", "followup", "break")
+COMMANDS = ("toggle", "show", "quit", "capture", "ping")
 
 
 def send(command: str) -> bool:

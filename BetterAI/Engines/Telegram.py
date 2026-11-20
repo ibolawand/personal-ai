@@ -24,7 +24,7 @@ SORRY = "Something went wrong on my side. Try again in a moment."
 PHONE_TOOLS = {
     # notes, lists, calendar
     "add_note", "add_to_list", "add_todo", "read_note", "search_notes", "list_notes", "remove_from_list", "check_off",
-    "clear_list", "save_as_note", "restore_note", "set_due", "get_due",
+    "clear_list", "save_as_note", "restore_note", "set_due", "get_due", "check_solution",
     "get_events", "add_event", "move_event", "delete_event", "daily_briefing",
     # reminders
     "set_reminder", "list_reminders", "cancel_reminder", "snooze_reminder",

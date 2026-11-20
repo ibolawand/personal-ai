@@ -1,4 +1,4 @@
-"""How Aria talks: filters, rewrites of repeated/stock replies, the weekly review, conversation starters."""
+"""How Aria talks: filters, rewrites of repeated/stock replies, quiet hours."""
 
 import datetime as dt
 import time
@@ -25,9 +25,7 @@ def test_sleep_phrases_need_the_whole_message(text, match):
 
 
 def test_regexes():
-    assert main.CHAT_BRUSH_OFF_RE.match("eh fine") and not main.CHAT_BRUSH_OFF_RE.match("yeah i made carbonara")
     assert main.CONFUSED_RE.match("what?") and main.CONFUSED_RE.match("huh") and not main.CONFUSED_RE.match("what time is it")
-    assert main.NOT_NOW_RE.match("not now") and main.NOT_NOW_RE.match("I'm busy") and not main.NOT_NOW_RE.match("notes")
 
 
 def stream(text, previous=()):
@@ -128,7 +126,7 @@ def test_repeat_after_a_tool_call_is_fine(aria):
     aria._recent.append([{"role": "user", "content": "volume up"},
                          {"role": "assistant", "content": "Volume is at 60%."}])
     aria.llm.replies = [("Volume is at 60%.", [("change_laptop_volume", "Volume is at 60%.")])]
-    reply, _ = aria.handle_turn("a bit louder", check_state=False)
+    reply, _ = aria.handle_turn("turn it up a bit", check_state=False)
     assert reply == "Volume is at 60%." and aria.llm.chats == []
 
 
@@ -154,114 +152,11 @@ def test_confirmation_is_decided_in_code(aria):
     assert reply == "Deleted." and done == [1] and aria.llm.prompts == []
 
 
-# ── weekly review ──
-
-def test_weekly_review_answers_are_handled_in_code(aria, notion):
-    notion.add_to_list("to-do", "pay rent, call the landlord, book train tickets, water the plants")
-    items = notion.open_todo_items()
-    aria._review = {"items": items, "i": 0, "coming": ""}
-    r1, _ = aria.handle_turn("done", check_state=False)
-    r2, _ = aria.handle_turn("drop that one", check_state=False)
-    r3, _ = aria.handle_turn("remind me about it on monday at 10", check_state=False)
-    r4, _ = aria.handle_turn("keep it", check_state=False)
-    assert r1.startswith("Ticked off pay rent.") and r2.startswith("Dropped call the landlord.")
-    assert aria.reminders.calls == [("book train tickets", {"at_time": "10", "day": "monday"})]
-    assert r4.startswith("Keeping it. That's all of them.") and aria._review is None
-    left = [t for _, t in notion.open_todo_items()]
-    assert left == ["book train tickets", "water the plants"]
-    assert aria.llm.prompts == []        # the model was never asked
-
-
-def test_weekly_review_can_be_stopped(aria, notion):
-    notion.add_to_list("to-do", "a thing")
-    aria._review = {"items": notion.open_todo_items(), "i": 0, "coming": ""}
-    reply, _ = aria.handle_turn("let's stop", check_state=False)
-    assert reply == "Okay, we'll leave the rest for now." and aria._review is None
-
-
-# ── conversation starters ──
-
-@pytest.fixture
-def initiative(aria, monkeypatch, tmp_path):
-    import Engines.Initiative as I
-    monkeypatch.setattr(I, "STATE_FILE", str(tmp_path / "initiative.json"))
-    for name in ("screen_locked", "fullscreen_app", "mic_in_use_by_others"):
-        monkeypatch.setattr(I, name, lambda: False)
-    aria.vision = types.SimpleNamespace(_camera_index=0, _running=True, is_present=True)
-    aria.focus = types.SimpleNamespace(active=False)
-    aria._shutting_down = False
-    aria.activity = None
-    aria.followups = None
-    monkeypatch.setattr(I, "in_quiet_hours", lambda now=None: False)
-    ini = I.Initiative(aria)
-    ini._present_since = time.time() - 3600
-    aria.initiative = ini
-    return ini
-
-
 def test_quiet_hours_wrap_midnight():
-    import Engines.Initiative as I
-    assert I.in_quiet_hours(dt.datetime(2026, 1, 1, 23, 0))
-    assert I.in_quiet_hours(dt.datetime(2026, 1, 1, 7, 0))
-    assert not I.in_quiet_hours(dt.datetime(2026, 1, 1, 12, 0))
-
-
-def test_initiative_blocking_rules(initiative, aria):
-    now = time.time()
-    assert initiative._blocked(now, True) == ""
-    assert initiative._blocked(now, False) == "nobody here"
-    aria.muted = True
-    assert initiative._blocked(now, True) == "muted"
-    aria.muted = False
-    aria.focus.active = True
-    assert initiative._blocked(now, True) == "focus session"
-    aria.focus.active = False
-    aria.last_talked = now
-    assert initiative._blocked(now, True) == "talked recently"
-    aria.last_talked = 0
-    initiative._present_since = now
-    assert initiative._blocked(now, True) == "just arrived"
-
-
-def test_watching_something_blocks(initiative, aria):
-    initiative._present_since = time.time() - 3600
-    aria.activity = types.SimpleNamespace(watching=lambda: True)
-    assert initiative._blocked(time.time(), True) == "watching something"
-
-
-def test_ignored_chats_back_off(initiative):
-    initiative.finished("chat", answered=False)
-    initiative.finished("chat", answered=False)
-    assert initiative.state["ignored"] == 2
-    initiative.finished("chat", answered=True)
-    assert initiative.state["ignored"] == 0
-    initiative.finished("chat", answered=True, snoozed=True)
-    assert initiative.state["snooze_until"] > time.time() + 2 * 3600
-
-
-def test_break_nudge_after_a_long_stretch(initiative, aria):
-    act = types.SimpleNamespace(stretch_minutes=lambda: 100, stretch_main_app=lambda: "PyCharm")
-    aria.activity = act
-    op = initiative._break_nudge()
-    assert op["kind"] == "break" and "1 hour 40 minutes" in op["prompt"] and "PyCharm" in op["prompt"]
-    assert initiative._break_nudge() is None          # not again right away
-
-
-def test_chat_topics_vary(initiative, aria):
-    aria.memory = types.SimpleNamespace(get_memories=lambda n=30: ["Plays guitar", "Studies C#", "Likes pasta"])
-    kinds = []
-    for _ in range(12):
-        initiative._chat_prompt([])
-        kinds.append(initiative.state["last_topic"])
-    assert all(a != b or a == "fact" for a, b in zip(kinds, kinds[1:]))       # never the same kind twice in a row
-    # no fact twice before all three were used (the list keeps the last 8, so look at a fresh run)
-    initiative.state = {}
-    for _ in range(60):
-        initiative._chat_prompt([])
-        if len(initiative.state.get("recent_facts", [])) >= 3:
-            break
-    used = initiative.state["recent_facts"]
-    assert len(set(used)) == 3
+    import Engines.Desk as D
+    assert D.in_quiet_hours(dt.datetime(2026, 1, 1, 23, 0))
+    assert D.in_quiet_hours(dt.datetime(2026, 1, 1, 7, 0))
+    assert not D.in_quiet_hours(dt.datetime(2026, 1, 1, 12, 0))
 
 
 # ── voice input she isn't sure about ──
@@ -296,16 +191,7 @@ def test_whisper_hallucinations_are_recognised():
         assert not HALLUCINATIONS.match(t), t
 
 
-# ── voice tone per sentence ──
-
-@pytest.mark.parametrize("sentence,tone", [
-    ("Aw, I'm sorry to hear that.", "soft"), ("That sounds rough.", "soft"), ("Take your time.", "soft"),
-    ("Haha, you caught me!", "playful"), ("Wow, rude.", "playful"), ("Done, milk's on the list!", "playful"),
-    ("The meeting is at three.", "neutral"), ("What's on your mind?", "neutral"),
-])
-def test_sentence_tone(sentence, tone):
-    from Engines.voice_engine import sentence_tone
-    assert sentence_tone(sentence) == tone
+# voice tone per sentence: tests/test_voice_style.py
 
 
 def test_due_reminder_shows_a_card_and_snooze_works(aria, memory):
@@ -363,22 +249,13 @@ def test_capture_ideas_and_links_go_to_the_inbox_directly(aria):
     assert "water my plants" in inbox and "example.com/recipe" in inbox and aria.llm.prompts == []
 
 
-def test_weekly_review_ends_with_a_recap(aria, notion, memory):
-    import Engines.FocusMode as F
-    aria.focus = F.FocusMode(types.SimpleNamespace(pending=lambda kinds=None: []), memory=memory)
-    memory.log_focus(50, "c#")
-    memory.log_focus(30, "databases")
-    notion.add_to_list("to-do", "one thing")
-    aria._review = {"items": notion.open_todo_items(), "i": 0, "coming": "tomorrow 15:00 Dentist"}
-    reply, _ = aria.handle_turn("done", check_state=False)
-    assert reply == ("Ticked off one thing. That's all of them. This week you put in 1 h 20 min of focus in 2 blocks, "
-                     "mostly c# (50 min), databases (30 min) — nice. Coming up: tomorrow 15:00 Dentist.")
-
-
 @pytest.mark.parametrize("text,spoken", [
     ("I study C# and SQL.", "I study C sharp and SQL."), ("It's in MyNotion.", "It's in My Notion."),
     ("Open VS Code.", "Open V S Code."), ("It's 3°C, 42 km away.", "It's 3 degrees Celsius, 42 kilometers away."),
     ("e.g. eggs", "for example eggs"), ("That's 12,50 €.", "That's 12,50 euros."), ("1 h 20 min", "1 hour 20 minutes"), ("2 h", "2 hours"),
+    ("school's done! Maths test Thursday, btw", "school's done! Maths test Thursday, by the way"),
+    ("BTW idk, tbh.", "by the way I don't know, to be honest."), ("coffee w/ milk, w/o sugar", "coffee with milk, without sugar"),
+    ("the subtweet and burn stay", "the subtweet and burn stay"),
 ])
 def test_pronunciation(text, spoken):
     from Engines.voice_engine import normalize_for_tts
@@ -504,3 +381,131 @@ def test_unplugged_led_strip_is_not_offered(aria):
     assert "desk LEDs" not in aria._base_prompt()
     aria.arduino.is_connected = True
     assert aria._base_prompt() == main.BASE_PROMPT
+
+
+# ── small talk like a person: short, plain, no theatre ──
+# From the real log (2026-11-15): replies of 15 lines, one fragment per line, each ending "(Also — it's 4:03. Your
+# timer's still running. You're still here. And I'm still… just here.)". Lala: "your answers feel like a robot".
+
+POEM = ("Ohhh, 4 PM?  \n\nThat's the *perfect* time for a break.  \n\nYou've been studying a while.  \n\n"
+        "Your brain's running on fumes.  \n\nGo stretch.  \n\n"
+        "(Also — it's 4:03. Your timer's still running. You're still here. And I'm still… just here. With you.)")
+
+
+def test_small_talk_is_cut_to_a_short_plain_paragraph():
+    said = main.humanize(POEM, "it is 4pm here")
+    assert said == "That's the perfect time for a break. You've been studying a while. Your brain's running on fumes."
+
+
+@pytest.mark.parametrize("line", [
+    "And I'm still… just here.", "I'm right here with you.", "You're still here.", "Just you and me and the quiet.",
+    "Your screen's still on.", "The music's still playing.", "You haven't moved much.",
+    "I've been listening to your music in the background.", "I want you to feel seen.", "And that… matters.",
+    "I'm just glowing on your desk.", "You're not nothing."])
+def test_theatre_lines_are_dropped_from_small_talk(line):
+    assert main.humanize(f"Fair enough. {line} What are you studying?", "idk") == "Fair enough. What are you studying?"
+
+
+def test_the_clock_stays_when_lala_asks_for_it():
+    assert main.humanize("It's 4:03 already. Nearly done.", "omg please") == "Nearly done."
+    assert main.humanize("It's 4:03 already. Nearly done.", "what time is it") == "It's 4:03 already. Nearly done."
+    assert main.humanize("I'm right here.", "are you there") == "I'm right here."      # all she said: kept
+
+
+def test_her_own_words_are_not_echoed_back():
+    assert main.humanize("Ohhh — annoying? Ha, what did I do?", "never thought an ai can be annoying") == \
+        "Ha, what did I do?"
+    assert main.humanize("Wait, you play piano? What kind of stuff?", "i make music") == \
+        "Wait, you play piano? What kind of stuff?"
+
+
+def test_the_voice_says_what_the_bubble_shows():
+    out = []
+    s = SentenceStreamer(out.append, chat_about="it is 4pm here")
+    for i in range(0, len(POEM), 7):
+        s.feed(POEM[i:i + 7])
+    s.flush()
+    assert out == ["That's the perfect time for a break.", "You've been studying a while.",
+                   "Your brain's running on fumes."]
+
+
+def test_a_chat_reply_is_humanized_and_a_long_answer_is_not(aria):
+    aria.llm.replies = [(POEM, []), ("One. Two. Three. Four. Five.", [])]
+    reply, _ = aria.handle_turn("it is 4pm here", check_state=False)
+    assert reply.count(".") == 3 and "*" not in reply and "\n" not in reply and "still" not in reply
+    reply, _ = aria.handle_turn("explain how a transformer works", check_state=False)
+    assert reply == "One. Two. Three. Four. Five."
+
+
+def test_the_clock_is_not_repeated_on_every_chat_turn(aria):
+    aria.context.moment = lambda: "It is evening on Saturday, 19:42."
+    aria.handle_turn("hey", check_state=False)
+    assert "19:42" in aria.llm.prompts[-1]                    # a conversation starts with it
+    aria.handle_turn("idk just thinking", check_state=False)
+    assert "19:42" not in aria.llm.prompts[-1]                # chatting: she recited it otherwise
+    aria.handle_turn("what time is it", check_state=False)
+    assert "19:42" in aria.llm.prompts[-1]
+
+
+def test_old_long_replies_come_back_short_after_a_restart(aria):
+    aria.memory.load_history = lambda limit=6: [{"role": "user", "content": "hi"}, {"role": "assistant", "content": POEM}]
+    assert aria._history()[1]["content"].count(".") <= 2 and aria._history()[0]["content"] == "hi"
+
+
+def test_plain_chat_runs_no_tools_but_keeps_the_start_of_the_prompt(aria):
+    """From real use: "don't wait" made her list every note, an insult made her read one. And with no tools at all in
+    chat, the next command made the model read every tool again (40-100 s): chat keeps the tools every message
+    gets, and a call she makes anyway is turned down and forgotten."""
+    import main
+    seen, ran = [], []
+
+    def chat(prompt, history, system, schemas, execute, **_):
+        seen.append([s["n"] for s in schemas])
+        result = execute("search_notes", {"query": "x"})
+        aria.llm.last_trace = [{"role": "assistant", "content": "", "tool_calls": [1]},
+                               {"role": "tool", "content": result}, {"role": "assistant", "content": "Same here."}]
+        return "Same here.", [("search_notes", result)]
+    aria.llm.chat_with_tools = chat
+    aria.tools.schemas_for = lambda text, recent=(): [{"n": "core"}] + ([{"n": "group"}] if text else [])
+    aria.tools.schemas = [{"n": "core"}, {"n": "group"}]
+    aria.tools.execute = lambda name, args: ran.append(name) or "3 notes."
+    reply, used = aria.handle_turn("nothing i am bored", check_state=False)
+    assert seen == [["core"]] and not ran and not used
+    assert aria.llm.last_trace == [{"role": "assistant", "content": "Same here."}]
+    aria.handle_turn("add milk to my list", check_state=False)
+    assert seen[-1] == ["core", "group"] and ran == ["search_notes"], "a command gets its tools and they run"
+
+
+def test_saying_cant_in_plain_chat_is_not_a_missing_tool(aria):
+    """Every "missing tool" retry in a week of real use was chat ("I can't get pregnant", "I can't wander"), and the
+    retry sends all ~110 tools: the slowest thing she does."""
+    seen = []
+
+    def chat(prompt, history, system, schemas, execute, **_):
+        seen.append(len(schemas))
+        return "I can't wander, I'm stuck on your laptop.", []
+    aria.llm.chat_with_tools = chat
+    aria.tools.schemas_for = lambda text, recent=(): [{"n": 1}]
+    aria.tools.schemas = [{"n": i} for i in range(20)]
+    reply, _ = aria.handle_turn("wander", check_state=False)
+    assert seen == [1] and "wander" in reply
+    aria.handle_turn("open the thing", check_state=False)          # a command: there the retry stays
+    assert seen == [1, 1, 20]
+
+
+
+def test_a_summary_is_not_a_reorganised_note(aria):
+    """Asked for "a short summary at the top of this note" the model called organize_note, which rearranges the
+    whole note. Which tool a summary needs is decided in code."""
+    ran = []
+    aria.tools.execute = lambda name, args: ran.append((name, args)) or "Done."
+
+    def chat(prompt, history, system, schemas, execute, **_):
+        return "Done.", [("organize_note", execute("organize_note", {"title": "Biology"}))]
+    aria.llm.chat_with_tools = chat
+    aria.handle_turn("put a short summary at the top of this note", check_state=False)
+    assert ran == [("edit_note", {"change": "summary", "title": "Biology"})]
+    ran.clear()
+    aria.handle_turn("tidy up my biology note", check_state=False)
+    aria.handle_turn("organise this note and put a summary on top", check_state=False)
+    assert [n for n, _ in ran] == ["organize_note", "organize_note"], "asked to organise, she organises"

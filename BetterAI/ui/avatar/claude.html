@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Claude</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/addons/" } }
+</script>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script>window.claudeStatus = ''; window.addEventListener('error', e => { window.claudeStatus ||= 'failed: ' + (e.message || 'script error'); });</script>
+<script type="module" src="./claude.js"></script>
+</body>
+</html>

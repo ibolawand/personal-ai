@@ -2,6 +2,7 @@
 "Are all your systems okay?" — a self-check of everything Aria depends on, with a fix for anything missing.
 Also printed to the log at startup. (The vision model was missing for weeks without anyone noticing.)
 """
+import os
 
 
 
@@ -47,10 +48,17 @@ class Health:
 
         def camera():
             v = a.vision
+            if os.environ.get("ARIA_CAMERA", "0") != "1":
+                return True, "switched off (ARIA_CAMERA=1 in Engines/.env turns it on)"
             if getattr(v, "_camera_index", None) is None:
                 return False, "no camera found (set CAMERA_INDEX if you have one)"
             return True, f"camera {v._camera_index}" + (", someone is here" if v.is_present else "")
         out.append(_check("Camera", camera))
+
+        avatar_status = getattr(getattr(a, "ui", None), "avatar_status", None)      # only the overlay has one
+        if avatar_status:
+            out.append(_check("Avatar", lambda: (avatar_status.startswith(("ready", "showing", "switched off")),
+                                                 avatar_status)))
 
         def microphone():
             import sounddevice as sd

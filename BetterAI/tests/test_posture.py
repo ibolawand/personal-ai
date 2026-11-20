@@ -73,7 +73,7 @@ def test_daily_limit_and_off_switch(posture, monkeypatch):
 
 
 def test_camera_samples_reach_posture_and_nudges_respect_the_rules(aria, monkeypatch):
-    import Engines.Initiative as I
+    import Engines.Desk as D
     said = []
     aria.posture = fake = P.Posture.__new__(P.Posture)
     fake.nudge = lambda now: "Sit up a bit?"
@@ -81,14 +81,13 @@ def test_camera_samples_reach_posture_and_nudges_respect_the_rules(aria, monkeyp
     aria.awake, aria.muted, aria._shutting_down = False, False, False
     aria.activity = None
     for name in ("in_quiet_hours", "screen_locked", "fullscreen_app", "mic_in_use_by_others"):
-        monkeypatch.setattr(I, name, lambda: False)
-    init = I.Initiative.__new__(I.Initiative)
-    init.aria, init.enabled = aria, True
-    init._posture(0, present=True)
+        monkeypatch.setattr(D, name, lambda: False)
+    nudges = D.PostureNudges(aria)
+    nudges.tick(0, present=True)
     assert said == ["Sit up a bit?"]
     aria.muted = True
-    init._posture(0, present=True)
-    monkeypatch.setattr(I, "in_quiet_hours", lambda: True)
+    nudges.tick(0, present=True)
+    monkeypatch.setattr(D, "in_quiet_hours", lambda: True)
     aria.muted = False
-    init._posture(0, present=True)
+    nudges.tick(0, present=True)
     assert said == ["Sit up a bit?"]

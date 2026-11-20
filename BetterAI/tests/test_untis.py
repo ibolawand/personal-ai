@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+import main  # noqa: F401  (imported at collection, before the subprocess guard is in place)
 from Engines import Untis as U
 
 MON = dt.date(2026, 11, 9)
@@ -193,3 +194,86 @@ def test_the_morning_briefing_includes_school(aria):
     assert aria._briefing_extras() == "Rain later. 1 new email: from Sara. School today 8:00 to 13:00."
     aria.untis = None
     assert aria._briefing_extras() == "Rain later. 1 new email: from Sara."
+
+
+def test_the_morning_briefing_offers_a_quiz(aria):
+    import types
+    aria.weather = types.SimpleNamespace(brief=lambda: "")
+    class P:
+        def briefing_line(self): return "I can quiz you on your Databases notes."
+    aria.test_prep = P()
+    assert "I can quiz you on your Databases notes." in aria._briefing_extras()
+
+    def broken(): raise RuntimeError("x")
+    aria.test_prep.briefing_line = broken
+    aria._briefing_extras()                       # never raises
+
+
+def exam(date, su, start=800, text="", kind="Test"):
+    return {"examType": kind, "name": "", "examDate": date, "startTime": start, "endTime": start + 50,
+            "subject": su, "text": text}
+
+
+def test_upcoming_tests_are_plain_records_nearest_first(make):
+    u = make(FakeUntis(exams=[exam(20261116, "E"), exam(20261112, "DBI", text=" Normalformen "),
+                              exam(20261117, "AM")]))          # 17th is 8 days away
+    assert u.upcoming_tests() == [
+        {"id": "20261112-DBI-0800", "subject": "DBI", "kind": "Test", "date": dt.date(2026, 11, 12), "topic": "Normalformen"},
+        {"id": "20261116-E-0800", "subject": "E", "kind": "Test", "date": dt.date(2026, 11, 16), "topic": ""}]
+    assert [t["subject"] for t in u.upcoming_tests(days=10)] == ["DBI", "E", "AM"]
+
+
+def test_two_tests_of_one_subject_get_their_own_ids(make):
+    u = make(FakeUntis(exams=[exam(20261112, "DBI", 800), exam(20261112, "DBI", 1000)]))
+    assert [t["id"] for t in u.upcoming_tests()] == ["20261112-DBI-0800", "20261112-DBI-1000"]
+
+
+def test_a_test_without_a_subject_is_left_out_and_today_counts(make):
+    u = make(FakeUntis(exams=[exam(20261109, ""), exam(20261109, "E", kind="")]))
+    assert [(t["subject"], t["kind"]) for t in u.upcoming_tests()] == [("E", "Test")]
+
+
+def test_upcoming_tests_without_a_login(make, monkeypatch):
+    u = make(FakeUntis(exams=[exam(20261112, "DBI")]))   # make() saves a login, so drop it afterwards
+    monkeypatch.setattr(U, "load_login", lambda: None)
+    assert u.upcoming_tests() == []
+
+
+def test_school_span_is_first_to_last_real_lesson(make):
+    """For Aria's companion: school is over after the last lesson that still takes place."""
+    fake = FakeUntis([lesson(755, 845, "AM"), lesson(1235, 1325, "E"), lesson(1330, 1415, "D", code="cancelled")])
+    assert make(fake).school_span(MON) == (755, 1325)
+    assert make(FakeUntis()).school_span(MON) is None
+
+
+def test_a_login_page_instead_of_json_means_log_in_again_once(monkeypatch):
+    """Hours into a run the session runs out and the exams page answers with HTML: that was 20 errors a night."""
+    class Reply:
+        def __init__(self, data=None):
+            self.data, self.status_code = data, 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            if self.data is None:
+                raise json.JSONDecodeError("Expecting value", "<html>", 0)
+            return self.data
+
+    class Http:
+        def __init__(self, replies):
+            self.replies, self.sids = list(replies), []
+
+        def get(self, url, params=None, cookies=None, timeout=None):
+            self.sids.append(cookies["JSESSIONID"])
+            return self.replies.pop(0)
+
+    logins = []
+    u = U.Untis(session=Http([Reply(), Reply({"data": {"exams": [1]}})]), server="x", school="s")
+    monkeypatch.setattr(u, "_login", lambda: (logins.append(1), setattr(u, "_sid", f"sid{len(logins)}")))
+    u._sid = "old"
+    assert u._rest("exams", {}) == {"exams": [1]}
+    assert u.http.sids == ["old", "sid1"] and logins == [1]
+    u.http.replies = [Reply(), Reply()]                    # still no JSON after logging in: give up, don't loop
+    with pytest.raises(ValueError):
+        u._rest("exams", {})

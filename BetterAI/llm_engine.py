@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import threading
 
 import ollama
@@ -7,11 +8,38 @@ from types import SimpleNamespace
 
 # ~56 tool definitions alone are ~3k tokens; Ollama's default window would silently truncate.
 # 8192 fits tools + history + a read file and stays within an 8 GB GPU next to the TTS model.
-NUM_CTX = int(os.environ.get("LLM_NUM_CTX", 8192))
-LLM_MODEL_DEFAULT = "qwen3:8b"
+NUM_CTX = int(os.environ.get("LLM_NUM_CTX", 12288))    # her largest request is ~10.8 k tokens (measured 2026-11-14)
+# Her brain (Engines/.env ARIA_MODEL; "qwen3:8b" is the old one). The 30 B mixture-of-experts model uses ~3 B
+# parameters per word, so it runs at the 8 B's speed almost fully on the 8 GB card, and it reasons much better
+# (docs/superpowers/specs/2026-11-14-aria-bigger-brain-design.md has the measurements).
+LLM_MODEL_DEFAULT = os.environ.get("ARIA_MODEL", "qwen3:30b-a3b-instruct-2507-q4_K_M")
 # A tool result starting with this is already the answer for Lala (e.g. the vision model describing the screen):
 # it's returned as is, skipping another round with the chat model (which would first have to reload).
 FINAL_PREFIX = "FINAL ANSWER: "
+# After a tool, a reply that only announces the next step ("Packet Tracer is installed! I'll open it for you now.")
+# means it isn't done: she gets one more round, told to do it. (The 30 B model checks first, then narrates.)
+ANNOUNCE_RE = re.compile(r"\b(?:i'?ll|i will|let me|i'?m going to)\s+(?:now\s+|go ahead and\s+|quickly\s+)?"
+                         r"(?:open|start|launch|draft|write|reply|send|check|tick|add|edit|organi[sz]e|tidy|fix|"
+                         r"translate|quiz|test|play|set|create|make|put|read|look|turn|move|change)\b", re.I)
+FOLLOW_THROUGH = "[Do it now with the right tool. Don't announce it, don't ask.]"
+# The 30 B model now and then writes a call as text instead of making it; it is carried out like a real one (and
+# never shown or spoken as JSON).
+LEAKED_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*(?:</tool_call>|$)", re.S)
+
+
+def _salvage_calls(msg):
+    """A message whose text holds "<tool_call>{json}" blocks: the calls made real, the text cut before them."""
+    text = msg.content or ""
+    if msg.tool_calls or "<tool_call>" not in text:
+        return msg
+    calls = []
+    for raw in LEAKED_CALL_RE.findall(text):
+        try:
+            d = json.loads(raw)
+            calls.append(SimpleNamespace(function=SimpleNamespace(name=d["name"], arguments=d.get("arguments") or {})))
+        except (ValueError, KeyError, TypeError):
+            continue
+    return SimpleNamespace(content=text.split("<tool_call>")[0].strip(), tool_calls=calls or None)
 # Every call to the chat model must use the same context size and keep-alive: a call with a different num_ctx makes
 # Ollama reload the model (~3 s), and one without keep_alive lets it unload after 5 idle minutes (~3 s cold start).
 # Measured: both happened on most turns (the mood check runs on every turn). The vision model still evicts it when
@@ -54,8 +82,8 @@ def vision_chat(model, messages):
 
 
 class LLMEngine:
-    def __init__(self, model="qwen3:8b", think=False):
-        self.model = model
+    def __init__(self, model=None, think=False):
+        self.model = model or LLM_MODEL_DEFAULT
         # qwen3 "thinking" adds seconds of latency per turn; off by default for a voice assistant
         self.think = think
         self.options = chat_options()
@@ -82,7 +110,7 @@ class LLMEngine:
         except Exception as e:
             return f"Error: {e}"
 
-    def chat_with_tools(self, user_input, history, system_prompt, tools, execute, max_rounds=3, on_text=None):
+    def chat_with_tools(self, user_input, history, system_prompt, tools, execute, max_rounds=5, on_text=None):
         """
         One conversation turn with native tool calling.
         tools:   list of Ollama tool schemas
@@ -98,10 +126,15 @@ class LLMEngine:
         used, trace = [], []
         self.last_trace = trace
         try:
+            pushed = False
             for _ in range(max_rounds):
-                msg = self._round(messages, tools, on_text)
+                msg = _salvage_calls(self._round(messages, tools, on_text))
                 if not msg.tool_calls:
                     reply = (msg.content or "").strip()
+                    if used and not pushed and ANNOUNCE_RE.search(reply) and "?" not in reply:   # a question: let her ask
+                        pushed = True               # once: "I'll open it now" after checking it exists
+                        messages += [{"role": "assistant", "content": reply}, {"role": "user", "content": FOLLOW_THROUGH}]
+                        continue
                     trace.append({"role": "assistant", "content": reply})
                     return reply, used
 
@@ -127,8 +160,11 @@ class LLMEngine:
                     short = result if len(result) <= 300 else result[:300] + " …[shortened]"
                     trace.append({"role": "tool", "tool_name": name, "content": short})
 
-            # Ran out of rounds — ask for a final answer without tools
-            reply = (self._round(messages, None, on_text).content or "").strip()
+            # Ran out of rounds — ask for a final answer without tools. (5 rounds: the 30 B model looks things up
+            # first.) A call it still writes as text is cut; with nothing left, the last tool's own words answer.
+            reply = (_salvage_calls(self._round(messages, None, on_text)).content or "").strip()
+            if not reply and used:
+                reply = used[-1][1]
             trace.append({"role": "assistant", "content": reply})
             return reply, used
         except Exception as e:
@@ -145,7 +181,8 @@ class LLMEngine:
             m = chunk.message
             if m.content:
                 content.append(m.content)
-                on_text(m.content)
+                if "<tool_call>" not in "".join(content):   # a call written as text: never spoken
+                    on_text(m.content)
             if m.tool_calls:
                 calls.extend(m.tool_calls)
         return SimpleNamespace(content="".join(content), tool_calls=calls or None)
@@ -175,11 +212,10 @@ Reply ONLY with JSON: {{"junk": [numbers of the facts that are not lasting facts
             print(f"[Memory] junk check failed: {e}")
             return []
 
-    def extract_facts(self, conversation: list, known=(), think=True) -> tuple[list, list, list]:
-        """After a conversation, pull out (facts, topics, followups) worth remembering about the user.
-        followups: [{"about", "when", "question"}] — upcoming things a friend would ask about afterwards."""
+    def extract_facts(self, conversation: list, known=(), think=True) -> tuple[list, list]:
+        """After a conversation, pull out (facts, topics) worth remembering about the user."""
         if not conversation:
-            return [], [], []
+            return [], []
         convo_text = "\n".join(f"{m['role']}: {m['content']}" for m in conversation)
         known_text = "\n".join(f"- {f}" for f in known) or "(nothing yet)"
         prompt = f"""From this conversation, extract NEW lasting facts about the user that will still be true and useful in a month:
@@ -192,8 +228,7 @@ Do NOT save:
 - what's in their calendar, notes, files or on the screen (Aria can look those up)
 - anything the assistant said or did, guesses, or anything unclear or possibly misheard
 - facts already known (below), even if worded differently
-- one-off upcoming or past events ("has an exam tomorrow", "had an interview yesterday") — upcoming ones go in
-  "followups" below, past ones are not saved
+- one-off upcoming or past events ("has an exam tomorrow", "had an interview yesterday")
 
 Already known:
 {known_text}
@@ -203,25 +238,15 @@ Conversation:
 
 Write each fact short, without "User", e.g. "Plays guitar", "Friend Sara likes climbing", "Prefers calm music to fall asleep".
 
-Separately, list UPCOMING things in the user's life they mentioned that a friend would ask about afterwards
-(an exam, a trip, a job interview, a doctor's appointment, a date, a visit, a game, a presentation). Only real plans
-the user said they have — not tasks they asked the assistant to do, and not things that already happened.
-For each: "about" (a few words, e.g. "the math exam"), "when" exactly as it relates to today ("today", "tonight",
-"tomorrow", "friday", "this weekend", "next week", "12.11.", or "soon" if unclear), and "question" (what a friend
-would ask afterwards, e.g. "How did the math exam go?").
-
-Reply ONLY with JSON: {{"facts": ["...", ...], "topics": ["one or two word topic", ...],
-"followups": [{{"about": "...", "when": "...", "question": "..."}}, ...]}}
-Most conversations have no new facts and no follow-ups: then use empty lists."""
+Reply ONLY with JSON: {{"facts": ["...", ...], "topics": ["one or two word topic", ...]}}
+Most conversations have no new facts: then use empty lists."""
         try:
             response = ollama.chat(model=self.model, think=think, format="json", options=chat_options(), keep_alive=KEEP_ALIVE,
                                    messages=[{"role": "user", "content": prompt}])
             data = json.loads(response["message"]["content"])
             facts = [f.strip() for f in data.get("facts", []) if isinstance(f, str) and f.strip()]
             topics = [t.strip().lower() for t in data.get("topics", []) if isinstance(t, str) and t.strip()]
-            followups = [f for f in data.get("followups", []) if isinstance(f, dict)
-                         and str(f.get("about", "")).strip() and str(f.get("question", "")).strip()]
-            return facts, topics, followups
+            return facts, topics
         except Exception as e:
             print(f"[Memory] Fact extraction failed: {e}")
-            return [], [], []
+            return [], []

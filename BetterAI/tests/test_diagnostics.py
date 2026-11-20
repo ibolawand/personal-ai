@@ -47,6 +47,15 @@ def test_empty_report(log):
     assert D.report(7).startswith("Aria, the last 7 days: 0 spoken replies, 0 problems.")
 
 
+def test_diagnostics_card_includes_service_fix_and_timings(aria, log, monkeypatch):
+    from Engines.Health import Health
+    monkeypatch.setattr(Health, "checks", lambda self: [("MyNotion", False, "set DB_PATH and restart")])
+    D.timing(first_audio=2)
+    card = D.card(aria)
+    assert card["type"] == "diagnostics"
+    assert "2.0 s typical" in card["text"] and "set DB_PATH and restart" in card["text"]
+
+
 @pytest.mark.parametrize("text,hit", [("no, I said turn it up", True), ("that's not what I said", True),
                                       ("you misheard me", True), ("no not that one", True), ("wrong", True),
                                       ("no thanks", False), ("I said hi to mum today", True),

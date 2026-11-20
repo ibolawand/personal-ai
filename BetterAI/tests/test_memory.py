@@ -5,7 +5,6 @@ import time
 
 import pytest
 
-from Engines.Followups import Followups, ask_time
 from Engines.MemoryNote import NOTE_TITLE, MemoryNote, parse, render
 
 
@@ -74,56 +73,6 @@ def test_forget_everything_asks_first(mn, memory):
     memory.save_memory("Plays guitar")
     assert mn.forget("everything").startswith("NEEDS CONFIRMATION")
     assert memory.get_memories() == ["Plays guitar"]
-
-
-# ── follow-ups ──
-
-NOW = dt.datetime(2026, 11, 5, 13, 0)      # a Thursday
-
-
-@pytest.mark.parametrize("when,expected", [
-    ("tomorrow", dt.datetime(2026, 11, 6, 17, 0)),
-    ("friday at 3 pm", dt.datetime(2026, 11, 6, 17, 0)),
-    ("today", dt.datetime(2026, 11, 5, 16, 0)),
-    ("this weekend", dt.datetime(2026, 11, 8, 17, 0)),
-    ("next week", dt.datetime(2026, 11, 12, 17, 0)),
-])
-def test_ask_time(when, expected):
-    assert dt.datetime.fromtimestamp(ask_time(when, NOW)) == expected
-
-
-def test_late_today_waits_for_the_morning():
-    late = dt.datetime(2026, 11, 5, 21, 30)
-    assert dt.datetime.fromtimestamp(ask_time("tonight", late)) == dt.datetime(2026, 11, 6, 9, 0)
-
-
-def test_unparseable_when_is_skipped():
-    assert ask_time("whenever", NOW) is None
-
-
-def test_followups_dedupe_and_due(memory, notion):
-    f = Followups(memory, notion)
-    item = {"about": "the math exam", "when": "tomorrow", "question": "How did the math exam go?"}
-    assert f.add_from_extraction([item]) == 1
-    assert f.add_from_extraction([dict(item, about="math exam")]) == 0     # same thing again
-    assert f.due() is None                                                 # not yet
-    fid = memory.pending_followups()[0]["id"]
-    conn = memory._connect()
-    conn.execute("UPDATE followups SET ask_after = ? WHERE id = ?", (time.time() - 1, fid))
-    conn.commit()
-    conn.close()
-    due = f.due()
-    assert due["question"] == "How did the math exam go?"
-    f.asked(due)
-    assert f.due() is None
-
-
-def test_followup_skipped_when_it_is_a_calendar_event(memory, notion):
-    tomorrow = dt.date.today() + dt.timedelta(days=1)
-    notion.add_event("Dentist appointment", tomorrow.isoformat(), "15:00")
-    f = Followups(memory, notion)
-    assert f.add_from_extraction([{"about": "dentist appointment", "when": "tomorrow",
-                                   "question": "How was the dentist?"}]) == 0
 
 
 def test_clean_up_asks_then_forgets_only_the_junk(mn, memory):

@@ -79,15 +79,6 @@ class AriaMemory:
                     minutes  INTEGER,
                     task     TEXT
                 );
-                CREATE TABLE IF NOT EXISTS followups (
-                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                    about     TEXT,
-                    question  TEXT,
-                    ask_after REAL,                     -- unix timestamp
-                    expires   REAL,
-                    status    INTEGER DEFAULT 0,        -- 0 pending, 1 asked, 2 dropped
-                    created   REAL
-                );
                 CREATE TABLE IF NOT EXISTS face_profiles (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
                     label_id    INTEGER UNIQUE,
@@ -149,25 +140,6 @@ class AriaMemory:
                         SELECT id FROM messages ORDER BY id DESC LIMIT 3000
                     )
                 """)
-
-    # ── Follow-ups ("how did the exam go?") ───────────────────
-    def add_followup(self, about: str, question: str, ask_after: float, expires: float):
-        with self._lock:
-            with self._connect() as conn:
-                conn.execute("INSERT INTO followups (about, question, ask_after, expires, created) VALUES (?, ?, ?, ?, ?)",
-                             (about, question, ask_after, expires, time.time()))
-
-    def pending_followups(self) -> list:
-        with self._lock:
-            with self._connect() as conn:
-                rows = conn.execute("SELECT id, about, question, ask_after, expires FROM followups "
-                                    "WHERE status = 0 ORDER BY ask_after").fetchall()
-        return [{"id": r[0], "about": r[1], "question": r[2], "ask_after": r[3], "expires": r[4]} for r in rows]
-
-    def set_followup_status(self, followup_id: int, status: int):
-        with self._lock:
-            with self._connect() as conn:
-                conn.execute("UPDATE followups SET status = ? WHERE id = ?", (status, followup_id))
 
     # ── Focus log ─────────────────────────────────────────────
     def log_focus(self, minutes: int, task: str = ""):

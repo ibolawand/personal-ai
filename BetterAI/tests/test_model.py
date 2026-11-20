@@ -1,5 +1,5 @@
 """
-Checks with the REAL language model (Ollama, qwen3:8b). Skipped unless ARIA_MODEL_TESTS=1, because they need the
+Checks with the REAL language model (Ollama, her ARIA_MODEL). Skipped unless ARIA_MODEL_TESTS=1, because they need the
 model and take about a minute:
 
     ARIA_MODEL_TESTS=1 .venv/bin/python -m pytest -m model
@@ -18,6 +18,19 @@ pytestmark = [pytest.mark.model,
               pytest.mark.skipif(os.environ.get("ARIA_MODEL_TESTS") != "1", reason="set ARIA_MODEL_TESTS=1")]
 
 
+_REAL_POPEN = __import__("subprocess").Popen
+
+
+@pytest.fixture(autouse=True)
+def _main_imported(monkeypatch):
+    """main imports gradio_client, which runs a program while it loads; the tests' stand-in for starting programs
+    (conftest) would break that, so main is imported with the real one first."""
+    import subprocess
+    with monkeypatch.context() as m:
+        m.setattr(subprocess, "Popen", _REAL_POPEN)
+        import main  # noqa: F401
+
+
 class Stub:
     menu = None
 
@@ -25,8 +38,25 @@ class Stub:
         return lambda *a, **k: "Done."
 
 
+class WriterStub:
+    """Records what the model asked for (the real writing is checked in test_note_writer.py)."""
+    def __init__(self):
+        self.calls = []
+
+    def _rec(self, name):
+        def call(**kw):
+            self.calls.append((name, kw))
+            return "Done — the note is changed."
+        return call
+
+    def __getattr__(self, name):
+        if name in ("write_note", "organize_note", "edit_note"):
+            return self._rec(name)
+        raise AttributeError(name)
+
+
 @pytest.fixture
-def real_aria(aria, memory, tmp_path):
+def real_aria(aria, memory, tmp_path, monkeypatch):
     import ContextBuilder
     import main
     from Engines.FilesEngine import FilesEngine
@@ -39,10 +69,20 @@ def real_aria(aria, memory, tmp_path):
     aria.context = ContextBuilder.ContextBuilder(memory)
     aria.reminders = Reminders(memory, on_due=lambda r: None)
     aria.notion.add_to_list("shopping", "eggs, milk")
+    # what Lala talks about exists, as it would: a biology note, open in MyNotion ("this note"), and the gear trains
+    # PDF. (A bigger model looks a note up before changing it; with nothing there it asked instead of acting.)
+    import Engines.NotionEngine as NE
+    bio = aria.notion._create_note("Biology", "<h2>Cell divison</h2><p>Mitosis has four phases: prophase, metaphase, "
+                                               "anaphase and telophase. The cell devides into two identcal cells.</p>"
+                                               "<p>Organ\tFunction</p><p>Heart\tpumps blood</p><p>Lungs\tbreathing</p>")
+    aria.notion._set_state("open_note", str(bio))
+    monkeypatch.setattr(NE, "mynotion_running", lambda: True)
+    (tmp_path / "Gear trains.pdf").write_bytes(b"%PDF-1.4 gear trains, gear ratio, driver and driven gear")
     aria.posture = s                                   # "this is my good posture" is handled in code
     aria.tools = ToolEngine(spotify=s, vision=s, reminders=aria.reminders, focus=s, screen=s, laptop=s,
                             files=FilesEngine(aria.confirm, roots=[str(tmp_path)]), notion=aria.notion,
-                            initiative=s, memory_note=s, activity=s, weather=s, recall=s, health=s, posture=s, quiz=s, face_learner=lambda name='': 'Okay, look at the camera.', mail=s)
+                            memory_note=s, activity=s, weather=s, recall=s, health=s, posture=s, quiz=s, face_learner=lambda name='': 'Okay, look at the camera.', mail=s,
+                            writer=WriterStub())
     return aria
 
 
@@ -64,7 +104,28 @@ COMMANDS = [
     ("the essay is due on monday now", "set_due|add_todo"),
     ("any new emails?", "check_mail"), ("read the email from Mr Huber", "read_mail"),
     ("reply to Sara that I'm in", "draft_reply"),
+    ("organise this note", "organize_note"), ("tidy up my biology note", "organize_note"),
+    ("organisiere diese Notiz", "organize_note"), ("mach aus den Tab-Spalten eine Tabelle", "organize_note|edit_note"),
+    ("is my solution for 4.15 right?", "check_solution"), ("check exercise 4.3 in this note", "check_solution"),
+    ("stimmt mein Rechenweg bei 4.15?", "check_solution"),
+    ("write a study sheet on the french revolution", "write_note"),
+    ("make a note with the formulas for circles", "write_note"),
+    ("add a section about mitosis to my biology note", "edit_note"),
+    ("put a short summary at the top of this note", "edit_note"),
+    ("fix the spelling in my biology note", "edit_note"), ("translate this note into English", "edit_note"),
 ]
+
+
+@pytest.mark.parametrize("text,check", [
+    ("put a short summary at the top of this note", lambda a: a.get("change") == "summary"),
+    ("translate this note into English", lambda a: a.get("change") == "translate" and "english" in a.get("language", "").lower()),
+    ("fix the spelling in my biology note", lambda a: a.get("change") == "fix_spelling" and "bio" in a.get("title", "").lower()),
+    ("add a section about mitosis to my biology note", lambda a: a.get("change") == "add" and "mitos" in a.get("instruction", "").lower()),
+])
+def test_edit_note_gets_the_right_change(real_aria, text, check):
+    reply, used = real_aria.handle_turn(text, check_state=False)
+    args = [a for n, a in real_aria.tools.writer.calls if n == "edit_note"]
+    assert args and check(args[0]), f"{text!r} -> {real_aria.tools.writer.calls}: {reply!r}"
 
 
 @pytest.mark.parametrize("text,tool", COMMANDS)
@@ -101,3 +162,29 @@ def test_from_the_phone_she_cannot_touch_the_laptop(real_aria):
     with real_aria.tools.phone():
         reply, used = real_aria.handle_turn("lock my laptop", check_state=False)
     assert "lock_screen" not in [n for n, _ in used], reply
+
+
+CHAT = ["hello", "wow you missed me?", "i see oki :(", "nothing i am bored", "are you annoyed", "you",
+        "i want to have the freedom of choice", "why acting like this", "don't wait", "yes sit and watch",
+        "i am tired of school", "so what is your desire", "it is 4pm here", "never thouhg an ai can be annoying",
+        "what should i eat tonight", "lol"]
+# cold or pushy lines from the evening she turned snarky: "tell me what you actually want", "you're being extra"
+COLD_RE = re.compile(r"what (?:do )?you (?:actually |really )?(?:want|need)|pick (?:one|something)|dramatic|being extra|"
+                     r"overthinking|just a screen|what'?s the deal", re.I)
+
+
+def test_a_whole_chat_stays_short_and_plain(real_aria, capsys):
+    """Lala's own messages from the afternoon she answered each with 15 lines of "…and I'm still… just here"."""
+    import main
+    said = []
+    for text in CHAT:
+        reply, used = real_aria.handle_turn(text, check_state=False)
+        said.append((text, reply))
+        assert not used, (text, used)                 # plain chat never reads notes or looks at the screen
+    with capsys.disabled():
+        print("\n" + "\n".join(f"  {t!r}\n     -> {r}" for t, r in said))
+    for text, reply in said:
+        assert len(main._sentences(reply)) <= 4 and "\n" not in reply and "*" not in reply, (text, reply)
+        assert not COLD_RE.search(reply), (text, reply)
+        assert not main.NARRATION_RE.search(reply) and not main.ROBOTIC_RE.search(reply), (text, reply)
+    assert len({main._norm_reply(r) for _, r in said}) == len(said)          # never the same reply twice

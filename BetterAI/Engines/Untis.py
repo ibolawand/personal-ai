@@ -122,13 +122,21 @@ class Untis:
         self._sid = res["sessionId"]
         self._me = {"id": res["personId"], "type": res["personType"]}
 
-    def _rest(self, path, params):
+    def _rest(self, path, params, retry=True):
         if self._sid is None:
             self._login()
         r = self.http.get(f"https://{self.server}/WebUntis/api/{path}", params=params, cookies=self._cookies(),
                           timeout=15)
-        r.raise_for_status()
-        return (r.json() or {}).get("data") or {}
+        try:
+            if getattr(r, "status_code", 200) in (401, 403):
+                raise ValueError("not logged in")
+            r.raise_for_status()
+            return (r.json() or {}).get("data") or {}
+        except ValueError:                                  # a login page instead of JSON: the session ran out
+            if not retry:
+                raise
+            self._sid = None
+            return self._rest(path, params, retry=False)
 
     def _cached(self, key, fetch):
         hit = self._cache.get(key)
@@ -213,6 +221,12 @@ class Untis:
                 out.append(f"{su} at {at}: {l.get('substText') or 'changed'}")
         return out
 
+    def school_span(self, day: dt.date):
+        """(first start, last end) as HHMM of the lessons that take place on `day`, or None with none. Raises like
+        any WebUntis call (no login, offline): for Aria's companion, which then plays it safe."""
+        blocks = self._blocks(self._lessons(day))
+        return (blocks[0][0], blocks[-1][1]) if blocks else None
+
     def school_day(self, when="today") -> str:
         day = parse_day(when or "today", self.today())
         if not day:
@@ -288,6 +302,23 @@ class Untis:
                 return "No tests in the next 3 weeks."
             return "Tests: " + "; ".join(self._exam_text(e) for e in exams[:6]) + "."
         return self._safely(answer)
+
+    def upcoming_tests(self, days: int = 7) -> list:
+        """Tests in the next `days` days as plain records, nearest first. [] without a saved login; errors from
+        WebUntis are the caller's to handle."""
+        if not load_login():
+            return []
+        today = self.today()
+        out = []
+        for e in self._exams():
+            day = _date(e["examDate"])
+            subject = (e.get("subject") or "").strip()
+            if not subject or (day - today).days > days:
+                continue
+            out.append({"id": f"{e['examDate']}-{subject}-{e.get('startTime') or 0:04d}", "subject": subject,
+                        "kind": e.get("examType") or e.get("name") or "Test", "date": day,
+                        "topic": (e.get("text") or "").strip()})
+        return out
 
     # ── the morning briefing ──
 

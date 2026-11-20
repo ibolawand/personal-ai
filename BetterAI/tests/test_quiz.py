@@ -4,6 +4,7 @@ import json
 import pytest
 
 import Engines.Quiz as Q
+from Engines.NotionEngine import html_to_text
 import main  # noqa: F401  (imported at collection, before the subprocess guard is in place)
 
 NOTE = ("<h2>Normal forms</h2><p>First normal form means every column holds one value. Second normal form removes "
@@ -85,6 +86,18 @@ def test_mistakes_are_kept_and_can_be_retried(quiz):
     assert [m["q"] for m in quiz._load()["misses"]] == [second["q"]]
 
 
+def test_a_retried_mistake_keeps_the_note_it_came_from(quiz):
+    quiz._save_misses("Whatever", [{"q": "Q1?", "a": "a1", "source": "Databases"}])
+    data = quiz._load()
+    data["misses"].append({"q": "Q2?", "a": "a2", "at": 1})          # an old miss that has no source
+    with open(Q.STATE_FILE, "w") as f:
+        json.dump(data, f)
+    quiz.start("my mistakes")
+    quiz.answer("skip")
+    quiz.answer("skip")
+    assert {m["q"]: m["source"] for m in quiz._load()["misses"]} == {"Q1?": "Databases", "Q2?": "your mistakes"}
+
+
 def test_nothing_found_and_too_short(quiz, notion):
     assert quiz.start("astrophysics") == "I couldn't find a note or document about 'astrophysics'."
     assert "doesn't have enough" in quiz.start("shopping list")
@@ -129,3 +142,62 @@ def test_quiz_answers_bypass_the_model_in_handle_turn(aria, quiz):
                                        ("Func<T, TResult>", False), ("one two three four five six seven", False)])
 def test_only_speakable_answers(answer, ok):
     assert Q.speakable(answer) is ok
+
+
+NOTE_TEXT = html_to_text(NOTE)
+
+
+def test_start_on_uses_the_given_text_without_searching(quiz):
+    out = quiz.start_on("Kapitel 3 (untitled-ish)", NOTE_TEXT, 3)   # a title the search would never match
+    assert out.startswith(Q.FINAL_PREFIX + "Quiz on Kapitel 3 (untitled-ish), 3 questions.")
+    assert quiz.active["title"] == "Kapitel 3 (untitled-ish)"
+    assert "transitive dependencies" in quiz.calls[0]
+
+
+def test_start_on_a_tiny_text_says_so(quiz):
+    assert quiz.start_on("Stub", "just a heading") == "'Stub' doesn't have enough in it to quiz you on yet."
+    assert quiz.active is None
+
+
+OLD = [{"q": "What is a primary key?", "a": "a unique identifier", "source": "Keys"}]
+
+
+def state():
+    return json.load(open(Q.STATE_FILE)).get("misses", [])
+
+
+def test_mixed_asks_old_questions_first_and_says_the_split(quiz):
+    said = quiz.start_mixed("DBI test", OLD, [("Databases", html_to_text(NOTE), 2)])
+    assert said.startswith(Q.FINAL_PREFIX + "Quiz for your DBI test, ")
+    assert "1 you missed before, then " in said and said.endswith("First one: What is a primary key?")
+    assert [q.get("source") for q in quiz.active["questions"]][:2] == ["Keys", "Databases"]
+
+
+def test_mixed_without_old_questions_has_the_plain_opening(quiz):
+    said = quiz.start_mixed("DBI test", [], [("Databases", html_to_text(NOTE), 3)])
+    assert "Quiz for your DBI test, 3 questions. Say skip" in said and "missed before" not in said
+
+
+def test_mixed_saves_a_miss_under_its_note_and_drops_a_fixed_old_one(quiz):
+    quiz._save_misses("Keys", OLD)
+    quiz.start_mixed("DBI test", OLD, [("Databases", html_to_text(NOTE), 1)])
+    quiz.answer("a unique identifier")          # the old one, right
+    quiz.answer("skip")                         # the new one, missed
+    assert [(m["q"], m["source"]) for m in state()] == [(QUESTIONS[0]["q"], "Databases")]
+
+
+def test_mixed_drops_a_new_question_that_repeats_an_old_one(quiz):
+    old = [dict(QUESTIONS[0], source="Databases")]
+    quiz.start_mixed("DBI test", old, [("Databases", html_to_text(NOTE), 3)])
+    assert [q["q"] for q in quiz.active["questions"]].count(QUESTIONS[0]["q"]) == 1
+
+
+def test_mixed_with_nothing_to_ask(quiz):
+    assert quiz.start_mixed("DBI test", [], []) == "I couldn't come up with questions for that, try again in a moment."
+    assert quiz.active is None
+
+
+def test_an_ordinary_quiz_still_saves_misses_under_its_title(quiz):
+    quiz.start("databases")
+    quiz.answer("skip"); quiz.answer("stop")
+    assert state()[0]["source"] == "Databases"

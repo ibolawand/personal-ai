@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# One-time setup: Mint menu entry, start on login, the Ctrl+Alt+Space hotkey and Ctrl+Alt+N quick capture.
+# One-time setup: Mint menu entry, start on login, the Super+Space hotkey and Ctrl+Alt+N quick capture.
+# (Not Ctrl+Alt+Space: the Claude desktop app opens on that one, so both came up at once.)
 # Run again after moving the project folder.  Undo with: ./install_desktop.sh --remove
 DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 APPS="$HOME/.local/share/applications"
 AUTO="$HOME/.config/autostart"
 KB_SCHEMA="org.cinnamon.desktop.keybindings"
 KB_ROOT="/org/cinnamon/desktop/keybindings/custom-keybindings"
-HOTKEY="${ARIA_HOTKEY:-<Primary><Alt>space}"
+HOTKEY="${ARIA_HOTKEY:-<Super>space}"
 CAPTURE_HOTKEY="${ARIA_CAPTURE_HOTKEY:-<Primary><Alt>n}"
 
 remove_binding() {   # id
@@ -25,6 +26,14 @@ add_binding() {      # id name command hotkey
   gsettings set $KB_SCHEMA.custom-keybinding:$KB_ROOT/$1/ name "$2"
   gsettings set $KB_SCHEMA.custom-keybinding:$KB_ROOT/$1/ command "$3"
   gsettings set $KB_SCHEMA.custom-keybinding:$KB_ROOT/$1/ binding "['$4']"
+}
+
+free_key() {         # hotkey: Cinnamon switches the keyboard layout on Super+Space and would swallow it
+  local key="org.cinnamon.desktop.keybindings.wm switch-input-source"
+  local now; now="$(gsettings get $key 2>/dev/null)" || return 0
+  grep -q "'$1'" <<<"$now" || return 0
+  gsettings set $key "$(sed "s/'$1', //; s/, '$1'//; s/'$1'//; s/^\[\]$/@as []/" <<<"$now")"
+  echo "  (took $1 away from switching the keyboard layout)"
 }
 
 if [ "$1" = "--remove" ]; then
@@ -53,6 +62,7 @@ entry > "$APPS/aria.desktop"
 { entry; echo "X-GNOME-Autostart-Delay=8"; } > "$AUTO/aria.desktop"
 
 # Cinnamon custom shortcuts
+free_key "$HOTKEY"
 add_binding aria "Aria" "$DIR/aria.sh --toggle" "$HOTKEY"
 add_binding aria-capture "Aria quick capture" "$DIR/aria.sh --capture" "$CAPTURE_HOTKEY"
 
